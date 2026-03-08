@@ -21,6 +21,9 @@ futures.workspace = true
 tokio-stream.workspace = true
 regex.workspace = true
 dirs.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { workspace = true, features = ["full"] }

@@ -1,5 +1,5 @@
-pub mod message;
-pub mod file;
 pub mod config;
-pub mod session;
 pub mod error;
+pub mod file;
+pub mod message;
+pub mod session;

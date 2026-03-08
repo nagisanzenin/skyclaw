@@ -6,8 +6,8 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
-use skyclaw_core::{Memory, MemoryEntry, MemoryEntryType, SearchOpts};
 use skyclaw_core::error::SkyclawError;
+use skyclaw_core::{Memory, MemoryEntry, MemoryEntryType, SearchOpts};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, info};
@@ -70,10 +70,7 @@ impl MarkdownMemory {
     /// Format a MemoryEntry as a Markdown section.
     fn entry_to_markdown(entry: &MemoryEntry) -> String {
         let ts = entry.timestamp.to_rfc3339();
-        let session = entry
-            .session_id
-            .as_deref()
-            .unwrap_or("none");
+        let session = entry.session_id.as_deref().unwrap_or("none");
         format!(
             "<!-- entry:{} session:{} type:{} -->\n### {} [{}]\n\n{}\n",
             entry.id,
@@ -113,7 +110,13 @@ impl MarkdownMemory {
             .iter()
             .find(|p| p.starts_with("session:"))
             .and_then(|p| p.strip_prefix("session:"))
-            .and_then(|s| if s == "none" { None } else { Some(s.to_string()) });
+            .and_then(|s| {
+                if s == "none" {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
+            });
         let entry_type_str = parts
             .iter()
             .find(|p| p.starts_with("type:"))
@@ -137,8 +140,8 @@ impl MarkdownMemory {
 
         // Content is everything after the first blank line following the ### line.
         let content = body
-            .splitn(2, "\n\n")
-            .nth(1)
+            .split_once("\n\n")
+            .map(|x| x.1)
             .unwrap_or("")
             .trim()
             .to_string();
@@ -229,8 +232,7 @@ impl Memory for MarkdownMemory {
             entries.retain(|e| entry_type_to_str(&e.entry_type) == et_str);
         }
 
-        let results =
-            hybrid_search(query, &entries, opts.vector_weight, opts.keyword_weight);
+        let results = hybrid_search(query, &entries, opts.vector_weight, opts.keyword_weight);
         Ok(results.into_iter().take(opts.limit).collect())
     }
 
@@ -312,9 +314,7 @@ fn str_to_entry_type(s: &str) -> Result<MemoryEntryType, SkyclawError> {
         "long_term" => Ok(MemoryEntryType::LongTerm),
         "daily_log" => Ok(MemoryEntryType::DailyLog),
         "skill" => Ok(MemoryEntryType::Skill),
-        other => Err(SkyclawError::Memory(format!(
-            "Unknown entry type: {other}"
-        ))),
+        other => Err(SkyclawError::Memory(format!("Unknown entry type: {other}"))),
     }
 }
 
@@ -369,8 +369,20 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mem = MarkdownMemory::new(tmp.path()).await.unwrap();
 
-        mem.store(make_entry("del1", "to delete", MemoryEntryType::Conversation)).await.unwrap();
-        mem.store(make_entry("keep1", "to keep", MemoryEntryType::Conversation)).await.unwrap();
+        mem.store(make_entry(
+            "del1",
+            "to delete",
+            MemoryEntryType::Conversation,
+        ))
+        .await
+        .unwrap();
+        mem.store(make_entry(
+            "keep1",
+            "to keep",
+            MemoryEntryType::Conversation,
+        ))
+        .await
+        .unwrap();
 
         mem.delete("del1").await.unwrap();
 

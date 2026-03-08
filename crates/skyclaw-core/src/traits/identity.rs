@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use crate::types::error::SkyclawError;
+use async_trait::async_trait;
 
 /// Identity / auth trait — authentication and authorization
 #[async_trait]

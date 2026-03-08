@@ -4,8 +4,8 @@
 //! get page text, and evaluate JavaScript. Each tool call performs exactly one
 //! action — the agent chains actions across rounds.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chromiumoxide::browser::{Browser, BrowserConfig};
@@ -25,6 +25,12 @@ pub struct BrowserTool {
     page: Arc<Mutex<Option<Page>>>,
     /// Unix timestamp of last browser action — used for idle auto-close.
     last_used: Arc<AtomicI64>,
+}
+
+impl Default for BrowserTool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BrowserTool {
@@ -108,9 +114,9 @@ impl BrowserTool {
             .arg("--disable-dev-shm-usage")
             .window_size(1280, 900);
 
-        let config = config.build().map_err(|e| {
-            SkyclawError::Tool(format!("Failed to build browser config: {}", e))
-        })?;
+        let config = config
+            .build()
+            .map_err(|e| SkyclawError::Tool(format!("Failed to build browser config: {}", e)))?;
 
         let (browser, mut handler) = Browser::launch(config).await.map_err(|e| {
             SkyclawError::Tool(format!(
@@ -139,16 +145,18 @@ impl BrowserTool {
         // Give the browser a moment to fully initialize
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        let page = browser.new_page("about:blank").await.map_err(|e| {
-            SkyclawError::Tool(format!("Failed to create page: {}", e))
-        })?;
+        let page = browser
+            .new_page("about:blank")
+            .await
+            .map_err(|e| SkyclawError::Tool(format!("Failed to create page: {}", e)))?;
 
         // Wait for page to be ready
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         *browser_guard = Some(browser);
         *page_guard = Some(page.clone());
-        self.last_used.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+        self.last_used
+            .store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
 
         tracing::info!("Browser launched (headless)");
         Ok(page)
@@ -239,7 +247,8 @@ impl Tool for BrowserTool {
         }
 
         let page = self.ensure_browser().await?;
-        self.last_used.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+        self.last_used
+            .store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
 
         match action {
             "navigate" => {

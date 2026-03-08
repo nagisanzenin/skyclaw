@@ -79,9 +79,19 @@ pub enum ContentPart {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: serde_json::Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     #[serde(rename = "tool_result")]
-    ToolResult { tool_use_id: String, content: String, is_error: bool },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        is_error: bool,
+    },
+    #[serde(rename = "image")]
+    Image { media_type: String, data: String },
 }
 
 /// Tool definition for the AI model
@@ -143,7 +153,10 @@ mod tests {
         assert_eq!(restored.channel, "telegram");
         assert_eq!(restored.text.as_deref(), Some("Hello SkyClaw"));
         assert_eq!(restored.attachments.len(), 1);
-        assert_eq!(restored.attachments[0].file_name.as_deref(), Some("doc.pdf"));
+        assert_eq!(
+            restored.attachments[0].file_name.as_deref(),
+            Some("doc.pdf")
+        );
     }
 
     #[test]
@@ -173,7 +186,9 @@ mod tests {
 
     #[test]
     fn serde_content_part_text() {
-        let part = ContentPart::Text { text: "hello".to_string() };
+        let part = ContentPart::Text {
+            text: "hello".to_string(),
+        };
         let json = serde_json::to_string(&part).unwrap();
         assert!(json.contains("\"type\":\"text\""));
         let restored: ContentPart = serde_json::from_str(&json).unwrap();
@@ -199,6 +214,25 @@ mod tests {
                 assert_eq!(input["command"], "ls");
             }
             _ => panic!("expected ToolUse variant"),
+        }
+    }
+
+    #[test]
+    fn serde_content_part_image() {
+        let part = ContentPart::Image {
+            media_type: "image/jpeg".to_string(),
+            data: "base64data".to_string(),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        assert!(json.contains("\"type\":\"image\""));
+        assert!(json.contains("\"media_type\":\"image/jpeg\""));
+        let restored: ContentPart = serde_json::from_str(&json).unwrap();
+        match restored {
+            ContentPart::Image { media_type, data } => {
+                assert_eq!(media_type, "image/jpeg");
+                assert_eq!(data, "base64data");
+            }
+            _ => panic!("expected Image variant"),
         }
     }
 

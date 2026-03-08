@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use skyclaw_core::types::error::SkyclawError;
 use skyclaw_core::types::message::OutboundMessage;
-use skyclaw_core::{Channel, Tool, ToolContext, ToolDeclarations, ToolInput, ToolOutput, PathAccess};
+use skyclaw_core::{Channel, Tool, ToolContext, ToolDeclarations, ToolInput, ToolOutput};
 
 pub struct SendMessageTool {
     channel: Arc<dyn Channel>,
@@ -57,12 +57,20 @@ impl Tool for SendMessageTool {
         }
     }
 
-    async fn execute(&self, input: ToolInput, ctx: &ToolContext) -> Result<ToolOutput, SkyclawError> {
-        let text = input.arguments.get("text")
+    async fn execute(
+        &self,
+        input: ToolInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, SkyclawError> {
+        let text = input
+            .arguments
+            .get("text")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkyclawError::Tool("Missing required parameter: text".into()))?;
 
-        let chat_id = input.arguments.get("chat_id")
+        let chat_id = input
+            .arguments
+            .get("chat_id")
             .and_then(|v| v.as_str())
             .unwrap_or(&ctx.chat_id);
 

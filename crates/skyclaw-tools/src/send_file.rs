@@ -6,7 +6,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use skyclaw_core::types::error::SkyclawError;
 use skyclaw_core::types::file::{FileData, OutboundFile};
-use skyclaw_core::{Channel, Tool, ToolContext, ToolDeclarations, ToolInput, ToolOutput, PathAccess};
+use skyclaw_core::{
+    Channel, PathAccess, Tool, ToolContext, ToolDeclarations, ToolInput, ToolOutput,
+};
 
 /// Maximum file size to send (50 MB — Telegram's upload limit).
 const MAX_SEND_SIZE: usize = 50 * 1024 * 1024;
@@ -62,16 +64,26 @@ impl Tool for SendFileTool {
         }
     }
 
-    async fn execute(&self, input: ToolInput, ctx: &ToolContext) -> Result<ToolOutput, SkyclawError> {
-        let path_str = input.arguments.get("path")
+    async fn execute(
+        &self,
+        input: ToolInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, SkyclawError> {
+        let path_str = input
+            .arguments
+            .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkyclawError::Tool("Missing required parameter: path".into()))?;
 
-        let chat_id = input.arguments.get("chat_id")
+        let chat_id = input
+            .arguments
+            .get("chat_id")
             .and_then(|v| v.as_str())
             .unwrap_or(&ctx.chat_id);
 
-        let caption = input.arguments.get("caption")
+        let caption = input
+            .arguments
+            .get("caption")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -94,12 +106,17 @@ impl Tool for SendFileTool {
 
         if data.len() > MAX_SEND_SIZE {
             return Ok(ToolOutput {
-                content: format!("File is too large ({} bytes, max {} bytes)", data.len(), MAX_SEND_SIZE),
+                content: format!(
+                    "File is too large ({} bytes, max {} bytes)",
+                    data.len(),
+                    MAX_SEND_SIZE
+                ),
                 is_error: true,
             });
         }
 
-        let file_name = path.file_name()
+        let file_name = path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "file".to_string());
 
@@ -120,11 +137,13 @@ impl Tool for SendFileTool {
             Some("rs") => "text/x-rust",
             Some("js") | Some("ts") => "text/javascript",
             _ => "application/octet-stream",
-        }.to_string();
+        }
+        .to_string();
 
-        let ft = self.channel.file_transfer().ok_or_else(|| {
-            SkyclawError::Tool("Channel does not support file transfer".into())
-        })?;
+        let ft = self
+            .channel
+            .file_transfer()
+            .ok_or_else(|| SkyclawError::Tool("Channel does not support file transfer".into()))?;
 
         let outbound = OutboundFile {
             name: file_name.clone(),

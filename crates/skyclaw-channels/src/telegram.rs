@@ -1,5 +1,6 @@
 //! Telegram channel — uses teloxide for the Telegram Bot API.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
@@ -14,9 +15,9 @@ use skyclaw_core::types::file::{FileData, FileMetadata, OutboundFile, ReceivedFi
 use skyclaw_core::types::message::{AttachmentRef, InboundMessage, OutboundMessage, ParseMode};
 use skyclaw_core::{Channel, FileTransfer};
 
-use teloxide::prelude::*;
 use teloxide::net::Download;
-use teloxide::types::{InputFile, MessageKind, MediaKind};
+use teloxide::prelude::*;
+use teloxide::types::{InputFile, MediaKind, MessageKind};
 
 /// Maximum file size the Telegram Bot API supports for uploads (50 MB).
 const TELEGRAM_UPLOAD_LIMIT: usize = 50 * 1024 * 1024;
@@ -55,12 +56,10 @@ fn save_allowlist_file(data: &AllowlistFile) -> Result<(), SkyclawError> {
             SkyclawError::Channel(format!("Failed to create ~/.skyclaw directory: {e}"))
         })?;
     }
-    let content = toml::to_string_pretty(data).map_err(|e| {
-        SkyclawError::Channel(format!("Failed to serialize allowlist: {e}"))
-    })?;
-    std::fs::write(&path, content).map_err(|e| {
-        SkyclawError::Channel(format!("Failed to write allowlist file: {e}"))
-    })?;
+    let content = toml::to_string_pretty(data)
+        .map_err(|e| SkyclawError::Channel(format!("Failed to serialize allowlist: {e}")))?;
+    std::fs::write(&path, content)
+        .map_err(|e| SkyclawError::Channel(format!("Failed to write allowlist file: {e}")))?;
     tracing::info!(path = %path.display(), "Allowlist saved");
     Ok(())
 }
@@ -82,8 +81,8 @@ pub struct TelegramChannel {
     rx: Option<mpsc::Receiver<InboundMessage>>,
     /// Handle to the polling dispatcher task.
     dispatcher_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Shutdown token for the dispatcher.
-    shutdown_token: Option<teloxide::dispatching::ShutdownToken>,
+    /// Shutdown signal for the reconnection loop.
+    shutdown: Arc<AtomicBool>,
 }
 
 impl TelegramChannel {
@@ -125,7 +124,7 @@ impl TelegramChannel {
             tx,
             rx: Some(rx),
             dispatcher_handle: None,
-            shutdown_token: None,
+            shutdown: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -161,9 +160,7 @@ impl Channel for TelegramChannel {
         // Validate token by calling getMe before starting the dispatcher.
         // teloxide panics on invalid tokens during dispatch — catch it here.
         bot.get_me().await.map_err(|e| {
-            SkyclawError::Channel(format!(
-                "Invalid Telegram bot token — getMe failed: {e}"
-            ))
+            SkyclawError::Channel(format!("Invalid Telegram bot token — getMe failed: {e}"))
         })?;
 
         self.bot = Some(bot.clone());
@@ -171,30 +168,53 @@ impl Channel for TelegramChannel {
         let tx = self.tx.clone();
         let allowlist = self.allowlist.clone();
         let admin = self.admin.clone();
+        let shutdown = self.shutdown.clone();
 
-        // Build the dispatcher
-        let handler = Update::filter_message().endpoint(
-            move |bot: Bot, msg: teloxide::types::Message| {
+        let handle = tokio::spawn(async move {
+            let mut backoff = std::time::Duration::from_secs(1);
+
+            loop {
+                if shutdown.load(Ordering::Relaxed) {
+                    tracing::info!("Telegram dispatcher shutdown requested");
+                    break;
+                }
+
+                // Rebuild handler each iteration (dispatcher takes ownership)
                 let tx = tx.clone();
                 let allowlist = allowlist.clone();
                 let admin = admin.clone();
-                async move {
-                    if let Err(e) = handle_telegram_message(&bot, msg, &tx, allowlist, admin).await {
-                        tracing::error!(error = %e, "Failed to handle Telegram message");
-                    }
-                    respond(())
+                let handler = Update::filter_message().endpoint(
+                    move |bot: Bot, msg: teloxide::types::Message| {
+                        let tx = tx.clone();
+                        let allowlist = allowlist.clone();
+                        let admin = admin.clone();
+                        async move {
+                            if let Err(e) =
+                                handle_telegram_message(&bot, msg, &tx, allowlist, admin).await
+                            {
+                                tracing::error!(error = %e, "Failed to handle Telegram message");
+                            }
+                            respond(())
+                        }
+                    },
+                );
+
+                let mut dispatcher = Dispatcher::builder(bot.clone(), handler).build();
+
+                dispatcher.dispatch().await;
+
+                // Dispatcher exited — network error, API throttle, etc.
+                if shutdown.load(Ordering::Relaxed) {
+                    break;
                 }
-            },
-        );
 
-        let mut dispatcher = Dispatcher::builder(bot, handler)
-            .enable_ctrlc_handler()
-            .build();
-
-        self.shutdown_token = Some(dispatcher.shutdown_token());
-
-        let handle = tokio::spawn(async move {
-            dispatcher.dispatch().await;
+                tracing::warn!(
+                    backoff_secs = backoff.as_secs(),
+                    "Telegram dispatcher exited unexpectedly, reconnecting"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(std::time::Duration::from_secs(60));
+            }
         });
 
         self.dispatcher_handle = Some(handle);
@@ -203,25 +223,24 @@ impl Channel for TelegramChannel {
     }
 
     async fn stop(&mut self) -> Result<(), SkyclawError> {
-        if let Some(token) = self.shutdown_token.take() {
-            let fut = token.shutdown().map_err(|_| {
-                SkyclawError::Channel("Failed to send shutdown signal to Telegram dispatcher".into())
-            })?;
-            fut.await;
-        }
+        self.shutdown.store(true, Ordering::Relaxed);
         if let Some(handle) = self.dispatcher_handle.take() {
-            let _ = handle.await;
+            // Give the dispatcher a moment to notice the shutdown
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
         tracing::info!("Telegram channel stopped");
         Ok(())
     }
 
     async fn send_message(&self, msg: OutboundMessage) -> Result<(), SkyclawError> {
-        let bot = self.bot.as_ref().ok_or_else(|| {
-            SkyclawError::Channel("Telegram bot not started".into())
-        })?;
+        let bot = self
+            .bot
+            .as_ref()
+            .ok_or_else(|| SkyclawError::Channel("Telegram bot not started".into()))?;
 
-        let chat_id: ChatId = msg.chat_id.parse::<i64>()
+        let chat_id: ChatId = msg
+            .chat_id
+            .parse::<i64>()
             .map(ChatId)
             .map_err(|_| SkyclawError::Channel(format!("Invalid chat_id: {}", msg.chat_id)))?;
 
@@ -235,9 +254,9 @@ impl Channel for TelegramChannel {
             };
         }
 
-        request.await.map_err(|e| {
-            SkyclawError::Channel(format!("Failed to send Telegram message: {e}"))
-        })?;
+        request
+            .await
+            .map_err(|e| SkyclawError::Channel(format!("Failed to send Telegram message: {e}")))?;
 
         Ok(())
     }
@@ -254,24 +273,26 @@ impl Channel for TelegramChannel {
 #[async_trait]
 impl FileTransfer for TelegramChannel {
     async fn receive_file(&self, msg: &InboundMessage) -> Result<Vec<ReceivedFile>, SkyclawError> {
-        let bot = self.bot.as_ref().ok_or_else(|| {
-            SkyclawError::Channel("Telegram bot not started".into())
-        })?;
+        let bot = self
+            .bot
+            .as_ref()
+            .ok_or_else(|| SkyclawError::Channel("Telegram bot not started".into()))?;
 
         let mut files = Vec::new();
 
         for att in &msg.attachments {
             let file_id = teloxide::types::FileId(att.file_id.clone());
-            let tg_file = bot.get_file(file_id).await.map_err(|e| {
-                SkyclawError::FileTransfer(format!("Failed to get file info: {e}"))
-            })?;
+            let tg_file = bot
+                .get_file(file_id)
+                .await
+                .map_err(|e| SkyclawError::FileTransfer(format!("Failed to get file info: {e}")))?;
 
             // Use teloxide's built-in download to avoid exposing the bot
             // token in a manually-constructed URL (CA-03).
             let mut buf = Vec::new();
-            bot.download_file(&tg_file.path, &mut buf).await.map_err(|e| {
-                SkyclawError::FileTransfer(format!("Failed to download file: {e}"))
-            })?;
+            bot.download_file(&tg_file.path, &mut buf)
+                .await
+                .map_err(|e| SkyclawError::FileTransfer(format!("Failed to download file: {e}")))?;
 
             let data = bytes::Bytes::from(buf);
 
@@ -282,7 +303,10 @@ impl FileTransfer for TelegramChannel {
 
             files.push(ReceivedFile {
                 name,
-                mime_type: att.mime_type.clone().unwrap_or_else(|| "application/octet-stream".to_string()),
+                mime_type: att
+                    .mime_type
+                    .clone()
+                    .unwrap_or_else(|| "application/octet-stream".to_string()),
                 size: data.len(),
                 data,
             });
@@ -292,20 +316,22 @@ impl FileTransfer for TelegramChannel {
     }
 
     async fn send_file(&self, chat_id: &str, file: OutboundFile) -> Result<(), SkyclawError> {
-        let bot = self.bot.as_ref().ok_or_else(|| {
-            SkyclawError::Channel("Telegram bot not started".into())
-        })?;
+        let bot = self
+            .bot
+            .as_ref()
+            .ok_or_else(|| SkyclawError::Channel("Telegram bot not started".into()))?;
 
-        let tg_chat_id: ChatId = chat_id.parse::<i64>()
+        let tg_chat_id: ChatId = chat_id
+            .parse::<i64>()
             .map(ChatId)
             .map_err(|_| SkyclawError::Channel(format!("Invalid chat_id: {chat_id}")))?;
 
         let input_file = match &file.data {
             FileData::Bytes(b) => InputFile::memory(b.to_vec()).file_name(file.name.clone()),
             FileData::Url(url) => {
-                let parsed = url.parse::<url::Url>().map_err(|e| {
-                    SkyclawError::FileTransfer(format!("Invalid file URL: {e}"))
-                })?;
+                let parsed = url
+                    .parse::<url::Url>()
+                    .map_err(|e| SkyclawError::FileTransfer(format!("Invalid file URL: {e}")))?;
                 InputFile::url(parsed).file_name(file.name.clone())
             }
         };
@@ -315,9 +341,9 @@ impl FileTransfer for TelegramChannel {
             request = request.caption(caption);
         }
 
-        request.await.map_err(|e| {
-            SkyclawError::FileTransfer(format!("Failed to send document: {e}"))
-        })?;
+        request
+            .await
+            .map_err(|e| SkyclawError::FileTransfer(format!("Failed to send document: {e}")))?;
 
         Ok(())
     }
@@ -331,13 +357,11 @@ impl FileTransfer for TelegramChannel {
         // Telegram does not support streaming uploads. We could buffer the
         // entire stream, but for now we return an error — callers should use
         // `send_file` with the fully-buffered data instead.
-        Err(SkyclawError::FileTransfer(
-            format!(
-                "Telegram does not support streaming file uploads. \
+        Err(SkyclawError::FileTransfer(format!(
+            "Telegram does not support streaming file uploads. \
                  Buffer the file ({}) and use send_file() instead.",
-                metadata.name
-            ),
-        ))
+            metadata.name
+        )))
     }
 
     fn max_file_size(&self) -> usize {
@@ -347,9 +371,9 @@ impl FileTransfer for TelegramChannel {
 
 /// Send a plain-text reply to the originating chat via the bot.
 async fn bot_reply(bot: &Bot, chat_id: ChatId, text: &str) -> Result<(), SkyclawError> {
-    bot.send_message(chat_id, text).await.map_err(|e| {
-        SkyclawError::Channel(format!("Failed to send admin-command reply: {e}"))
-    })?;
+    bot.send_message(chat_id, text)
+        .await
+        .map_err(|e| SkyclawError::Channel(format!("Failed to send admin-command reply: {e}")))?;
     Ok(())
 }
 
@@ -418,9 +442,7 @@ async fn handle_telegram_message(
     if let Some(text) = msg.text() {
         let trimmed = text.trim();
 
-        if trimmed.starts_with("/allow ")
-            || trimmed.starts_with("/revoke ")
-            || trimmed == "/users"
+        if trimmed.starts_with("/allow ") || trimmed.starts_with("/revoke ") || trimmed == "/users"
         {
             let is_admin = {
                 let adm = admin.read().unwrap();
@@ -472,14 +494,29 @@ async fn handle_telegram_message(
                     }
                 };
                 if already_exists {
-                    bot_reply(bot, chat_id, &format!("User {} is already allowed.", target)).await?;
+                    bot_reply(
+                        bot,
+                        chat_id,
+                        &format!("User {} is already allowed.", target),
+                    )
+                    .await?;
                     return Ok(());
                 }
                 if let Err(e) = persist_allowlist(&allowlist, &admin) {
                     tracing::error!(error = %e, "Failed to persist allowlist after /allow");
-                    bot_reply(bot, chat_id, &format!("User {} added (but failed to save to disk: {}).", target, e)).await?;
+                    bot_reply(
+                        bot,
+                        chat_id,
+                        &format!("User {} added (but failed to save to disk: {}).", target, e),
+                    )
+                    .await?;
                 } else {
-                    bot_reply(bot, chat_id, &format!("User {} added to the allowlist.", target)).await?;
+                    bot_reply(
+                        bot,
+                        chat_id,
+                        &format!("User {} added to the allowlist.", target),
+                    )
+                    .await?;
                 }
                 tracing::info!(target = %target, "Admin added user to allowlist");
                 return Ok(());
@@ -504,14 +541,32 @@ async fn handle_telegram_message(
                     list.len() < before
                 };
                 if !was_present {
-                    bot_reply(bot, chat_id, &format!("User {} is not on the allowlist.", target)).await?;
+                    bot_reply(
+                        bot,
+                        chat_id,
+                        &format!("User {} is not on the allowlist.", target),
+                    )
+                    .await?;
                     return Ok(());
                 }
                 if let Err(e) = persist_allowlist(&allowlist, &admin) {
                     tracing::error!(error = %e, "Failed to persist allowlist after /revoke");
-                    bot_reply(bot, chat_id, &format!("User {} revoked (but failed to save to disk: {}).", target, e)).await?;
+                    bot_reply(
+                        bot,
+                        chat_id,
+                        &format!(
+                            "User {} revoked (but failed to save to disk: {}).",
+                            target, e
+                        ),
+                    )
+                    .await?;
                 } else {
-                    bot_reply(bot, chat_id, &format!("User {} removed from the allowlist.", target)).await?;
+                    bot_reply(
+                        bot,
+                        chat_id,
+                        &format!("User {} removed from the allowlist.", target),
+                    )
+                    .await?;
                 }
                 tracing::info!(target = %target, "Admin revoked user from allowlist");
                 return Ok(());
@@ -538,9 +593,9 @@ async fn handle_telegram_message(
         timestamp: msg.date,
     };
 
-    tx.send(inbound).await.map_err(|_| {
-        SkyclawError::Channel("Inbound message receiver dropped".into())
-    })?;
+    tx.send(inbound)
+        .await
+        .map_err(|_| SkyclawError::Channel("Inbound message receiver dropped".into()))?;
 
     Ok(())
 }

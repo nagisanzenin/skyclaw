@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use crate::types::error::SkyclawError;
+use async_trait::async_trait;
 
 /// Peripheral trait — hardware integration (stub for v0.1)
 #[async_trait]

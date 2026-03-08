@@ -1,14 +1,19 @@
+use crate::types::error::SkyclawError;
+use crate::types::file::FileMetadata;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
-use crate::types::file::FileMetadata;
-use crate::types::error::SkyclawError;
 
 /// File storage backend trait — local filesystem or cloud object storage
 #[async_trait]
 pub trait FileStore: Send + Sync {
     /// Store a file and return its storage key
-    async fn store(&self, path: &str, data: Bytes, metadata: FileMetadata) -> Result<String, SkyclawError>;
+    async fn store(
+        &self,
+        path: &str,
+        data: Bytes,
+        metadata: FileMetadata,
+    ) -> Result<String, SkyclawError>;
 
     /// Store a file from a stream (for large files)
     async fn store_stream(
@@ -22,7 +27,11 @@ pub trait FileStore: Send + Sync {
     async fn get(&self, key: &str) -> Result<Option<Bytes>, SkyclawError>;
 
     /// Generate a presigned URL for direct access (for cloud backends)
-    async fn presigned_url(&self, key: &str, expires_in_secs: u64) -> Result<Option<String>, SkyclawError>;
+    async fn presigned_url(
+        &self,
+        key: &str,
+        expires_in_secs: u64,
+    ) -> Result<Option<String>, SkyclawError>;
 
     /// Delete a file
     async fn delete(&self, key: &str) -> Result<(), SkyclawError>;

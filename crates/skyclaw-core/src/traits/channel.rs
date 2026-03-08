@@ -1,9 +1,9 @@
+use crate::types::error::SkyclawError;
+use crate::types::file::{FileMetadata, OutboundFile, ReceivedFile};
+use crate::types::message::{InboundMessage, OutboundMessage};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
-use crate::types::message::{InboundMessage, OutboundMessage};
-use crate::types::file::{ReceivedFile, OutboundFile, FileMetadata};
-use crate::types::error::SkyclawError;
 
 /// Messaging channel trait. Implement for each platform (Telegram, Discord, etc.)
 #[async_trait]

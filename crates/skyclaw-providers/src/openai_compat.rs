@@ -76,11 +76,8 @@ impl OpenAICompatProvider {
         }
 
         if !request.tools.is_empty() {
-            let tools: Vec<serde_json::Value> = request
-                .tools
-                .iter()
-                .map(convert_tool_to_openai)
-                .collect();
+            let tools: Vec<serde_json::Value> =
+                request.tools.iter().map(convert_tool_to_openai).collect();
             body["tools"] = serde_json::json!(tools);
         }
 
@@ -228,6 +225,9 @@ fn convert_message_to_openai(msg: &ChatMessage) -> Result<serde_json::Value, Sky
                         ContentPart::ToolResult { .. } => {
                             // Should not appear in assistant messages
                         }
+                        ContentPart::Image { .. } => {
+                            // Should not appear in assistant messages
+                        }
                     }
                 }
 
@@ -290,19 +290,47 @@ fn convert_message_to_openai(msg: &ChatMessage) -> Result<serde_json::Value, Sky
                     "content": text,
                 }))
             } else {
-                // User or system message with parts -- concatenate text
-                let text: String = parts
-                    .iter()
-                    .filter_map(|p| match p {
-                        ContentPart::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Ok(serde_json::json!({
-                    "role": role,
-                    "content": text,
-                }))
+                // User or system message with parts
+                // Check if any Image parts are present — if so, use multipart content array
+                let has_images = parts.iter().any(|p| matches!(p, ContentPart::Image { .. }));
+
+                if has_images {
+                    let content_parts: Vec<serde_json::Value> = parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            ContentPart::Text { text } => Some(serde_json::json!({
+                                "type": "text",
+                                "text": text,
+                            })),
+                            ContentPart::Image { media_type, data } => Some(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": format!("data:{};base64,{}", media_type, data),
+                                    "detail": "auto",
+                                },
+                            })),
+                            _ => None,
+                        })
+                        .collect();
+                    Ok(serde_json::json!({
+                        "role": role,
+                        "content": content_parts,
+                    }))
+                } else {
+                    // No images — concatenate text parts
+                    let text: String = parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            ContentPart::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Ok(serde_json::json!({
+                        "role": role,
+                        "content": text,
+                    }))
+                }
             }
         }
     }
@@ -365,12 +393,9 @@ impl Provider for OpenAICompatProvider {
             )));
         }
 
-        let api_response: OpenAIResponse = response
-            .json()
-            .await
-            .map_err(|e| {
-                SkyclawError::Provider(format!("Failed to parse OpenAI-compat response: {e}"))
-            })?;
+        let api_response: OpenAIResponse = response.json().await.map_err(|e| {
+            SkyclawError::Provider(format!("Failed to parse OpenAI-compat response: {e}"))
+        })?;
 
         let choice = api_response
             .choices
@@ -388,10 +413,8 @@ impl Provider for OpenAICompatProvider {
 
         if let Some(tool_calls) = choice.message.tool_calls {
             for tc in tool_calls {
-                let input: serde_json::Value =
-                    serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| {
-                        serde_json::Value::Object(serde_json::Map::new())
-                    });
+                let input: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                    .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
                 content.push(ContentPart::ToolUse {
                     id: tc.id,
                     name: tc.function.name,
@@ -432,7 +455,9 @@ impl Provider for OpenAICompatProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| SkyclawError::Provider(format!("OpenAI-compat stream request failed: {e}")))?;
+            .map_err(|e| {
+                SkyclawError::Provider(format!("OpenAI-compat stream request failed: {e}"))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -463,9 +488,7 @@ impl Provider for OpenAICompatProvider {
             |(mut byte_stream, mut buffer, mut tool_calls)| async move {
                 loop {
                     // Try to extract a complete SSE event from the buffer
-                    if let Some(result) =
-                        extract_openai_sse_event(&mut buffer, &mut tool_calls)
-                    {
+                    if let Some(result) = extract_openai_sse_event(&mut buffer, &mut tool_calls) {
                         return Some((result, (byte_stream, buffer, tool_calls)));
                     }
 
@@ -553,8 +576,8 @@ fn extract_openai_sse_event(
         for line in event_text.lines() {
             if let Some(rest) = line.strip_prefix("data: ") {
                 data_parts.push(rest.to_string());
-            } else if line.starts_with("data:") {
-                data_parts.push(line[5..].to_string());
+            } else if let Some(rest) = line.strip_prefix("data:") {
+                data_parts.push(rest.to_string());
             }
         }
 
@@ -644,10 +667,8 @@ fn flush_tool_calls(
     }
 
     let (id, name, arguments) = tool_calls.remove(0);
-    let input: serde_json::Value =
-        serde_json::from_str(&arguments).unwrap_or_else(|_| {
-            serde_json::Value::Object(serde_json::Map::new())
-        });
+    let input: serde_json::Value = serde_json::from_str(&arguments)
+        .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
 
     Some(Ok(StreamChunk {
         delta: None,
@@ -680,7 +701,10 @@ mod tests {
         assert_eq!(body["max_tokens"], 2048);
         // f32 precision: compare approximately
         let temp = body["temperature"].as_f64().unwrap();
-        assert!((temp - 0.9).abs() < 0.01, "temperature should be ~0.9, got {temp}");
+        assert!(
+            (temp - 0.9).abs() < 0.01,
+            "temperature should be ~0.9, got {temp}"
+        );
         // System message should be first in messages array
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs[0]["role"], "system");
@@ -730,7 +754,9 @@ mod tests {
         let msg = ChatMessage {
             role: Role::Assistant,
             content: MessageContent::Parts(vec![
-                ContentPart::Text { text: "Let me check".to_string() },
+                ContentPart::Text {
+                    text: "Let me check".to_string(),
+                },
                 ContentPart::ToolUse {
                     id: "call_1".to_string(),
                     name: "shell".to_string(),
@@ -750,18 +776,43 @@ mod tests {
     fn convert_tool_result_message() {
         let msg = ChatMessage {
             role: Role::Tool,
-            content: MessageContent::Parts(vec![
-                ContentPart::ToolResult {
-                    tool_use_id: "call_1".to_string(),
-                    content: "file.txt".to_string(),
-                    is_error: false,
-                },
-            ]),
+            content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: "file.txt".to_string(),
+                is_error: false,
+            }]),
         };
         let json = convert_message_to_openai(&msg).unwrap();
         assert_eq!(json["role"], "tool");
         assert_eq!(json["tool_call_id"], "call_1");
         assert_eq!(json["content"], "file.txt");
+    }
+
+    #[test]
+    fn convert_user_message_with_image() {
+        let msg = ChatMessage {
+            role: Role::User,
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: "What is in this image?".to_string(),
+                },
+                ContentPart::Image {
+                    media_type: "image/png".to_string(),
+                    data: "abc123base64".to_string(),
+                },
+            ]),
+        };
+        let json = convert_message_to_openai(&msg).unwrap();
+        assert_eq!(json["role"], "user");
+        let content = json["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "What is in this image?");
+        assert_eq!(content[1]["type"], "image_url");
+        let url = content[1]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+        assert!(url.contains("abc123base64"));
+        assert_eq!(content[1]["image_url"]["detail"], "auto");
     }
 
     #[test]
@@ -787,8 +838,16 @@ mod tests {
     #[test]
     fn flush_tool_calls_emits_first() {
         let mut calls = vec![
-            ("id1".to_string(), "shell".to_string(), r#"{"cmd":"ls"}"#.to_string()),
-            ("id2".to_string(), "file".to_string(), r#"{"path":"."}"#.to_string()),
+            (
+                "id1".to_string(),
+                "shell".to_string(),
+                r#"{"cmd":"ls"}"#.to_string(),
+            ),
+            (
+                "id2".to_string(),
+                "file".to_string(),
+                r#"{"path":"."}"#.to_string(),
+            ),
         ];
 
         let result = flush_tool_calls(&mut calls);

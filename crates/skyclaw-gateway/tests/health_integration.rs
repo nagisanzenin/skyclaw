@@ -4,15 +4,15 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
 use axum::routing::get;
+use axum::Router;
 use tower::ServiceExt;
 
 use skyclaw_agent::AgentRuntime;
+use skyclaw_core::types::config::GatewayConfig;
 use skyclaw_gateway::health::health_handler;
 use skyclaw_gateway::server::AppState;
 use skyclaw_gateway::session::SessionManager;
-use skyclaw_core::types::config::GatewayConfig;
 use skyclaw_test_utils::{MockMemory, MockProvider};
 
 fn make_test_state() -> Arc<AppState> {
@@ -31,6 +31,7 @@ fn make_test_state() -> Arc<AppState> {
         agent,
         config: GatewayConfig::default(),
         sessions: SessionManager::new(),
+        identity: None,
     })
 }
 
@@ -50,7 +51,9 @@ async fn health_endpoint_returns_200_json() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "ok");
     assert!(json["version"].is_string());

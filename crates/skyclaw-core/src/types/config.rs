@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
+
+use super::error::SkyclawError;
 
 /// Top-level SkyClaw configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SkyclawConfig {
     #[serde(default)]
     pub skyclaw: SkyclawSection,
@@ -51,7 +54,9 @@ impl Default for SkyclawSection {
     }
 }
 
-fn default_mode() -> String { "auto".to_string() }
+fn default_mode() -> String {
+    "auto".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
@@ -77,8 +82,12 @@ impl Default for GatewayConfig {
     }
 }
 
-fn default_host() -> String { "127.0.0.1".to_string() }
-fn default_port() -> u16 { 8080 }
+fn default_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_port() -> u16 {
+    8080
+}
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfig {
@@ -93,13 +102,16 @@ impl std::fmt::Debug for ProviderConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderConfig")
             .field("name", &self.name)
-            .field("api_key", &self.api_key.as_ref().map(|k| {
-                if k.len() > 8 {
-                    format!("{}...{}", &k[..4], &k[k.len()-4..])
-                } else {
-                    "***".to_string()
-                }
-            }))
+            .field(
+                "api_key",
+                &self.api_key.as_ref().map(|k| {
+                    if k.len() > 8 {
+                        format!("{}...{}", &k[..4], &k[k.len() - 4..])
+                    } else {
+                        "***".to_string()
+                    }
+                }),
+            )
             .field("model", &self.model)
             .field("base_url", &self.base_url)
             .finish()
@@ -127,7 +139,9 @@ impl Default for MemoryConfig {
     }
 }
 
-fn default_memory_backend() -> String { "sqlite".to_string() }
+fn default_memory_backend() -> String {
+    "sqlite".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchConfig {
@@ -146,8 +160,12 @@ impl Default for SearchConfig {
     }
 }
 
-fn default_vector_weight() -> f32 { 0.7 }
-fn default_keyword_weight() -> f32 { 0.3 }
+fn default_vector_weight() -> f32 {
+    0.7
+}
+fn default_keyword_weight() -> f32 {
+    0.3
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultConfig {
@@ -165,7 +183,9 @@ impl Default for VaultConfig {
     }
 }
 
-fn default_vault_backend() -> String { "local-chacha20".to_string() }
+fn default_vault_backend() -> String {
+    "local-chacha20".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileStoreConfig {
@@ -173,6 +193,7 @@ pub struct FileStoreConfig {
     pub backend: String,
     pub bucket: Option<String>,
     pub region: Option<String>,
+    pub endpoint: Option<String>,
     pub path: Option<String>,
 }
 
@@ -182,12 +203,15 @@ impl Default for FileStoreConfig {
             backend: "local".to_string(),
             bucket: None,
             region: None,
+            endpoint: None,
             path: None,
         }
     }
 }
 
-fn default_filestore_backend() -> String { "local".to_string() }
+fn default_filestore_backend() -> String {
+    "local".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
@@ -215,9 +239,15 @@ impl Default for SecurityConfig {
     }
 }
 
-fn default_sandbox() -> String { "mandatory".to_string() }
-fn default_skill_signing() -> String { "required".to_string() }
-fn default_true() -> bool { true }
+fn default_sandbox() -> String {
+    "mandatory".to_string()
+}
+fn default_skill_signing() -> String {
+    "required".to_string()
+}
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitConfig {
@@ -254,8 +284,12 @@ impl Default for HeartbeatConfig {
     }
 }
 
-fn default_heartbeat_interval() -> String { "30m".to_string() }
-fn default_heartbeat_checklist() -> String { "HEARTBEAT.md".to_string() }
+fn default_heartbeat_interval() -> String {
+    "30m".to_string()
+}
+fn default_heartbeat_checklist() -> String {
+    "HEARTBEAT.md".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronConfig {
@@ -265,11 +299,15 @@ pub struct CronConfig {
 
 impl Default for CronConfig {
     fn default() -> Self {
-        Self { storage: "sqlite".to_string() }
+        Self {
+            storage: "sqlite".to_string(),
+        }
     }
 }
 
-fn default_cron_storage() -> String { "sqlite".to_string() }
+fn default_cron_storage() -> String {
+    "sqlite".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelConfig {
@@ -294,21 +332,49 @@ pub struct AgentConfig {
     /// Maximum number of tool-use rounds per message before forcing a text reply.
     #[serde(default = "default_max_tool_rounds")]
     pub max_tool_rounds: usize,
+    /// Maximum wall-clock seconds for a single task before forcing a text reply.
+    #[serde(default = "default_max_task_duration_secs")]
+    pub max_task_duration_secs: u64,
+    /// Whether to stream incremental text responses to the user (default: true).
+    #[serde(default = "default_true")]
+    pub streaming_enabled: bool,
+    /// Minimum interval (ms) between flushing accumulated streamed tokens (default: 1000).
+    #[serde(default = "default_streaming_flush_interval_ms")]
+    pub streaming_flush_interval_ms: u64,
+    /// Whether to send tool-lifecycle status updates to the user (default: true).
+    #[serde(default = "default_true")]
+    pub streaming_tool_updates: bool,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_turns: 6,
+            max_turns: 200,
             max_context_tokens: 30_000,
-            max_tool_rounds: 25,
+            max_tool_rounds: 200,
+            max_task_duration_secs: 1800,
+            streaming_enabled: true,
+            streaming_flush_interval_ms: 1000,
+            streaming_tool_updates: true,
         }
     }
 }
 
-fn default_max_turns() -> usize { 6 }
-fn default_max_context_tokens() -> usize { 30_000 }
-fn default_max_tool_rounds() -> usize { 25 }
+fn default_max_turns() -> usize {
+    200
+}
+fn default_max_context_tokens() -> usize {
+    30_000
+}
+fn default_max_tool_rounds() -> usize {
+    200
+}
+fn default_max_task_duration_secs() -> u64 {
+    1800
+}
+fn default_streaming_flush_interval_ms() -> u64 {
+    1000
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsConfig {
@@ -365,7 +431,149 @@ impl Default for ObservabilityConfig {
     }
 }
 
-fn default_log_level() -> String { "info".to_string() }
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Agent-Accessible Config — safe subset the agent can read and modify
+// ---------------------------------------------------------------------------
+
+/// Memory settings the agent can adjust (search tuning only).
+/// Backend, path, and connection_string are system-only.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentMemoryConfig {
+    #[serde(default)]
+    pub search: SearchConfig,
+}
+
+/// Observability settings the agent can adjust.
+/// otel_enabled and otel_endpoint are system-only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentObservabilityConfig {
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+}
+
+impl Default for AgentObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            log_level: "info".to_string(),
+        }
+    }
+}
+
+/// Agent-accessible configuration — the safe subset of SkyclawConfig that
+/// the agent can read and modify at runtime without breaking system invariants.
+///
+/// Loaded from `agent-config.toml` and merged onto the master config.
+/// System-critical fields (provider API keys, gateway bind address, channel
+/// tokens, vault keys, security policy, etc.) are NOT exposed here.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentAccessibleConfig {
+    #[serde(default)]
+    pub agent: AgentConfig,
+    #[serde(default)]
+    pub tools: ToolsConfig,
+    #[serde(default)]
+    pub heartbeat: HeartbeatConfig,
+    #[serde(default)]
+    pub memory: AgentMemoryConfig,
+    #[serde(default)]
+    pub observability: AgentObservabilityConfig,
+}
+
+impl AgentAccessibleConfig {
+    /// Extract agent-accessible config from a full SkyclawConfig.
+    pub fn from_master(config: &SkyclawConfig) -> Self {
+        Self {
+            agent: config.agent.clone(),
+            tools: config.tools.clone(),
+            heartbeat: config.heartbeat.clone(),
+            memory: AgentMemoryConfig {
+                search: config.memory.search.clone(),
+            },
+            observability: AgentObservabilityConfig {
+                log_level: config.observability.log_level.clone(),
+            },
+        }
+    }
+
+    /// Apply this agent config onto a master config, overriding only
+    /// the agent-accessible fields. System-critical fields are untouched.
+    pub fn apply_to(&self, config: &mut SkyclawConfig) {
+        config.agent = self.agent.clone();
+        config.tools = self.tools.clone();
+        config.heartbeat = self.heartbeat.clone();
+        config.memory.search = self.memory.search.clone();
+        config.observability.log_level = self.observability.log_level.clone();
+    }
+
+    /// Validate that all values are within acceptable bounds.
+    pub fn validate(&self) -> Result<(), SkyclawError> {
+        if self.agent.max_turns == 0 {
+            return Err(SkyclawError::Config(
+                "agent.max_turns must be > 0".to_string(),
+            ));
+        }
+        if self.agent.max_context_tokens < 1000 {
+            return Err(SkyclawError::Config(
+                "agent.max_context_tokens must be >= 1000".to_string(),
+            ));
+        }
+        if self.agent.max_tool_rounds == 0 {
+            return Err(SkyclawError::Config(
+                "agent.max_tool_rounds must be > 0".to_string(),
+            ));
+        }
+        if self.agent.max_task_duration_secs < 10 {
+            return Err(SkyclawError::Config(
+                "agent.max_task_duration_secs must be >= 10".to_string(),
+            ));
+        }
+
+        if self.memory.search.vector_weight < 0.0 || self.memory.search.keyword_weight < 0.0 {
+            return Err(SkyclawError::Config(
+                "memory.search weights must be non-negative".to_string(),
+            ));
+        }
+        let total = self.memory.search.vector_weight + self.memory.search.keyword_weight;
+        if total <= 0.0 {
+            return Err(SkyclawError::Config(
+                "memory.search weights must sum to > 0".to_string(),
+            ));
+        }
+
+        let valid_levels = ["trace", "debug", "info", "warn", "error"];
+        if !valid_levels.contains(&self.observability.log_level.to_lowercase().as_str()) {
+            return Err(SkyclawError::Config(format!(
+                "observability.log_level must be one of: {}",
+                valid_levels.join(", ")
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Save this agent config to the given path as TOML.
+    pub fn save(&self, path: &Path) -> Result<(), SkyclawError> {
+        self.validate()?;
+
+        let toml_str = toml::to_string_pretty(self)
+            .map_err(|e| SkyclawError::Config(format!("Failed to serialize agent config: {e}")))?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                SkyclawError::Config(format!("Failed to create config directory: {e}"))
+            })?;
+        }
+
+        std::fs::write(path, toml_str)
+            .map_err(|e| SkyclawError::Config(format!("Failed to write agent config: {e}")))?;
+
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -374,14 +582,31 @@ mod tests {
     #[test]
     fn config_serde_roundtrip() {
         let config = SkyclawConfig {
-            skyclaw: SkyclawSection { mode: "cloud".to_string(), tenant_isolation: true },
-            gateway: GatewayConfig { host: "0.0.0.0".to_string(), port: 443, tls: true, tls_cert: Some("cert.pem".to_string()), tls_key: Some("key.pem".to_string()) },
-            provider: ProviderConfig { name: Some("anthropic".to_string()), api_key: Some("sk-test".to_string()), model: Some("claude-sonnet-4-6".to_string()), base_url: None },
+            skyclaw: SkyclawSection {
+                mode: "cloud".to_string(),
+                tenant_isolation: true,
+            },
+            gateway: GatewayConfig {
+                host: "0.0.0.0".to_string(),
+                port: 443,
+                tls: true,
+                tls_cert: Some("cert.pem".to_string()),
+                tls_key: Some("key.pem".to_string()),
+            },
+            provider: ProviderConfig {
+                name: Some("anthropic".to_string()),
+                api_key: Some("sk-test".to_string()),
+                model: Some("claude-sonnet-4-6".to_string()),
+                base_url: None,
+            },
             memory: MemoryConfig::default(),
             vault: VaultConfig::default(),
             filestore: FileStoreConfig::default(),
             security: SecurityConfig::default(),
-            heartbeat: HeartbeatConfig { enabled: true, ..Default::default() },
+            heartbeat: HeartbeatConfig {
+                enabled: true,
+                ..Default::default()
+            },
             cron: CronConfig::default(),
             channel: HashMap::new(),
             agent: AgentConfig::default(),
@@ -418,5 +643,268 @@ mod tests {
         assert!(tools.shell);
         assert!(tools.browser);
         assert!(tools.file);
+
+        let agent = AgentConfig::default();
+        assert_eq!(agent.max_turns, 200);
+        assert_eq!(agent.max_tool_rounds, 200);
+        assert_eq!(agent.max_task_duration_secs, 1800);
+    }
+
+    // ── Agent-Accessible Config tests ─────────────────────────────────
+
+    #[test]
+    fn agent_config_extract_from_master() {
+        let master = SkyclawConfig {
+            agent: AgentConfig {
+                max_turns: 50,
+                max_context_tokens: 20_000,
+                max_tool_rounds: 100,
+                max_task_duration_secs: 600,
+                ..Default::default()
+            },
+            tools: ToolsConfig {
+                shell: true,
+                browser: false,
+                file: true,
+                git: false,
+                cron: false,
+                http: true,
+            },
+            memory: MemoryConfig {
+                backend: "sqlite".to_string(),
+                path: Some("/data/memory.db".to_string()),
+                connection_string: None,
+                search: SearchConfig {
+                    vector_weight: 0.8,
+                    keyword_weight: 0.2,
+                },
+            },
+            observability: ObservabilityConfig {
+                log_level: "debug".to_string(),
+                otel_enabled: true,
+                otel_endpoint: Some("http://otel:4317".to_string()),
+            },
+            ..Default::default()
+        };
+
+        let agent_cfg = AgentAccessibleConfig::from_master(&master);
+        assert_eq!(agent_cfg.agent.max_turns, 50);
+        assert!(!agent_cfg.tools.browser);
+        assert_eq!(agent_cfg.memory.search.vector_weight, 0.8);
+        assert_eq!(agent_cfg.observability.log_level, "debug");
+    }
+
+    #[test]
+    fn agent_config_apply_to_master() {
+        let mut master = SkyclawConfig::default();
+        assert_eq!(master.agent.max_turns, 200);
+        assert_eq!(master.observability.log_level, "info");
+
+        let agent_cfg = AgentAccessibleConfig {
+            agent: AgentConfig {
+                max_turns: 50,
+                max_context_tokens: 15_000,
+                max_tool_rounds: 30,
+                max_task_duration_secs: 300,
+                ..Default::default()
+            },
+            tools: ToolsConfig {
+                shell: false,
+                browser: false,
+                file: true,
+                git: true,
+                cron: false,
+                http: false,
+            },
+            heartbeat: HeartbeatConfig {
+                enabled: true,
+                interval: "10m".to_string(),
+                ..Default::default()
+            },
+            memory: AgentMemoryConfig {
+                search: SearchConfig {
+                    vector_weight: 0.5,
+                    keyword_weight: 0.5,
+                },
+            },
+            observability: AgentObservabilityConfig {
+                log_level: "warn".to_string(),
+            },
+        };
+
+        agent_cfg.apply_to(&mut master);
+
+        // Agent-accessible fields changed
+        assert_eq!(master.agent.max_turns, 50);
+        assert!(!master.tools.shell);
+        assert!(master.heartbeat.enabled);
+        assert_eq!(master.memory.search.vector_weight, 0.5);
+        assert_eq!(master.observability.log_level, "warn");
+
+        // System fields untouched
+        assert_eq!(master.gateway.port, 8080);
+        assert_eq!(master.security.sandbox, "mandatory");
+        assert_eq!(master.memory.backend, "sqlite");
+        assert!(!master.observability.otel_enabled);
+    }
+
+    #[test]
+    fn agent_config_roundtrip_preserves_system_fields() {
+        let master = SkyclawConfig {
+            provider: ProviderConfig {
+                api_key: Some("sk-secret".to_string()),
+                ..Default::default()
+            },
+            gateway: GatewayConfig {
+                port: 9999,
+                ..Default::default()
+            },
+            security: SecurityConfig {
+                sandbox: "strict".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let agent_cfg = AgentAccessibleConfig::from_master(&master);
+        let mut restored = master.clone();
+        agent_cfg.apply_to(&mut restored);
+
+        // System fields preserved exactly
+        assert_eq!(restored.provider.api_key.as_deref(), Some("sk-secret"));
+        assert_eq!(restored.gateway.port, 9999);
+        assert_eq!(restored.security.sandbox, "strict");
+    }
+
+    #[test]
+    fn agent_config_validate_ok() {
+        let cfg = AgentAccessibleConfig::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn agent_config_validate_zero_turns() {
+        let mut cfg = AgentAccessibleConfig::default();
+        cfg.agent.max_turns = 0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn agent_config_validate_low_context_tokens() {
+        let mut cfg = AgentAccessibleConfig::default();
+        cfg.agent.max_context_tokens = 500;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn agent_config_validate_low_task_duration() {
+        let mut cfg = AgentAccessibleConfig::default();
+        cfg.agent.max_task_duration_secs = 5;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn agent_config_validate_negative_weights() {
+        let mut cfg = AgentAccessibleConfig::default();
+        cfg.memory.search.vector_weight = -0.1;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn agent_config_validate_zero_weights() {
+        let mut cfg = AgentAccessibleConfig::default();
+        cfg.memory.search.vector_weight = 0.0;
+        cfg.memory.search.keyword_weight = 0.0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn agent_config_validate_bad_log_level() {
+        let mut cfg = AgentAccessibleConfig::default();
+        cfg.observability.log_level = "verbose".to_string();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn agent_config_save_and_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-config.toml");
+
+        let cfg = AgentAccessibleConfig {
+            agent: AgentConfig {
+                max_turns: 75,
+                max_context_tokens: 25_000,
+                max_tool_rounds: 50,
+                max_task_duration_secs: 900,
+                ..Default::default()
+            },
+            observability: AgentObservabilityConfig {
+                log_level: "debug".to_string(),
+            },
+            ..Default::default()
+        };
+
+        cfg.save(&path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let restored: AgentAccessibleConfig = toml::from_str(&content).unwrap();
+        assert_eq!(restored.agent.max_turns, 75);
+        assert_eq!(restored.observability.log_level, "debug");
+    }
+
+    #[test]
+    fn agent_config_save_rejects_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-config.toml");
+
+        let mut cfg = AgentAccessibleConfig::default();
+        cfg.agent.max_turns = 0;
+        assert!(cfg.save(&path).is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn agent_config_serde_roundtrip() {
+        let cfg = AgentAccessibleConfig {
+            agent: AgentConfig {
+                max_turns: 100,
+                max_context_tokens: 50_000,
+                max_tool_rounds: 150,
+                max_task_duration_secs: 3600,
+                ..Default::default()
+            },
+            tools: ToolsConfig {
+                shell: true,
+                browser: false,
+                file: true,
+                git: true,
+                cron: false,
+                http: true,
+            },
+            heartbeat: HeartbeatConfig {
+                enabled: true,
+                interval: "15m".to_string(),
+                checklist: "HEARTBEAT.md".to_string(),
+                report_to: Some("chat-123".to_string()),
+                active_hours: Some("09:00-18:00".to_string()),
+            },
+            memory: AgentMemoryConfig {
+                search: SearchConfig {
+                    vector_weight: 0.6,
+                    keyword_weight: 0.4,
+                },
+            },
+            observability: AgentObservabilityConfig {
+                log_level: "trace".to_string(),
+            },
+        };
+
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let restored: AgentAccessibleConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(restored.agent.max_turns, 100);
+        assert!(!restored.tools.browser);
+        assert!(restored.heartbeat.enabled);
+        assert_eq!(restored.memory.search.keyword_weight, 0.4);
+        assert_eq!(restored.observability.log_level, "trace");
     }
 }

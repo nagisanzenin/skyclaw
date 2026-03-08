@@ -2,11 +2,12 @@
 
 use async_trait::async_trait;
 use skyclaw_core::types::error::SkyclawError;
-use skyclaw_core::{Tool, ToolContext, ToolDeclarations, ToolInput, ToolOutput, PathAccess};
+use skyclaw_core::{PathAccess, Tool, ToolContext, ToolDeclarations, ToolInput, ToolOutput};
 
 /// Maximum file read size (32 KB — keeps tool output within token budget).
 const MAX_READ_SIZE: usize = 32 * 1024;
 
+#[derive(Default)]
 pub struct FileReadTool;
 
 impl FileReadTool {
@@ -47,8 +48,14 @@ impl Tool for FileReadTool {
         }
     }
 
-    async fn execute(&self, input: ToolInput, ctx: &ToolContext) -> Result<ToolOutput, SkyclawError> {
-        let path_str = input.arguments.get("path")
+    async fn execute(
+        &self,
+        input: ToolInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, SkyclawError> {
+        let path_str = input
+            .arguments
+            .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkyclawError::Tool("Missing required parameter: path".into()))?;
 
@@ -60,7 +67,10 @@ impl Tool for FileReadTool {
                     content.truncate(MAX_READ_SIZE);
                     content.push_str("\n... [file truncated]");
                 }
-                Ok(ToolOutput { content, is_error: false })
+                Ok(ToolOutput {
+                    content,
+                    is_error: false,
+                })
             }
             Err(e) => Ok(ToolOutput {
                 content: format!("Failed to read file '{}': {}", path_str, e),
@@ -70,6 +80,7 @@ impl Tool for FileReadTool {
     }
 }
 
+#[derive(Default)]
 pub struct FileWriteTool;
 
 impl FileWriteTool {
@@ -115,12 +126,20 @@ impl Tool for FileWriteTool {
         }
     }
 
-    async fn execute(&self, input: ToolInput, ctx: &ToolContext) -> Result<ToolOutput, SkyclawError> {
-        let path_str = input.arguments.get("path")
+    async fn execute(
+        &self,
+        input: ToolInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, SkyclawError> {
+        let path_str = input
+            .arguments
+            .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkyclawError::Tool("Missing required parameter: path".into()))?;
 
-        let content = input.arguments.get("content")
+        let content = input
+            .arguments
+            .get("content")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkyclawError::Tool("Missing required parameter: content".into()))?;
 
@@ -149,6 +168,7 @@ impl Tool for FileWriteTool {
     }
 }
 
+#[derive(Default)]
 pub struct FileListTool;
 
 impl FileListTool {
@@ -189,8 +209,14 @@ impl Tool for FileListTool {
         }
     }
 
-    async fn execute(&self, input: ToolInput, ctx: &ToolContext) -> Result<ToolOutput, SkyclawError> {
-        let path_str = input.arguments.get("path")
+    async fn execute(
+        &self,
+        input: ToolInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, SkyclawError> {
+        let path_str = input
+            .arguments
+            .get("path")
             .and_then(|v| v.as_str())
             .unwrap_or(".");
 

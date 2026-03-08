@@ -17,7 +17,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/nagisanzenin/skyclaw"
@@ -51,6 +51,7 @@ poise = "0.6"
 
 # Crypto
 chacha20poly1305 = "0.10"
+sha2 = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 ed25519-dalek = { version = "2", features = ["serde"] }
 rand = "0.8"

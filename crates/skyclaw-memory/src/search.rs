@@ -201,7 +201,12 @@ mod tests {
     #[ignore] // Performance test: may take >1s on slow hardware
     fn test_search_1000_entries_performance() {
         let entries: Vec<MemoryEntry> = (0..1000)
-            .map(|i| make_entry(&format!("e{i}"), &format!("Entry number {i} with some content about Rust and programming")))
+            .map(|i| {
+                make_entry(
+                    &format!("e{i}"),
+                    &format!("Entry number {i} with some content about Rust and programming"),
+                )
+            })
             .collect();
 
         let start = std::time::Instant::now();
@@ -209,6 +214,10 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(!results.is_empty());
-        assert!(elapsed.as_millis() < 50, "Search took {}ms, expected <50ms", elapsed.as_millis());
+        assert!(
+            elapsed.as_millis() < 50,
+            "Search took {}ms, expected <50ms",
+            elapsed.as_millis()
+        );
     }
 }

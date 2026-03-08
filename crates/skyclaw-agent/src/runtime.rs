@@ -2,20 +2,29 @@
 //! provider, executing tool calls in a loop until a final text reply.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use skyclaw_core::{Memory, Provider, Tool};
+use base64::Engine;
 use skyclaw_core::types::error::SkyclawError;
 use skyclaw_core::types::message::{
-    ChatMessage, ContentPart, InboundMessage, MessageContent,
-    OutboundMessage, ParseMode, Role,
+    ChatMessage, ContentPart, InboundMessage, MessageContent, OutboundMessage, ParseMode, Role,
 };
 use skyclaw_core::types::session::SessionContext;
+use skyclaw_core::{Memory, Provider, Tool};
 use tracing::{debug, info, warn};
 
+/// Image MIME types that vision-capable models can process.
+const IMAGE_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
+
+use crate::circuit_breaker::CircuitBreaker;
 use crate::context::build_context;
+use crate::done_criteria::{self, DoneCriteria};
 use crate::executor::execute_tool;
+use crate::learning;
+use crate::self_correction::FailureTracker;
+use crate::task_queue::TaskQueue;
 
 /// Maximum characters per tool output (roughly ~8K tokens).
 const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
@@ -34,6 +43,14 @@ pub struct AgentRuntime {
     max_turns: usize,
     max_context_tokens: usize,
     max_tool_rounds: usize,
+    max_task_duration: Duration,
+    circuit_breaker: CircuitBreaker,
+    /// Whether post-action verification hints are injected into tool results.
+    verification_enabled: bool,
+    /// Number of consecutive tool failures before triggering strategy rotation.
+    max_consecutive_failures: usize,
+    /// Optional persistent task queue for checkpointing (None = no persistence).
+    task_queue: Option<Arc<TaskQueue>>,
 }
 
 impl AgentRuntime {
@@ -51,13 +68,19 @@ impl AgentRuntime {
             tools,
             model,
             system_prompt,
-            max_turns: 6,
+            max_turns: 200,
             max_context_tokens: 30_000,
-            max_tool_rounds: 50,
+            max_tool_rounds: 200,
+            max_task_duration: Duration::from_secs(1800),
+            circuit_breaker: CircuitBreaker::default(),
+            verification_enabled: true,
+            max_consecutive_failures: 2,
+            task_queue: None,
         }
     }
 
     /// Create a new AgentRuntime with custom context limits.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_limits(
         provider: Arc<dyn Provider>,
         memory: Arc<dyn Memory>,
@@ -67,6 +90,7 @@ impl AgentRuntime {
         max_turns: usize,
         max_context_tokens: usize,
         max_tool_rounds: usize,
+        max_task_duration_secs: u64,
     ) -> Self {
         Self {
             provider,
@@ -77,7 +101,18 @@ impl AgentRuntime {
             max_turns,
             max_context_tokens,
             max_tool_rounds,
+            max_task_duration: Duration::from_secs(max_task_duration_secs),
+            circuit_breaker: CircuitBreaker::default(),
+            verification_enabled: true,
+            max_consecutive_failures: 2,
+            task_queue: None,
         }
+    }
+
+    /// Set the persistent task queue for checkpointing.
+    pub fn with_task_queue(mut self, task_queue: Arc<TaskQueue>) -> Self {
+        self.task_queue = Some(task_queue);
+        self
     }
 
     /// Process an inbound message through the full agent loop.
@@ -105,17 +140,22 @@ impl AgentRuntime {
         let user_text = match (&msg.text, msg.attachments.is_empty()) {
             (Some(t), _) if !t.trim().is_empty() => t.clone(),
             (_, false) => {
-                let descs: Vec<String> = msg.attachments.iter().map(|a| {
-                    let name = a.file_name.as_deref().unwrap_or("file");
-                    let mime = a.mime_type.as_deref().unwrap_or("unknown type");
-                    format!("[Attached: {} ({})]", name, mime)
-                }).collect();
+                let descs: Vec<String> = msg
+                    .attachments
+                    .iter()
+                    .map(|a| {
+                        let name = a.file_name.as_deref().unwrap_or("file");
+                        let mime = a.mime_type.as_deref().unwrap_or("unknown type");
+                        format!("[Attached: {} ({})]", name, mime)
+                    })
+                    .collect();
                 descs.join(" ")
             }
             _ => {
                 return Ok(OutboundMessage {
                     chat_id: msg.chat_id.clone(),
-                    text: "I received an empty message. Please send some text or a file.".to_string(),
+                    text: "I received an empty message. Please send some text or a file."
+                        .to_string(),
                     reply_to: Some(msg.id.clone()),
                     parse_mode: None,
                 });
@@ -136,13 +176,107 @@ impl AgentRuntime {
             }
         }
 
+        // ── Vision: load image attachments ──────────────────────────
+        // If the inbound message has image attachments, read them from the
+        // workspace, base64-encode, and include as Image content parts so
+        // the LLM can see them.
+        let mut image_parts: Vec<ContentPart> = Vec::new();
+        for att in &msg.attachments {
+            let mime = att.mime_type.as_deref().unwrap_or("");
+            if !IMAGE_MIME_TYPES.contains(&mime) {
+                continue;
+            }
+            let file_name = match &att.file_name {
+                Some(n) => n.clone(),
+                None => continue,
+            };
+            let file_path = session.workspace_path.join(&file_name);
+            match tokio::fs::read(&file_path).await {
+                Ok(data) => {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+                    info!(
+                        file = %file_name,
+                        mime = %mime,
+                        size_bytes = data.len(),
+                        "Loaded image attachment for vision"
+                    );
+                    image_parts.push(ContentPart::Image {
+                        media_type: mime.to_string(),
+                        data: encoded,
+                    });
+                }
+                Err(e) => {
+                    warn!(
+                        file = %file_name,
+                        error = %e,
+                        "Failed to read image attachment from workspace"
+                    );
+                }
+            }
+        }
+
         // Append the user message to session history
-        session.history.push(ChatMessage {
-            role: Role::User,
-            content: MessageContent::Text(user_text),
-        });
+        // If we have image parts, use Parts content; otherwise plain text.
+        if image_parts.is_empty() {
+            session.history.push(ChatMessage {
+                role: Role::User,
+                content: MessageContent::Text(user_text.clone()),
+            });
+        } else {
+            let mut parts = vec![ContentPart::Text {
+                text: user_text.clone(),
+            }];
+            parts.extend(image_parts);
+            session.history.push(ChatMessage {
+                role: Role::User,
+                content: MessageContent::Parts(parts),
+            });
+        }
+
+        // ── DONE Definition Engine ─────────────────────────────────
+        // Detect compound tasks and inject a DONE criteria prompt so
+        // the LLM articulates verifiable completion conditions.
+        let is_compound = done_criteria::is_compound_task(&user_text);
+        let mut _done_criteria = DoneCriteria::new();
+
+        if is_compound {
+            info!("Compound task detected — injecting DONE criteria prompt");
+            let done_prompt = done_criteria::format_done_prompt(&user_text);
+            session.history.push(ChatMessage {
+                role: Role::System,
+                content: MessageContent::Text(done_prompt),
+            });
+        }
+
+        // ── Persistent Task Queue ──────────────────────────────────
+        // Create a task entry if the queue is available.
+        let task_id = if let Some(ref tq) = self.task_queue {
+            match tq.create_task(&msg.chat_id, &user_text).await {
+                Ok(id) => {
+                    info!(task_id = %id, "Task created in persistent queue");
+                    if let Err(e) = tq
+                        .update_status(&id, crate::task_queue::TaskStatus::Running)
+                        .await
+                    {
+                        warn!(error = %e, "Failed to update task status to Running");
+                    }
+                    Some(id)
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to create task in queue — continuing without persistence");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // ── Self-Correction Engine ─────────────────────────────────
+        // Track consecutive tool failures per tool name.
+        let mut failure_tracker = FailureTracker::new(self.max_consecutive_failures);
 
         // Tool-use loop
+        let task_start = Instant::now();
         let mut rounds = 0;
         let mut interrupted = false;
         loop {
@@ -151,14 +285,29 @@ impl AgentRuntime {
             // Check for preemption between rounds
             if let Some(ref flag) = interrupt {
                 if flag.load(Ordering::Relaxed) {
-                    info!("Agent interrupted by higher-priority message after {} rounds", rounds - 1);
+                    info!(
+                        "Agent interrupted by higher-priority message after {} rounds",
+                        rounds - 1
+                    );
                     interrupted = true;
                     break;
                 }
             }
 
+            if task_start.elapsed() > self.max_task_duration {
+                warn!(
+                    elapsed_secs = task_start.elapsed().as_secs(),
+                    limit_secs = self.max_task_duration.as_secs(),
+                    "Task duration exceeded limit, forcing text reply"
+                );
+                break;
+            }
+
             if rounds > self.max_tool_rounds {
-                warn!("Exceeded maximum tool rounds ({}), forcing text reply", self.max_tool_rounds);
+                warn!(
+                    "Exceeded maximum tool rounds ({}), forcing text reply",
+                    self.max_tool_rounds
+                );
                 break;
             }
 
@@ -174,10 +323,33 @@ impl AgentRuntime {
             )
             .await;
 
-            debug!(round = rounds, messages = request.messages.len(), "Sending completion request");
+            debug!(
+                round = rounds,
+                messages = request.messages.len(),
+                "Sending completion request"
+            );
 
-            // Call the provider
-            let response = self.provider.complete(request).await?;
+            // Check circuit breaker before calling provider
+            if !self.circuit_breaker.can_execute() {
+                warn!("Circuit breaker is open — provider appears to be down");
+                return Ok(OutboundMessage {
+                    chat_id: msg.chat_id.clone(),
+                    text: "The AI provider is currently unavailable. I'll retry automatically when it recovers.".to_string(),
+                    reply_to: Some(msg.id.clone()),
+                    parse_mode: Some(ParseMode::Plain),
+                });
+            }
+
+            let response = match self.provider.complete(request).await {
+                Ok(resp) => {
+                    self.circuit_breaker.record_success();
+                    resp
+                }
+                Err(e) => {
+                    self.circuit_breaker.record_failure();
+                    return Err(e);
+                }
+            };
 
             // Separate text content from tool-use content
             let mut text_parts: Vec<String> = Vec::new();
@@ -191,7 +363,7 @@ impl AgentRuntime {
                     ContentPart::ToolUse { id, name, input } => {
                         tool_uses.push((id.clone(), name.clone(), input.clone()));
                     }
-                    ContentPart::ToolResult { .. } => {
+                    ContentPart::ToolResult { .. } | ContentPart::Image { .. } => {
                         // Should not appear in provider response, ignore
                     }
                 }
@@ -199,13 +371,61 @@ impl AgentRuntime {
 
             // If no tool calls, we have our final reply
             if tool_uses.is_empty() {
-                let reply_text = text_parts.join("\n");
+                let mut reply_text = text_parts.join("\n");
+
+                // For compound tasks, append a DONE verification reminder
+                // so the LLM checks its criteria before responding.
+                if is_compound {
+                    let verification = done_criteria::format_verification_prompt(&_done_criteria);
+                    if !verification.is_empty() {
+                        reply_text.push_str(&verification);
+                    }
+                }
 
                 // Record assistant reply in history
                 session.history.push(ChatMessage {
                     role: Role::Assistant,
                     content: MessageContent::Text(reply_text.clone()),
                 });
+
+                // ── Cross-Task Learning ──────────────────────────────
+                // Extract learnings from the completed conversation and
+                // persist them to memory for future context injection.
+                let learnings = learning::extract_learnings(&session.history);
+                for l in &learnings {
+                    let learning_json = serde_json::to_string(l).unwrap_or_default();
+                    let entry = skyclaw_core::MemoryEntry {
+                        id: format!("learning:{}", uuid::Uuid::new_v4()),
+                        content: learning_json,
+                        metadata: serde_json::json!({
+                            "type": "learning",
+                            "task_type": l.task_type,
+                            "outcome": format!("{:?}", l.outcome),
+                        }),
+                        timestamp: chrono::Utc::now(),
+                        session_id: Some(session.session_id.clone()),
+                        entry_type: skyclaw_core::MemoryEntryType::LongTerm,
+                    };
+                    if let Err(e) = self.memory.store(entry).await {
+                        debug!(error = %e, "Failed to persist task learning");
+                    } else {
+                        debug!(
+                            task_type = %l.task_type,
+                            outcome = ?l.outcome,
+                            "Persisted task learning"
+                        );
+                    }
+                }
+
+                // ── Task Queue: mark completed ───────────────────────
+                if let (Some(ref tq), Some(ref tid)) = (&self.task_queue, &task_id) {
+                    if let Err(e) = tq
+                        .update_status(tid, crate::task_queue::TaskStatus::Completed)
+                        .await
+                    {
+                        debug!(error = %e, "Failed to mark task completed");
+                    }
+                }
 
                 return Ok(OutboundMessage {
                     chat_id: msg.chat_id.clone(),
@@ -229,11 +449,15 @@ impl AgentRuntime {
 
                 let result = execute_tool(tool_name, arguments.clone(), &self.tools, session).await;
 
-                let (content, is_error) = match result {
+                let (mut content, is_error) = match result {
                     Ok(output) => {
                         let c = if output.content.len() > MAX_TOOL_OUTPUT_CHARS {
                             let truncated = &output.content[..MAX_TOOL_OUTPUT_CHARS];
-                            format!("{}...\n\n[Output truncated — {} chars total]", truncated, output.content.len())
+                            format!(
+                                "{}...\n\n[Output truncated — {} chars total]",
+                                truncated,
+                                output.content.len()
+                            )
                         } else {
                             output.content
                         };
@@ -241,6 +465,31 @@ impl AgentRuntime {
                     }
                     Err(e) => (format!("Tool execution error: {}", e), true),
                 };
+
+                // ── Self-Correction: track failures and inject strategy rotation ──
+                if is_error {
+                    failure_tracker.record_failure(tool_name, &content);
+                    debug!(
+                        tool = %tool_name,
+                        consecutive_failures = failure_tracker.failure_count(tool_name),
+                        "Tool failure recorded"
+                    );
+
+                    // If the tool has exceeded the failure threshold, append
+                    // a strategy rotation prompt to guide the LLM away from
+                    // the broken approach.
+                    if let Some(rotation_prompt) = failure_tracker.format_rotation_prompt(tool_name)
+                    {
+                        info!(
+                            tool = %tool_name,
+                            failures = failure_tracker.failure_count(tool_name),
+                            "Strategy rotation triggered"
+                        );
+                        content.push_str(&rotation_prompt);
+                    }
+                } else {
+                    failure_tracker.record_success(tool_name);
+                }
 
                 tool_result_parts.push(ContentPart::ToolResult {
                     tool_use_id: tool_use_id.clone(),
@@ -280,11 +529,38 @@ impl AgentRuntime {
                 }
             }
 
+            // ── Verification Engine ────────────────────────────────
+            // Append a verification hint to the last tool result so the
+            // LLM reviews outputs before proceeding. This is a zero-cost
+            // prompt injection — no extra API call.
+            if self.verification_enabled {
+                if let Some(ContentPart::ToolResult { content, .. }) = tool_result_parts.last_mut()
+                {
+                    content.push_str(
+                        "\n\n[VERIFICATION REQUIRED] Review the tool output(s) above. Before proceeding:\n\
+                         1. Did the action succeed? What evidence confirms this?\n\
+                         2. If it failed, what went wrong? Do NOT retry the same approach.\n\
+                         3. If uncertain, use a tool to verify (e.g., check file exists, read output, test endpoint)."
+                    );
+                }
+            }
+
             // Append tool results as a Tool message in history
             session.history.push(ChatMessage {
                 role: Role::Tool,
                 content: MessageContent::Parts(tool_result_parts),
             });
+
+            // ── Task Queue Checkpoint ────────────────────────────────
+            // After each successful tool round, checkpoint the session state
+            // so it can be resumed if the process restarts.
+            if let (Some(ref tq), Some(ref tid)) = (&self.task_queue, &task_id) {
+                if let Ok(checkpoint_json) = serde_json::to_string(&session.history) {
+                    if let Err(e) = tq.checkpoint(tid, &checkpoint_json).await {
+                        debug!(error = %e, "Failed to checkpoint task — continuing");
+                    }
+                }
+            }
 
             // Continue the loop — provider will see the tool results and may
             // issue more tool calls or produce a final text reply.
@@ -292,7 +568,8 @@ impl AgentRuntime {
 
         // Fallback: exited loop due to interruption or max rounds
         let text = if interrupted {
-            "I was interrupted to handle a new message. I'll pick up where I left off if needed.".to_string()
+            "I was interrupted to handle a new message. I'll pick up where I left off if needed."
+                .to_string()
         } else {
             "I reached the maximum number of tool execution steps. Here is what I have so far. Please let me know if you need me to continue.".to_string()
         };
@@ -318,5 +595,35 @@ impl AgentRuntime {
     /// Get the registered tools.
     pub fn tools(&self) -> &[Arc<dyn Tool>] {
         &self.tools
+    }
+
+    /// Get the task queue, if configured.
+    pub fn task_queue(&self) -> Option<&TaskQueue> {
+        self.task_queue.as_deref()
+    }
+
+    /// Get the model name.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Get the maximum number of conversation turns.
+    pub fn max_turns(&self) -> usize {
+        self.max_turns
+    }
+
+    /// Get the maximum context token count.
+    pub fn max_context_tokens(&self) -> usize {
+        self.max_context_tokens
+    }
+
+    /// Get the maximum number of tool rounds per message.
+    pub fn max_tool_rounds(&self) -> usize {
+        self.max_tool_rounds
+    }
+
+    /// Get the maximum task duration.
+    pub fn max_task_duration(&self) -> Duration {
+        self.max_task_duration
     }
 }

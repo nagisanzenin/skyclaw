@@ -1,6 +1,6 @@
+use crate::types::error::SkyclawError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use crate::types::error::SkyclawError;
 
 /// A single memory entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +50,8 @@ pub trait Memory: Send + Sync {
     async fn store(&self, entry: MemoryEntry) -> Result<(), SkyclawError>;
 
     /// Hybrid search: vector similarity + keyword matching
-    async fn search(&self, query: &str, opts: SearchOpts) -> Result<Vec<MemoryEntry>, SkyclawError>;
+    async fn search(&self, query: &str, opts: SearchOpts)
+        -> Result<Vec<MemoryEntry>, SkyclawError>;
 
     /// Get a specific memory entry by ID
     async fn get(&self, id: &str) -> Result<Option<MemoryEntry>, SkyclawError>;
@@ -62,7 +63,11 @@ pub trait Memory: Send + Sync {
     async fn list_sessions(&self) -> Result<Vec<String>, SkyclawError>;
 
     /// Get conversation history for a session
-    async fn get_session_history(&self, session_id: &str, limit: usize) -> Result<Vec<MemoryEntry>, SkyclawError>;
+    async fn get_session_history(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>, SkyclawError>;
 
     /// Backend name (e.g., "sqlite", "postgres", "markdown")
     fn backend_name(&self) -> &str;

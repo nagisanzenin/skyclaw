@@ -1,17 +1,31 @@
-use async_trait::async_trait;
 use crate::types::error::SkyclawError;
+use async_trait::async_trait;
 
 /// Observable trait — monitoring, logging, and metrics
 #[async_trait]
 pub trait Observable: Send + Sync {
     /// Record a metric
-    async fn record_metric(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), SkyclawError>;
+    async fn record_metric(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &[(&str, &str)],
+    ) -> Result<(), SkyclawError>;
 
     /// Record a counter increment
-    async fn increment_counter(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), SkyclawError>;
+    async fn increment_counter(
+        &self,
+        name: &str,
+        labels: &[(&str, &str)],
+    ) -> Result<(), SkyclawError>;
 
     /// Record a histogram observation
-    async fn observe_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), SkyclawError>;
+    async fn observe_histogram(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &[(&str, &str)],
+    ) -> Result<(), SkyclawError>;
 
     /// Report health status
     async fn health_status(&self) -> Result<HealthStatus, SkyclawError>;

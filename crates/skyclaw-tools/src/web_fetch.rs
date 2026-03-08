@@ -14,6 +14,12 @@ pub struct WebFetchTool {
     client: reqwest::Client,
 }
 
+impl Default for WebFetchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WebFetchTool {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
@@ -64,8 +70,14 @@ impl Tool for WebFetchTool {
         }
     }
 
-    async fn execute(&self, input: ToolInput, _ctx: &ToolContext) -> Result<ToolOutput, SkyclawError> {
-        let url = input.arguments.get("url")
+    async fn execute(
+        &self,
+        input: ToolInput,
+        _ctx: &ToolContext,
+    ) -> Result<ToolOutput, SkyclawError> {
+        let url = input
+            .arguments
+            .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkyclawError::Tool("Missing required parameter: url".into()))?;
 

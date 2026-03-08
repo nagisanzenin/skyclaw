@@ -4044,7 +4044,7 @@ dependencies = [
 
 [[package]]
 name = "skyclaw"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4070,23 +4070,28 @@ dependencies = [
 
 [[package]]
 name = "skyclaw-agent"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "async-trait",
+ "base64",
  "chrono",
  "futures",
+ "serde",
  "serde_json",
  "skyclaw-core",
  "skyclaw-test-utils",
  "skyclaw-vault",
+ "sqlx",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "skyclaw-automation"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "skyclaw-core",
@@ -4097,7 +4102,7 @@ dependencies = [
 
 [[package]]
 name = "skyclaw-channels"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4122,7 +4127,7 @@ dependencies = [
 
 [[package]]
 name = "skyclaw-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4135,34 +4140,46 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tokio-stream",
  "toml",
+ "tracing",
  "url",
  "uuid",
 ]
 
 [[package]]
 name = "skyclaw-filestore"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "async-trait",
  "aws-config",
  "aws-sdk-s3",
  "bytes",
  "futures",
+ "serde",
  "skyclaw-core",
+ "skyclaw-test-utils",
+ "tempfile",
  "tokio",
+ "toml",
  "tracing",
 ]
 
 [[package]]
 name = "skyclaw-gateway"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "async-trait",
  "axum",
+ "base64",
  "chrono",
+ "rand 0.8.5",
+ "reqwest",
  "rustls 0.23.37",
  "serde",
  "serde_json",
+ "sha2",
  "skyclaw-agent",
  "skyclaw-core",
  "skyclaw-test-utils",
@@ -4171,11 +4188,13 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]
 name = "skyclaw-memory"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4193,11 +4212,13 @@ dependencies = [
 
 [[package]]
 name = "skyclaw-observable"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "async-trait",
  "opentelemetry",
  "serde_json",
  "skyclaw-core",
+ "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -4205,7 +4226,7 @@ dependencies = [
 
 [[package]]
 name = "skyclaw-providers"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -4220,18 +4241,20 @@ dependencies = [
 
 [[package]]
 name = "skyclaw-skills"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "dirs",
  "serde",
  "serde_yaml",
  "skyclaw-core",
+ "tempfile",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "skyclaw-test-utils"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4246,7 +4269,7 @@ dependencies = [
 
 [[package]]
 name = "skyclaw-tools"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4263,7 +4286,7 @@ dependencies = [
 
 [[package]]
 name = "skyclaw-vault"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "base64",

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use clap::{Parser, Subcommand};
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 use skyclaw_core::Channel;
 use tokio::sync::Mutex;
 
@@ -163,38 +163,108 @@ fn is_stop_command(text: &str) -> bool {
     let t = text.trim().to_lowercase();
     const STOP_WORDS: &[&str] = &[
         // English
-        "stop", "cancel", "abort", "quit", "halt", "enough",
+        "stop",
+        "cancel",
+        "abort",
+        "quit",
+        "halt",
+        "enough",
         // Vietnamese
-        "dừng", "dung", "thôi", "thoi", "ngừng", "ngung",
-        "hủy", "huy", "dẹp", "dep",
+        "dừng",
+        "dung",
+        "thôi",
+        "thoi",
+        "ngừng",
+        "ngung",
+        "hủy",
+        "huy",
+        "dẹp",
+        "dep",
         // Spanish
-        "para", "detente", "basta", "cancela", "alto",
+        "para",
+        "detente",
+        "basta",
+        "cancela",
+        "alto",
         // French
-        "arrête", "arrete", "arrêter", "arreter", "annuler", "suffit",
+        "arrête",
+        "arrete",
+        "arrêter",
+        "arreter",
+        "annuler",
+        "suffit",
         // German
-        "stopp", "aufhören", "aufhoren", "abbrechen", "genug",
+        "stopp",
+        "aufhören",
+        "aufhoren",
+        "abbrechen",
+        "genug",
         // Portuguese
-        "pare", "parar", "cancele", "cancelar", "chega",
+        "pare",
+        "parar",
+        "cancele",
+        "cancelar",
+        "chega",
         // Italian
-        "ferma", "fermati", "basta", "annulla", "smettila",
+        "ferma",
+        "fermati",
+        "basta",
+        "annulla",
+        "smettila",
         // Russian
-        "стоп", "стой", "хватит", "отмена", "довольно",
+        "стоп",
+        "стой",
+        "хватит",
+        "отмена",
+        "довольно",
         // Japanese
-        "止めて", "やめて", "やめろ", "ストップ", "止め", "やめ",
+        "止めて",
+        "やめて",
+        "やめろ",
+        "ストップ",
+        "止め",
+        "やめ",
         // Korean
-        "멈춰", "그만", "중지", "취소", "됐어",
+        "멈춰",
+        "그만",
+        "중지",
+        "취소",
+        "됐어",
         // Chinese
-        "停", "停止", "取消", "别说了", "够了", "算了",
+        "停",
+        "停止",
+        "取消",
+        "别说了",
+        "够了",
+        "算了",
         // Arabic
-        "توقف", "الغاء", "كفى", "قف",
+        "توقف",
+        "الغاء",
+        "كفى",
+        "قف",
         // Thai
-        "หยุด", "ยกเลิก", "พอ", "เลิก",
+        "หยุด",
+        "ยกเลิก",
+        "พอ",
+        "เลิก",
         // Indonesian / Malay
-        "berhenti", "hentikan", "batalkan", "cukup", "sudah",
+        "berhenti",
+        "hentikan",
+        "batalkan",
+        "cukup",
+        "sudah",
         // Hindi
-        "रुको", "बंद", "रद्द", "बस", "ruko", "bas",
+        "रुको",
+        "बंद",
+        "रद्द",
+        "बस",
+        "ruko",
+        "bas",
         // Turkish
-        "dur", "durdur", "iptal", "yeter",
+        "dur",
+        "durdur",
+        "iptal",
+        "yeter",
     ];
 
     if STOP_WORDS.contains(&t.as_str()) {
@@ -203,18 +273,41 @@ fn is_stop_command(text: &str) -> bool {
 
     if t.len() <= 60 {
         const STOP_PHRASES: &[&str] = &[
-            "stop it", "stop that", "please stop", "stop now",
-            "cancel that", "shut up",
-            "dừng lại", "dung lai", "thôi đi", "thoi di",
-            "dừng đi", "dung di", "ngừng lại", "ngung lai",
-            "dung viet", "dừng viết", "thoi dung", "thôi dừng",
-            "đừng nói nữa", "dung noi nua", "im đi", "im di",
-            "para ya", "deja de",
-            "arrête ça", "arrete ca",
-            "hör auf", "hor auf",
-            "止めてください", "やめてください",
-            "停下来", "不要说了", "别说了",
-            "그만해", "멈춰줘",
+            "stop it",
+            "stop that",
+            "please stop",
+            "stop now",
+            "cancel that",
+            "shut up",
+            "dừng lại",
+            "dung lai",
+            "thôi đi",
+            "thoi di",
+            "dừng đi",
+            "dung di",
+            "ngừng lại",
+            "ngung lai",
+            "dung viet",
+            "dừng viết",
+            "thoi dung",
+            "thôi dừng",
+            "đừng nói nữa",
+            "dung noi nua",
+            "im đi",
+            "im di",
+            "para ya",
+            "deja de",
+            "arrête ça",
+            "arrete ca",
+            "hör auf",
+            "hor auf",
+            "止めてください",
+            "やめてください",
+            "停下来",
+            "不要说了",
+            "别说了",
+            "그만해",
+            "멈춰줘",
         ];
 
         for phrase in STOP_PHRASES {
@@ -255,9 +348,15 @@ async fn main() -> Result<()> {
             let credentials: Option<(String, String, String)> = {
                 if let Some(ref key) = config.provider.api_key {
                     if !key.is_empty() && !key.starts_with("${") {
-                        let name = config.provider.name.clone()
+                        let name = config
+                            .provider
+                            .name
+                            .clone()
                             .unwrap_or_else(|| "anthropic".to_string());
-                        let model = config.provider.model.clone()
+                        let model = config
+                            .provider
+                            .model
+                            .clone()
                             .unwrap_or_else(|| default_model(&name).to_string());
                         Some((name, key.clone(), model))
                     } else {
@@ -277,14 +376,16 @@ async fn main() -> Result<()> {
                 format!("sqlite:{}/memory.db?mode=rwc", data_dir.display())
             });
             let memory: Arc<dyn skyclaw_core::Memory> = Arc::from(
-                skyclaw_memory::create_memory_backend(&config.memory.backend, &memory_url).await?
+                skyclaw_memory::create_memory_backend(&config.memory.backend, &memory_url).await?,
             );
             tracing::info!(backend = %config.memory.backend, "Memory initialized");
 
             // ── Telegram channel ───────────────────────────────
             let mut channels: Vec<Arc<dyn skyclaw_core::Channel>> = Vec::new();
             let mut primary_channel: Option<Arc<dyn skyclaw_core::Channel>> = None;
-            let mut tg_rx: Option<tokio::sync::mpsc::Receiver<skyclaw_core::types::message::InboundMessage>> = None;
+            let mut tg_rx: Option<
+                tokio::sync::mpsc::Receiver<skyclaw_core::types::message::InboundMessage>,
+            > = None;
 
             if let Some(tg_config) = config.channel.get("telegram") {
                 if tg_config.enabled {
@@ -323,9 +424,8 @@ async fn main() -> Result<()> {
                     model: Some(model.clone()),
                     base_url: config.provider.base_url.clone(),
                 };
-                let provider: Arc<dyn skyclaw_core::Provider> = Arc::from(
-                    skyclaw_providers::create_provider(&provider_config)?
-                );
+                let provider: Arc<dyn skyclaw_core::Provider> =
+                    Arc::from(skyclaw_providers::create_provider(&provider_config)?);
                 let agent = Arc::new(skyclaw_agent::AgentRuntime::with_limits(
                     provider.clone(),
                     memory.clone(),
@@ -335,6 +435,7 @@ async fn main() -> Result<()> {
                     config.agent.max_turns,
                     config.agent.max_context_tokens,
                     config.agent.max_tool_rounds,
+                    config.agent.max_task_duration_secs,
                 ));
                 *agent_state.write().await = Some(agent);
                 tracing::info!(provider = %pname, model = %model, "Agent initialized");
@@ -343,14 +444,17 @@ async fn main() -> Result<()> {
             }
 
             // ── Unified message channel ────────────────────────
-            let (msg_tx, mut msg_rx) = tokio::sync::mpsc::channel::<skyclaw_core::types::message::InboundMessage>(32);
+            let (msg_tx, mut msg_rx) =
+                tokio::sync::mpsc::channel::<skyclaw_core::types::message::InboundMessage>(32);
 
             // Wire Telegram messages into the unified channel
             if let Some(mut tg_rx) = tg_rx {
                 let tx = msg_tx.clone();
                 tokio::spawn(async move {
                     while let Some(msg) = tg_rx.recv().await {
-                        if tx.send(msg).await.is_err() { break; }
+                        if tx.send(msg).await.is_err() {
+                            break;
+                        }
                     }
                 });
             }
@@ -364,7 +468,10 @@ async fn main() -> Result<()> {
 
             // ── Heartbeat ──────────────────────────────────────
             if config.heartbeat.enabled {
-                let heartbeat_chat_id = config.heartbeat.report_to.clone()
+                let heartbeat_chat_id = config
+                    .heartbeat
+                    .report_to
+                    .clone()
                     .unwrap_or_else(|| "heartbeat".to_string());
                 let runner = skyclaw_automation::HeartbeatRunner::new(
                     config.heartbeat.clone(),
@@ -399,6 +506,7 @@ async fn main() -> Result<()> {
                 let agent_max_turns = config.agent.max_turns;
                 let agent_max_context_tokens = config.agent.max_context_tokens;
                 let agent_max_tool_rounds = config.agent.max_tool_rounds;
+                let agent_max_task_duration = config.agent.max_task_duration_secs;
                 let provider_base_url = config.provider.base_url.clone();
                 let ws_path = workspace_path.clone();
                 let pending_clone = pending_messages.clone();
@@ -424,7 +532,9 @@ async fn main() -> Result<()> {
                                     slot.interrupt.store(true, Ordering::Relaxed);
                                 }
 
-                                let is_stop = inbound.text.as_deref()
+                                let is_stop = inbound
+                                    .text
+                                    .as_deref()
                                     .map(is_stop_command)
                                     .unwrap_or(false);
 
@@ -475,6 +585,7 @@ async fn main() -> Result<()> {
                             let max_turns = agent_max_turns;
                             let max_ctx = agent_max_context_tokens;
                             let max_rounds = agent_max_tool_rounds;
+                            let max_task_duration = agent_max_task_duration;
                             let base_url = provider_base_url.clone();
                             let sender = sender.clone();
                             let workspace_path = ws_path.clone();
@@ -599,6 +710,7 @@ async fn main() -> Result<()> {
                                                                 max_turns,
                                                                 max_ctx,
                                                                 max_rounds,
+                                                                max_task_duration,
                                                             ));
                                                             *agent_state.write().await = Some(new_agent);
 
@@ -686,19 +798,21 @@ async fn main() -> Result<()> {
 
             if is_online {
                 let agent = agent_state.read().await.as_ref().unwrap().clone();
-                let gate = skyclaw_gateway::SkyGate::new(
-                    channels,
-                    agent,
-                    config.gateway.clone(),
-                );
+                let gate = skyclaw_gateway::SkyGate::new(channels, agent, config.gateway.clone());
                 tokio::spawn(async move {
                     if let Err(e) = gate.start().await {
                         tracing::error!(error = %e, "Gateway error");
                     }
                 });
                 println!("  Status: Online");
-                println!("  Gateway: http://{}:{}", config.gateway.host, config.gateway.port);
-                println!("  Health: http://{}:{}/health", config.gateway.host, config.gateway.port);
+                println!(
+                    "  Gateway: http://{}:{}",
+                    config.gateway.host, config.gateway.port
+                );
+                println!(
+                    "  Health: http://{}:{}/health",
+                    config.gateway.host, config.gateway.port
+                );
             } else {
                 println!("  Status: Onboarding — send your API key via Telegram");
             }
@@ -715,7 +829,10 @@ async fn main() -> Result<()> {
             println!("SkyClaw Status");
             println!("  Mode: {}", config.skyclaw.mode);
             println!("  Gateway: {}:{}", config.gateway.host, config.gateway.port);
-            println!("  Provider: {}", config.provider.name.as_deref().unwrap_or("not configured"));
+            println!(
+                "  Provider: {}",
+                config.provider.name.as_deref().unwrap_or("not configured")
+            );
             println!("  Memory: {}", config.memory.backend);
             println!("  Vault: {}", config.vault.backend);
         }
@@ -734,7 +851,10 @@ async fn main() -> Result<()> {
             ConfigCommands::Validate => {
                 println!("Configuration valid.");
                 println!("  Gateway: {}:{}", config.gateway.host, config.gateway.port);
-                println!("  Provider: {}", config.provider.name.as_deref().unwrap_or("none"));
+                println!(
+                    "  Provider: {}",
+                    config.provider.name.as_deref().unwrap_or("none")
+                );
                 println!("  Memory backend: {}", config.memory.backend);
                 println!("  Channels: {}", config.channel.len());
             }

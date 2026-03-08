@@ -15,7 +15,16 @@ bytes.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 futures.workspace = true
+async-trait.workspace = true
+serde.workspace = true
 
 # Optional: S3-compatible storage
 aws-sdk-s3 = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
+
+[dev-dependencies]
+skyclaw-test-utils.workspace = true
+tempfile = "3"
+toml.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+futures = { workspace = true }

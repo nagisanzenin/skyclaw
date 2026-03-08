@@ -1,9 +1,9 @@
 //! SQLite-backed memory implementation.
 
 use async_trait::async_trait;
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use skyclaw_core::{Memory, MemoryEntry, MemoryEntryType, SearchOpts};
 use skyclaw_core::error::SkyclawError;
+use skyclaw_core::{Memory, MemoryEntry, MemoryEntryType, SearchOpts};
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use tracing::{debug, info};
 
 /// A memory backend backed by SQLite via sqlx.
@@ -48,12 +48,10 @@ impl SqliteMemory {
         .map_err(|e| SkyclawError::Memory(format!("Failed to create tables: {e}")))?;
 
         // Index for session lookups.
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_memory_session ON memory_entries(session_id)",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| SkyclawError::Memory(format!("Failed to create index: {e}")))?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_session ON memory_entries(session_id)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| SkyclawError::Memory(format!("Failed to create index: {e}")))?;
 
         Ok(())
     }
@@ -240,9 +238,7 @@ fn str_to_entry_type(s: &str) -> Result<MemoryEntryType, SkyclawError> {
         "long_term" => Ok(MemoryEntryType::LongTerm),
         "daily_log" => Ok(MemoryEntryType::DailyLog),
         "skill" => Ok(MemoryEntryType::Skill),
-        other => Err(SkyclawError::Memory(format!(
-            "Unknown entry type: {other}"
-        ))),
+        other => Err(SkyclawError::Memory(format!("Unknown entry type: {other}"))),
     }
 }
 
@@ -285,7 +281,9 @@ mod tests {
     #[tokio::test]
     async fn delete_entry() {
         let mem = SqliteMemory::new("sqlite::memory:").await.unwrap();
-        mem.store(make_entry("d1", "to delete", None)).await.unwrap();
+        mem.store(make_entry("d1", "to delete", None))
+            .await
+            .unwrap();
         assert!(mem.get("d1").await.unwrap().is_some());
 
         mem.delete("d1").await.unwrap();
@@ -295,9 +293,15 @@ mod tests {
     #[tokio::test]
     async fn search_by_keyword() {
         let mem = SqliteMemory::new("sqlite::memory:").await.unwrap();
-        mem.store(make_entry("s1", "Rust programming language", None)).await.unwrap();
-        mem.store(make_entry("s2", "Python scripting", None)).await.unwrap();
-        mem.store(make_entry("s3", "Rust is fast and safe", None)).await.unwrap();
+        mem.store(make_entry("s1", "Rust programming language", None))
+            .await
+            .unwrap();
+        mem.store(make_entry("s2", "Python scripting", None))
+            .await
+            .unwrap();
+        mem.store(make_entry("s3", "Rust is fast and safe", None))
+            .await
+            .unwrap();
 
         let results = mem.search("Rust", SearchOpts::default()).await.unwrap();
         assert_eq!(results.len(), 2);
@@ -307,8 +311,12 @@ mod tests {
     #[tokio::test]
     async fn search_with_session_filter() {
         let mem = SqliteMemory::new("sqlite::memory:").await.unwrap();
-        mem.store(make_entry("sf1", "hello from session A", Some("sess_a"))).await.unwrap();
-        mem.store(make_entry("sf2", "hello from session B", Some("sess_b"))).await.unwrap();
+        mem.store(make_entry("sf1", "hello from session A", Some("sess_a")))
+            .await
+            .unwrap();
+        mem.store(make_entry("sf2", "hello from session B", Some("sess_b")))
+            .await
+            .unwrap();
 
         let opts = SearchOpts {
             session_filter: Some("sess_a".to_string()),
@@ -322,9 +330,15 @@ mod tests {
     #[tokio::test]
     async fn list_sessions() {
         let mem = SqliteMemory::new("sqlite::memory:").await.unwrap();
-        mem.store(make_entry("ls1", "a", Some("alpha"))).await.unwrap();
-        mem.store(make_entry("ls2", "b", Some("beta"))).await.unwrap();
-        mem.store(make_entry("ls3", "c", Some("alpha"))).await.unwrap();
+        mem.store(make_entry("ls1", "a", Some("alpha")))
+            .await
+            .unwrap();
+        mem.store(make_entry("ls2", "b", Some("beta")))
+            .await
+            .unwrap();
+        mem.store(make_entry("ls3", "c", Some("alpha")))
+            .await
+            .unwrap();
 
         let sessions = mem.list_sessions().await.unwrap();
         assert_eq!(sessions.len(), 2);
@@ -379,7 +393,10 @@ mod tests {
     fn backend_name() {
         // We can't easily test this without an async runtime, but we can test the function
         // by asserting the expected return value is "sqlite"
-        assert_eq!(entry_type_to_str(&MemoryEntryType::Conversation), "conversation");
+        assert_eq!(
+            entry_type_to_str(&MemoryEntryType::Conversation),
+            "conversation"
+        );
     }
 
     // ── T5b: New edge case tests ──────────────────────────────────────
@@ -408,8 +425,12 @@ mod tests {
     #[tokio::test]
     async fn search_special_characters() {
         let mem = SqliteMemory::new("sqlite::memory:").await.unwrap();
-        mem.store(make_entry("sp1", "error: file.rs:42 panicked", None)).await.unwrap();
-        mem.store(make_entry("sp2", "normal content", None)).await.unwrap();
+        mem.store(make_entry("sp1", "error: file.rs:42 panicked", None))
+            .await
+            .unwrap();
+        mem.store(make_entry("sp2", "normal content", None))
+            .await
+            .unwrap();
 
         // Test with SQL special chars (% and _)
         let results = mem.search("file.rs", SearchOpts::default()).await.unwrap();
@@ -430,8 +451,11 @@ mod tests {
     #[tokio::test]
     async fn unicode_content_round_trip() {
         let mem = SqliteMemory::new("sqlite::memory:").await.unwrap();
-        let unicode_content = "\u{1F600} Hello \u{4E16}\u{754C} \u{041F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}";
-        mem.store(make_entry("uc1", unicode_content, None)).await.unwrap();
+        let unicode_content =
+            "\u{1F600} Hello \u{4E16}\u{754C} \u{041F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}";
+        mem.store(make_entry("uc1", unicode_content, None))
+            .await
+            .unwrap();
 
         let fetched = mem.get("uc1").await.unwrap().unwrap();
         assert_eq!(fetched.content, unicode_content);
@@ -441,7 +465,9 @@ mod tests {
     async fn large_content_entry() {
         let mem = SqliteMemory::new("sqlite::memory:").await.unwrap();
         let large_content = "x".repeat(100_000); // 100KB content
-        mem.store(make_entry("lg1", &large_content, None)).await.unwrap();
+        mem.store(make_entry("lg1", &large_content, None))
+            .await
+            .unwrap();
 
         let fetched = mem.get("lg1").await.unwrap().unwrap();
         assert_eq!(fetched.content.len(), 100_000);
@@ -471,7 +497,10 @@ mod tests {
     #[tokio::test]
     async fn session_history_empty_session() {
         let mem = SqliteMemory::new("sqlite::memory:").await.unwrap();
-        let history = mem.get_session_history("nonexistent_session", 10).await.unwrap();
+        let history = mem
+            .get_session_history("nonexistent_session", 10)
+            .await
+            .unwrap();
         assert!(history.is_empty());
     }
 
@@ -479,7 +508,13 @@ mod tests {
     async fn search_limit_respected() {
         let mem = SqliteMemory::new("sqlite::memory:").await.unwrap();
         for i in 0..10 {
-            mem.store(make_entry(&format!("lim{i}"), &format!("hello entry {i}"), None)).await.unwrap();
+            mem.store(make_entry(
+                &format!("lim{i}"),
+                &format!("hello entry {i}"),
+                None,
+            ))
+            .await
+            .unwrap();
         }
 
         let opts = SearchOpts {

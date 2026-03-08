@@ -1,4 +1,4 @@
-use crate::types::config::SkyclawConfig;
+use crate::types::config::{AgentAccessibleConfig, SkyclawConfig};
 use crate::types::error::SkyclawError;
 use std::path::{Path, PathBuf};
 
@@ -26,13 +26,15 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<SkyclawConfig, Skycla
     let mut config_content = String::new();
 
     if let Some(path) = explicit_path {
-        config_content = std::fs::read_to_string(path)
-            .map_err(|e| SkyclawError::Config(format!("Failed to read {}: {}", path.display(), e)))?;
+        config_content = std::fs::read_to_string(path).map_err(|e| {
+            SkyclawError::Config(format!("Failed to read {}: {}", path.display(), e))
+        })?;
     } else {
         for path in config_paths() {
             if path.exists() {
-                config_content = std::fs::read_to_string(&path)
-                    .map_err(|e| SkyclawError::Config(format!("Failed to read {}: {}", path.display(), e)))?;
+                config_content = std::fs::read_to_string(&path).map_err(|e| {
+                    SkyclawError::Config(format!("Failed to read {}: {}", path.display(), e))
+                })?;
                 break;
             }
         }
@@ -60,31 +62,88 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<SkyclawConfig, Skycla
     ))
 }
 
-impl Default for SkyclawConfig {
-    fn default() -> Self {
-        Self {
-            skyclaw: Default::default(),
-            gateway: Default::default(),
-            provider: Default::default(),
-            memory: Default::default(),
-            vault: Default::default(),
-            filestore: Default::default(),
-            security: Default::default(),
-            heartbeat: Default::default(),
-            cron: Default::default(),
-            channel: Default::default(),
-            agent: Default::default(),
-            tools: Default::default(),
-            tunnel: None,
-            observability: Default::default(),
+// ---------------------------------------------------------------------------
+// Agent-Accessible Config
+// ---------------------------------------------------------------------------
+
+/// Discover agent config file locations in priority order
+fn agent_config_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    // 1. User agent config
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".skyclaw").join("agent-config.toml"));
+    }
+
+    // 2. Workspace agent config
+    paths.push(PathBuf::from("agent-config.toml"));
+
+    paths
+}
+
+/// Returns the default agent config file path (`~/.skyclaw/agent-config.toml`)
+pub fn default_agent_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".skyclaw").join("agent-config.toml"))
+}
+
+/// Load agent-accessible config from discovered agent config files.
+/// Returns `None` if no agent config file is found.
+pub fn load_agent_config(
+    explicit_path: Option<&Path>,
+) -> Result<Option<AgentAccessibleConfig>, SkyclawError> {
+    let mut config_content = String::new();
+
+    if let Some(path) = explicit_path {
+        if path.exists() {
+            config_content = std::fs::read_to_string(path).map_err(|e| {
+                SkyclawError::Config(format!("Failed to read {}: {}", path.display(), e))
+            })?;
+        } else {
+            return Ok(None);
+        }
+    } else {
+        for path in agent_config_paths() {
+            if path.exists() {
+                config_content = std::fs::read_to_string(&path).map_err(|e| {
+                    SkyclawError::Config(format!("Failed to read {}: {}", path.display(), e))
+                })?;
+                break;
+            }
         }
     }
+
+    if config_content.is_empty() {
+        return Ok(None);
+    }
+
+    let expanded = super::env::expand_env_vars(&config_content);
+
+    let agent_config: AgentAccessibleConfig = toml::from_str(&expanded)
+        .map_err(|e| SkyclawError::Config(format!("Failed to parse agent config: {e}")))?;
+
+    agent_config.validate()?;
+
+    Ok(Some(agent_config))
+}
+
+/// Load full config with agent config overlay merged in.
+/// Agent-accessible fields from the agent config override the master config.
+pub fn load_config_with_agent_overlay(
+    config_path: Option<&Path>,
+    agent_config_path: Option<&Path>,
+) -> Result<SkyclawConfig, SkyclawError> {
+    let mut config = load_config(config_path)?;
+
+    if let Some(agent_config) = load_agent_config(agent_config_path)? {
+        agent_config.apply_to(&mut config);
+    }
+
+    Ok(config)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn test_default_config_no_file() {
@@ -156,7 +215,10 @@ api_key = "${SKYCLAW_TEST_API_KEY}"
         std::fs::write(tmp.path(), toml_content).unwrap();
 
         let config = load_config(Some(tmp.path())).unwrap();
-        assert_eq!(config.provider.api_key.as_deref(), Some("expanded-key-value"));
+        assert_eq!(
+            config.provider.api_key.as_deref(),
+            Some("expanded-key-value")
+        );
         std::env::remove_var("SKYCLAW_TEST_API_KEY");
     }
 
@@ -171,7 +233,9 @@ api_key = "${SKYCLAW_TEST_API_KEY}"
 
     #[test]
     fn test_missing_config_file() {
-        let result = load_config(Some(std::path::Path::new("/tmp/nonexistent_skyclaw_config_12345.toml")));
+        let result = load_config(Some(std::path::Path::new(
+            "/tmp/nonexistent_skyclaw_config_12345.toml",
+        )));
         assert!(result.is_err());
     }
 
@@ -304,7 +368,10 @@ otel_endpoint = "http://localhost:4317"
         let config = load_config(Some(tmp.path())).unwrap();
         assert_eq!(config.observability.log_level, "debug");
         assert!(config.observability.otel_enabled);
-        assert_eq!(config.observability.otel_endpoint.as_deref(), Some("http://localhost:4317"));
+        assert_eq!(
+            config.observability.otel_endpoint.as_deref(),
+            Some("http://localhost:4317")
+        );
     }
 
     #[test]
@@ -334,6 +401,158 @@ sandbox = "mandatory"
         }
         let elapsed = start.elapsed();
         let per_parse = elapsed / 100;
-        assert!(per_parse.as_millis() < 10, "Config parse took {}ms, expected <10ms", per_parse.as_millis());
+        assert!(
+            per_parse.as_millis() < 10,
+            "Config parse took {}ms, expected <10ms",
+            per_parse.as_millis()
+        );
+    }
+
+    // ── Agent config loader tests ─────────────────────────────────────
+
+    #[test]
+    fn test_load_agent_config_none_when_missing() {
+        let result = load_agent_config(Some(std::path::Path::new(
+            "/tmp/nonexistent_agent_config_99999.toml",
+        )));
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_load_agent_config_valid() {
+        let content = r#"
+[agent]
+max_turns = 50
+max_context_tokens = 20000
+max_tool_rounds = 30
+max_task_duration_secs = 600
+
+[tools]
+shell = true
+browser = false
+file = true
+git = true
+cron = false
+http = true
+
+[heartbeat]
+enabled = true
+interval = "10m"
+
+[memory.search]
+vector_weight = 0.6
+keyword_weight = 0.4
+
+[observability]
+log_level = "debug"
+"#;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let agent_cfg = load_agent_config(Some(tmp.path())).unwrap().unwrap();
+        assert_eq!(agent_cfg.agent.max_turns, 50);
+        assert!(!agent_cfg.tools.browser);
+        assert!(agent_cfg.heartbeat.enabled);
+        assert_eq!(agent_cfg.memory.search.vector_weight, 0.6);
+        assert_eq!(agent_cfg.observability.log_level, "debug");
+    }
+
+    #[test]
+    fn test_load_agent_config_rejects_invalid() {
+        let content = r#"
+[agent]
+max_turns = 0
+"#;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let result = load_agent_config(Some(tmp.path()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_config_with_agent_overlay() {
+        // Master config
+        let master_content = r#"
+[gateway]
+host = "0.0.0.0"
+port = 9090
+
+[provider]
+name = "anthropic"
+api_key = "sk-secret-key"
+
+[agent]
+max_turns = 200
+max_context_tokens = 30000
+
+[observability]
+log_level = "info"
+otel_enabled = true
+otel_endpoint = "http://otel:4317"
+"#;
+        let master_tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(master_tmp.path(), master_content).unwrap();
+
+        // Agent config overrides
+        let agent_content = r#"
+[agent]
+max_turns = 50
+max_context_tokens = 15000
+
+[observability]
+log_level = "debug"
+"#;
+        let agent_tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(agent_tmp.path(), agent_content).unwrap();
+
+        let config =
+            load_config_with_agent_overlay(Some(master_tmp.path()), Some(agent_tmp.path()))
+                .unwrap();
+
+        // Agent-accessible fields overridden
+        assert_eq!(config.agent.max_turns, 50);
+        assert_eq!(config.agent.max_context_tokens, 15_000);
+        assert_eq!(config.observability.log_level, "debug");
+
+        // System fields preserved from master
+        assert_eq!(config.gateway.host, "0.0.0.0");
+        assert_eq!(config.gateway.port, 9090);
+        assert_eq!(config.provider.api_key.as_deref(), Some("sk-secret-key"));
+        assert!(config.observability.otel_enabled);
+        assert_eq!(
+            config.observability.otel_endpoint.as_deref(),
+            Some("http://otel:4317")
+        );
+    }
+
+    #[test]
+    fn test_load_config_with_no_agent_overlay() {
+        let master_content = r#"
+[agent]
+max_turns = 200
+"#;
+        let master_tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(master_tmp.path(), master_content).unwrap();
+
+        // Agent config path doesn't exist
+        let config = load_config_with_agent_overlay(
+            Some(master_tmp.path()),
+            Some(std::path::Path::new("/tmp/no_such_agent_config.toml")),
+        )
+        .unwrap();
+
+        // Master values unchanged
+        assert_eq!(config.agent.max_turns, 200);
+    }
+
+    #[test]
+    fn test_default_agent_config_path() {
+        let path = default_agent_config_path();
+        assert!(path.is_some());
+        let p = path.unwrap();
+        assert!(p.to_string_lossy().contains(".skyclaw"));
+        assert!(p.to_string_lossy().ends_with("agent-config.toml"));
     }
 }

@@ -1,20 +1,24 @@
 //! SkyClaw Memory crate
 //!
 //! Provides persistent memory backends for conversations, long-term knowledge,
-//! and skills. Two backends ship out of the box:
+//! and skills. Three backends ship out of the box:
 //!
 //! - [`SqliteMemory`] — SQLite-backed (via sqlx), suitable for production.
 //! - [`MarkdownMemory`] — Flat Markdown files, compatible with OpenClaw.
+//! - [`ResilientMemory`] — Decorator that wraps any backend with automatic
+//!   failover to an in-memory cache and repair logic.
 
+pub mod failover;
 pub mod markdown;
 pub mod search;
 pub mod sqlite;
 
+pub use failover::{FailoverConfig, MemoryHealthStatus, ResilientMemory};
 pub use markdown::MarkdownMemory;
 pub use sqlite::SqliteMemory;
 
-use skyclaw_core::Memory;
 use skyclaw_core::error::SkyclawError;
+use skyclaw_core::Memory;
 
 /// Factory function: create a memory backend by name.
 ///

@@ -10,6 +10,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Maximum output size returned to the model (32 KB).
 const MAX_OUTPUT_SIZE: usize = 32 * 1024;
 
+#[derive(Default)]
 pub struct ShellTool;
 
 impl ShellTool {
@@ -55,12 +56,20 @@ impl Tool for ShellTool {
         }
     }
 
-    async fn execute(&self, input: ToolInput, ctx: &ToolContext) -> Result<ToolOutput, SkyclawError> {
-        let command = input.arguments.get("command")
+    async fn execute(
+        &self,
+        input: ToolInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, SkyclawError> {
+        let command = input
+            .arguments
+            .get("command")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkyclawError::Tool("Missing required parameter: command".into()))?;
 
-        let timeout_secs = input.arguments.get("timeout")
+        let timeout_secs = input
+            .arguments
+            .get("timeout")
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .min(300);
@@ -95,7 +104,10 @@ impl Tool for ShellTool {
                 }
 
                 if content.is_empty() {
-                    content = format!("Command completed with exit code {}", output.status.code().unwrap_or(-1));
+                    content = format!(
+                        "Command completed with exit code {}",
+                        output.status.code().unwrap_or(-1)
+                    );
                 }
 
                 // Truncate if too large

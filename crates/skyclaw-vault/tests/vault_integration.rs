@@ -8,9 +8,14 @@ use skyclaw_vault::{detect_credentials, is_vault_uri, parse_vault_uri, resolve};
 #[tokio::test]
 async fn vault_store_and_resolve_uri() {
     let tmp = tempfile::tempdir().unwrap();
-    let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+    let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+        .await
+        .unwrap();
 
-    vault.store_secret("api/key", b"secret-value-123").await.unwrap();
+    vault
+        .store_secret("api/key", b"secret-value-123")
+        .await
+        .unwrap();
 
     // Resolve through the resolver module
     let result = resolve(&vault, "vault://skyclaw/api/key").await.unwrap();
@@ -20,7 +25,9 @@ async fn vault_store_and_resolve_uri() {
 #[tokio::test]
 async fn vault_resolver_invalid_uri_errors() {
     let tmp = tempfile::tempdir().unwrap();
-    let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+    let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+        .await
+        .unwrap();
 
     let result = resolve(&vault, "http://skyclaw/key").await;
     assert!(result.is_err());
@@ -29,9 +36,13 @@ async fn vault_resolver_invalid_uri_errors() {
 #[tokio::test]
 async fn vault_resolver_missing_key_returns_none() {
     let tmp = tempfile::tempdir().unwrap();
-    let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+    let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+        .await
+        .unwrap();
 
-    let result = resolve(&vault, "vault://skyclaw/nonexistent").await.unwrap();
+    let result = resolve(&vault, "vault://skyclaw/nonexistent")
+        .await
+        .unwrap();
     assert!(result.is_none());
 }
 
@@ -41,22 +52,32 @@ async fn vault_persistence_and_reload() {
 
     // Store multiple secrets
     {
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
         vault.store_secret("key1", b"value1").await.unwrap();
         vault.store_secret("key2", b"value2").await.unwrap();
-        vault.store_secret("nested/deep/key3", b"value3").await.unwrap();
+        vault
+            .store_secret("nested/deep/key3", b"value3")
+            .await
+            .unwrap();
     }
 
     // Reload and verify all secrets survive
     {
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
         let keys = vault.list_keys().await.unwrap();
         assert_eq!(keys.len(), 3);
 
         assert_eq!(vault.get_secret("key1").await.unwrap().unwrap(), b"value1");
         assert_eq!(vault.get_secret("key2").await.unwrap().unwrap(), b"value2");
-        assert_eq!(vault.get_secret("nested/deep/key3").await.unwrap().unwrap(), b"value3");
+        assert_eq!(
+            vault.get_secret("nested/deep/key3").await.unwrap().unwrap(),
+            b"value3"
+        );
     }
 }
 
@@ -65,7 +86,9 @@ async fn vault_delete_and_reload() {
     let tmp = tempfile::tempdir().unwrap();
 
     {
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
         vault.store_secret("to_delete", b"gone soon").await.unwrap();
         vault.store_secret("to_keep", b"stay").await.unwrap();
         vault.delete_secret("to_delete").await.unwrap();
@@ -73,7 +96,9 @@ async fn vault_delete_and_reload() {
 
     // Reload and verify deletion persisted
     {
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
         assert!(!vault.has_key("to_delete").await.unwrap());
         assert!(vault.has_key("to_keep").await.unwrap());
     }
@@ -97,14 +122,18 @@ fn credential_detection_and_vault_uri_integration() {
 #[tokio::test]
 async fn vault_backend_name() {
     let tmp = tempfile::tempdir().unwrap();
-    let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+    let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+        .await
+        .unwrap();
     assert_eq!(vault.backend_name(), "local-chacha20");
 }
 
 #[tokio::test]
 async fn vault_update_secret_value() {
     let tmp = tempfile::tempdir().unwrap();
-    let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+    let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+        .await
+        .unwrap();
 
     vault.store_secret("mutable", b"v1").await.unwrap();
     assert_eq!(vault.get_secret("mutable").await.unwrap().unwrap(), b"v1");

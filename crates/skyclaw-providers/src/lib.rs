@@ -23,13 +23,8 @@ use skyclaw_core::Provider;
 /// - `"openai"` | `"openai-compatible"` | anything else -> `OpenAICompatProvider`
 ///
 /// `api_key` must be set. `base_url` is optional (defaults depend on provider).
-pub fn create_provider(
-    config: &ProviderConfig,
-) -> Result<Box<dyn Provider>, SkyclawError> {
-    let name = config
-        .name
-        .as_deref()
-        .unwrap_or("openai-compatible");
+pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, SkyclawError> {
+    let name = config.name.as_deref().unwrap_or("openai-compatible");
 
     let api_key = config
         .api_key
@@ -49,8 +44,7 @@ pub fn create_provider(
             let base_url = config.base_url.clone().unwrap_or_else(|| {
                 "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
             });
-            let provider = OpenAICompatProvider::new(api_key)
-                .with_base_url(base_url);
+            let provider = OpenAICompatProvider::new(api_key).with_base_url(base_url);
             Ok(Box::new(provider))
         }
         _ => {

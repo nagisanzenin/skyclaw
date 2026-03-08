@@ -1,26 +1,28 @@
 //! SkyClaw Tools — agent capabilities (shell, file, web, browser, etc.)
 
-mod shell;
-mod file;
-mod web_fetch;
-mod send_file;
-mod send_message;
-mod check_messages;
 #[cfg(feature = "browser")]
 mod browser;
+mod check_messages;
+mod file;
+mod git;
+mod send_file;
+mod send_message;
+mod shell;
+mod web_fetch;
 
-pub use shell::ShellTool;
-pub use file::{FileReadTool, FileWriteTool, FileListTool};
-pub use web_fetch::WebFetchTool;
-pub use send_file::SendFileTool;
-pub use send_message::SendMessageTool;
-pub use check_messages::{CheckMessagesTool, PendingMessages};
 #[cfg(feature = "browser")]
 pub use browser::BrowserTool;
+pub use check_messages::{CheckMessagesTool, PendingMessages};
+pub use file::{FileListTool, FileReadTool, FileWriteTool};
+pub use git::GitTool;
+pub use send_file::SendFileTool;
+pub use send_message::SendMessageTool;
+pub use shell::ShellTool;
+pub use web_fetch::WebFetchTool;
 
-use std::sync::Arc;
-use skyclaw_core::{Channel, Tool};
 use skyclaw_core::types::config::ToolsConfig;
+use skyclaw_core::{Channel, Tool};
+use std::sync::Arc;
 
 /// Create tools based on the configuration flags.
 /// Pass an optional channel for file transfer tools and an optional
@@ -40,6 +42,10 @@ pub fn create_tools(
         tools.push(Arc::new(FileReadTool::new()));
         tools.push(Arc::new(FileWriteTool::new()));
         tools.push(Arc::new(FileListTool::new()));
+    }
+
+    if config.git {
+        tools.push(Arc::new(GitTool::new()));
     }
 
     if config.http {

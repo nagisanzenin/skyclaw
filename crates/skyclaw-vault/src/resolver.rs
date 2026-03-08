@@ -1,8 +1,8 @@
 //! Vault URI resolver — parses `vault://skyclaw/<key>` URIs and delegates
 //! to a [`Vault`] implementation for retrieval.
 
-use skyclaw_core::Vault;
 use skyclaw_core::types::error::SkyclawError;
+use skyclaw_core::Vault;
 
 /// The URI scheme prefix.
 const VAULT_SCHEME: &str = "vault://";
@@ -54,10 +54,7 @@ pub fn is_vault_uri(text: &str) -> bool {
 }
 
 /// Resolve a vault URI to its plaintext value using the given vault backend.
-pub async fn resolve(
-    vault: &dyn Vault,
-    uri: &str,
-) -> Result<Option<Vec<u8>>, SkyclawError> {
+pub async fn resolve(vault: &dyn Vault, uri: &str) -> Result<Option<Vec<u8>>, SkyclawError> {
     let parsed = parse_vault_uri(uri)?;
     vault.get_secret(&parsed.key).await
 }

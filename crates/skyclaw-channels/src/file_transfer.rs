@@ -1,19 +1,22 @@
 //! Shared file transfer utilities for all channels.
 
 use bytes::Bytes;
-use std::path::{Path, PathBuf};
 use skyclaw_core::types::error::SkyclawError;
-use skyclaw_core::types::file::{ReceivedFile, OutboundFile, FileData};
+use skyclaw_core::types::file::{FileData, OutboundFile, ReceivedFile};
+use std::path::{Path, PathBuf};
 
 /// Save a received file to the workspace directory.
 ///
 /// Creates the workspace directory if it does not exist. Returns the
 /// full path where the file was written.
-pub async fn save_received_file(file: &ReceivedFile, workspace: &Path) -> Result<PathBuf, SkyclawError> {
+pub async fn save_received_file(
+    file: &ReceivedFile,
+    workspace: &Path,
+) -> Result<PathBuf, SkyclawError> {
     // Ensure workspace directory exists
-    tokio::fs::create_dir_all(workspace).await.map_err(|e| {
-        SkyclawError::FileTransfer(format!("Failed to create workspace dir: {e}"))
-    })?;
+    tokio::fs::create_dir_all(workspace)
+        .await
+        .map_err(|e| SkyclawError::FileTransfer(format!("Failed to create workspace dir: {e}")))?;
 
     // Sanitize filename: strip directory components to prevent path traversal
     let safe_name = Path::new(&file.name)
@@ -89,15 +92,30 @@ mod tests {
         assert_eq!(mime_from_extension(Path::new("photo.jpg")), "image/jpeg");
         assert_eq!(mime_from_extension(Path::new("photo.jpeg")), "image/jpeg");
         assert_eq!(mime_from_extension(Path::new("code.rs")), "text/x-rust");
-        assert_eq!(mime_from_extension(Path::new("data.json")), "application/json");
-        assert_eq!(mime_from_extension(Path::new("config.yaml")), "application/yaml");
-        assert_eq!(mime_from_extension(Path::new("config.yml")), "application/yaml");
+        assert_eq!(
+            mime_from_extension(Path::new("data.json")),
+            "application/json"
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("config.yaml")),
+            "application/yaml"
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("config.yml")),
+            "application/yaml"
+        );
     }
 
     #[test]
     fn mime_detection_unknown_extension() {
-        assert_eq!(mime_from_extension(Path::new("file.xyz")), "application/octet-stream");
-        assert_eq!(mime_from_extension(Path::new("noext")), "application/octet-stream");
+        assert_eq!(
+            mime_from_extension(Path::new("file.xyz")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("noext")),
+            "application/octet-stream"
+        );
     }
 
     #[tokio::test]
@@ -144,7 +162,9 @@ mod tests {
     async fn read_file_for_sending_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let file_path = tmp.path().join("test.json");
-        tokio::fs::write(&file_path, r#"{"key": "value"}"#).await.unwrap();
+        tokio::fs::write(&file_path, r#"{"key": "value"}"#)
+            .await
+            .unwrap();
 
         let outbound = read_file_for_sending(&file_path).await.unwrap();
         assert_eq!(outbound.name, "test.json");

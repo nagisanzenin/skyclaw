@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::types::message::ChatMessage;
+use serde::{Deserialize, Serialize};
 
 /// An active session context
 #[derive(Debug, Clone)]

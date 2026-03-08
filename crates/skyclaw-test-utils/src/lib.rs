@@ -3,7 +3,6 @@
 //! Provides mock implementations of core traits, factory helpers for test data,
 //! and a fluent config builder for test scenarios.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,7 +11,6 @@ use tokio::sync::Mutex;
 
 use skyclaw_core::types::config::*;
 use skyclaw_core::types::error::SkyclawError;
-use skyclaw_core::types::file::{FileMetadata, OutboundFile, ReceivedFile};
 use skyclaw_core::types::message::*;
 use skyclaw_core::types::session::SessionContext;
 use skyclaw_core::{
@@ -151,6 +149,10 @@ impl MockMemory {
     pub async fn len(&self) -> usize {
         self.entries.lock().await.len()
     }
+
+    pub async fn is_empty(&self) -> bool {
+        self.entries.lock().await.is_empty()
+    }
 }
 
 impl Default for MockMemory {
@@ -167,16 +169,21 @@ impl Memory for MockMemory {
         Ok(())
     }
 
-    async fn search(&self, query: &str, opts: SearchOpts) -> Result<Vec<MemoryEntry>, SkyclawError> {
+    async fn search(
+        &self,
+        query: &str,
+        opts: SearchOpts,
+    ) -> Result<Vec<MemoryEntry>, SkyclawError> {
         let entries = self.entries.lock().await;
         let results: Vec<MemoryEntry> = entries
             .iter()
             .filter(|e| {
-                let matches_query = query.is_empty() || e.content.to_lowercase().contains(&query.to_lowercase());
+                let matches_query =
+                    query.is_empty() || e.content.to_lowercase().contains(&query.to_lowercase());
                 let matches_session = opts
                     .session_filter
                     .as_ref()
-                    .map_or(true, |s| e.session_id.as_deref() == Some(s.as_str()));
+                    .is_none_or(|s| e.session_id.as_deref() == Some(s.as_str()));
                 matches_query && matches_session
             })
             .take(opts.limit)
@@ -352,7 +359,11 @@ impl Tool for MockTool {
         self.declarations.clone()
     }
 
-    async fn execute(&self, _input: ToolInput, _ctx: &ToolContext) -> Result<ToolOutput, SkyclawError> {
+    async fn execute(
+        &self,
+        _input: ToolInput,
+        _ctx: &ToolContext,
+    ) -> Result<ToolOutput, SkyclawError> {
         Ok(self.output.clone())
     }
 }
@@ -544,8 +555,8 @@ mod tests {
         assert!(chan.is_allowed("anyone"));
         assert_eq!(chan.name(), "test-chan");
 
-        let chan_restricted = MockChannel::new("restricted")
-            .with_allowlist(vec!["user1".to_string()]);
+        let chan_restricted =
+            MockChannel::new("restricted").with_allowlist(vec!["user1".to_string()]);
         assert!(chan_restricted.is_allowed("user1"));
         assert!(!chan_restricted.is_allowed("user2"));
     }

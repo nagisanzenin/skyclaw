@@ -41,7 +41,7 @@ impl AnthropicProvider {
             .messages
             .iter()
             .filter(|m| !matches!(m.role, Role::System))
-            .map(|m| convert_message_to_anthropic(m))
+            .map(convert_message_to_anthropic)
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut body = serde_json::json!({
@@ -62,7 +62,7 @@ impl AnthropicProvider {
             let tools: Vec<serde_json::Value> = request
                 .tools
                 .iter()
-                .map(|t| convert_tool_to_anthropic(t))
+                .map(convert_tool_to_anthropic)
                 .collect();
             body["tools"] = serde_json::json!(tools);
         }
@@ -200,6 +200,14 @@ fn convert_message_to_anthropic(msg: &ChatMessage) -> Result<serde_json::Value, 
                         "content": content,
                         "is_error": is_error,
                     }),
+                    ContentPart::Image { media_type, data } => serde_json::json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": data,
+                        },
+                    }),
                 })
                 .collect();
             serde_json::json!(blocks)
@@ -222,9 +230,7 @@ fn convert_tool_to_anthropic(tool: &ToolDefinition) -> serde_json::Value {
 
 fn convert_anthropic_content(block: &AnthropicContentBlock) -> ContentPart {
     match block {
-        AnthropicContentBlock::Text { text } => ContentPart::Text {
-            text: text.clone(),
-        },
+        AnthropicContentBlock::Text { text } => ContentPart::Text { text: text.clone() },
         AnthropicContentBlock::ToolUse { id, name, input } => ContentPart::ToolUse {
             id: id.clone(),
             name: name.clone(),
@@ -280,10 +286,9 @@ impl Provider for AnthropicProvider {
             )));
         }
 
-        let api_response: AnthropicResponse = response
-            .json()
-            .await
-            .map_err(|e| SkyclawError::Provider(format!("Failed to parse Anthropic response: {e}")))?;
+        let api_response: AnthropicResponse = response.json().await.map_err(|e| {
+            SkyclawError::Provider(format!("Failed to parse Anthropic response: {e}"))
+        })?;
 
         let content = api_response
             .content
@@ -344,7 +349,7 @@ impl Provider for AnthropicProvider {
         let event_stream = futures::stream::unfold(
             (
                 byte_stream,
-                String::new(),                                     // buffer for incomplete lines
+                String::new(), // buffer for incomplete lines
                 Vec::<(String, String, serde_json::Value)>::new(), // active tool_use blocks: (id, name, partial_json)
             ),
             |(mut byte_stream, mut buffer, mut tool_blocks)| async move {
@@ -352,9 +357,7 @@ impl Provider for AnthropicProvider {
 
                 loop {
                     // Try to extract a complete SSE event from the buffer
-                    if let Some(event) =
-                        extract_sse_event(&mut buffer, &mut tool_blocks)
-                    {
+                    if let Some(event) = extract_sse_event(&mut buffer, &mut tool_blocks) {
                         return Some((event, (byte_stream, buffer, tool_blocks)));
                     }
 
@@ -431,9 +434,9 @@ fn extract_sse_event(
                 event_type = rest.trim().to_string();
             } else if let Some(rest) = line.strip_prefix("data: ") {
                 data_parts.push(rest.to_string());
-            } else if line.starts_with("data:") {
+            } else if let Some(rest) = line.strip_prefix("data:") {
                 // "data:" with no space
-                data_parts.push(line[5..].to_string());
+                data_parts.push(rest.to_string());
             }
         }
 
@@ -496,11 +499,8 @@ fn extract_sse_event(
                 // If there is a completed tool_use block, emit it
                 if let Some((id, name, raw_input)) = tool_blocks.pop() {
                     let input = match raw_input {
-                        serde_json::Value::String(s) => {
-                            serde_json::from_str(&s).unwrap_or(serde_json::Value::Object(
-                                serde_json::Map::new(),
-                            ))
-                        }
+                        serde_json::Value::String(s) => serde_json::from_str(&s)
+                            .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
                         serde_json::Value::Null => {
                             serde_json::Value::Object(serde_json::Map::new())
                         }
@@ -704,6 +704,31 @@ mod tests {
         let result = extract_sse_event(&mut buffer, &mut tool_blocks);
         assert!(result.is_some());
         assert!(result.unwrap().is_err());
+    }
+
+    #[test]
+    fn convert_message_with_image() {
+        let msg = ChatMessage {
+            role: Role::User,
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: "What is in this image?".to_string(),
+                },
+                ContentPart::Image {
+                    media_type: "image/jpeg".to_string(),
+                    data: "abc123base64".to_string(),
+                },
+            ]),
+        };
+        let json = convert_message_to_anthropic(&msg).unwrap();
+        assert_eq!(json["role"], "user");
+        let content = json["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/jpeg");
+        assert_eq!(content[1]["source"]["data"], "abc123base64");
     }
 
     #[test]

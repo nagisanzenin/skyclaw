@@ -1,6 +1,6 @@
+use crate::types::error::SkyclawError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use crate::types::error::SkyclawError;
 
 /// Tool capability declarations — what resources a tool needs
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,5 +57,9 @@ pub trait Tool: Send + Sync {
     fn declarations(&self) -> ToolDeclarations;
 
     /// Execute the tool with given input
-    async fn execute(&self, input: ToolInput, ctx: &ToolContext) -> Result<ToolOutput, SkyclawError>;
+    async fn execute(
+        &self,
+        input: ToolInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, SkyclawError>;
 }

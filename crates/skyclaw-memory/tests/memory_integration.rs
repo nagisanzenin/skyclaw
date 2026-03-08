@@ -17,14 +17,18 @@ fn make_entry(id: &str, content: &str, session: Option<&str>, et: MemoryEntryTyp
 
 #[tokio::test]
 async fn create_sqlite_backend() {
-    let backend = create_memory_backend("sqlite", "sqlite::memory:").await.unwrap();
+    let backend = create_memory_backend("sqlite", "sqlite::memory:")
+        .await
+        .unwrap();
     assert_eq!(backend.backend_name(), "sqlite");
 }
 
 #[tokio::test]
 async fn create_markdown_backend() {
     let tmp = tempfile::tempdir().unwrap();
-    let backend = create_memory_backend("markdown", tmp.path().to_str().unwrap()).await.unwrap();
+    let backend = create_memory_backend("markdown", tmp.path().to_str().unwrap())
+        .await
+        .unwrap();
     assert_eq!(backend.backend_name(), "markdown");
 }
 
@@ -36,10 +40,19 @@ async fn create_unknown_backend_fails() {
 
 #[tokio::test]
 async fn sqlite_full_lifecycle() {
-    let mem = create_memory_backend("sqlite", "sqlite::memory:").await.unwrap();
+    let mem = create_memory_backend("sqlite", "sqlite::memory:")
+        .await
+        .unwrap();
 
     // Store
-    mem.store(make_entry("lc1", "lifecycle test", Some("sess1"), MemoryEntryType::Conversation)).await.unwrap();
+    mem.store(make_entry(
+        "lc1",
+        "lifecycle test",
+        Some("sess1"),
+        MemoryEntryType::Conversation,
+    ))
+    .await
+    .unwrap();
 
     // Get
     let entry = mem.get("lc1").await.unwrap().unwrap();
@@ -47,7 +60,10 @@ async fn sqlite_full_lifecycle() {
     assert_eq!(entry.session_id.as_deref(), Some("sess1"));
 
     // Search
-    let results = mem.search("lifecycle", SearchOpts::default()).await.unwrap();
+    let results = mem
+        .search("lifecycle", SearchOpts::default())
+        .await
+        .unwrap();
     assert_eq!(results.len(), 1);
 
     // List sessions
@@ -66,10 +82,19 @@ async fn sqlite_full_lifecycle() {
 #[tokio::test]
 async fn markdown_full_lifecycle() {
     let tmp = tempfile::tempdir().unwrap();
-    let mem = create_memory_backend("markdown", tmp.path().to_str().unwrap()).await.unwrap();
+    let mem = create_memory_backend("markdown", tmp.path().to_str().unwrap())
+        .await
+        .unwrap();
 
     // Store
-    mem.store(make_entry("mlc1", "markdown lifecycle", Some("ms1"), MemoryEntryType::Conversation)).await.unwrap();
+    mem.store(make_entry(
+        "mlc1",
+        "markdown lifecycle",
+        Some("ms1"),
+        MemoryEntryType::Conversation,
+    ))
+    .await
+    .unwrap();
 
     // Get
     let entry = mem.get("mlc1").await.unwrap().unwrap();
@@ -90,24 +115,73 @@ async fn markdown_full_lifecycle() {
 
 #[tokio::test]
 async fn sqlite_search_with_unicode() {
-    let mem = create_memory_backend("sqlite", "sqlite::memory:").await.unwrap();
+    let mem = create_memory_backend("sqlite", "sqlite::memory:")
+        .await
+        .unwrap();
 
-    mem.store(make_entry("u1", "\u{1F600} emoji content \u{2764}", None, MemoryEntryType::Conversation)).await.unwrap();
-    mem.store(make_entry("u2", "\u{4F60}\u{597D}\u{4E16}\u{754C}", None, MemoryEntryType::Conversation)).await.unwrap();
+    mem.store(make_entry(
+        "u1",
+        "\u{1F600} emoji content \u{2764}",
+        None,
+        MemoryEntryType::Conversation,
+    ))
+    .await
+    .unwrap();
+    mem.store(make_entry(
+        "u2",
+        "\u{4F60}\u{597D}\u{4E16}\u{754C}",
+        None,
+        MemoryEntryType::Conversation,
+    ))
+    .await
+    .unwrap();
 
-    let results = mem.search("\u{4F60}\u{597D}", SearchOpts::default()).await.unwrap();
+    let results = mem
+        .search("\u{4F60}\u{597D}", SearchOpts::default())
+        .await
+        .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].id, "u2");
 }
 
 #[tokio::test]
 async fn sqlite_mixed_entry_types() {
-    let mem = create_memory_backend("sqlite", "sqlite::memory:").await.unwrap();
+    let mem = create_memory_backend("sqlite", "sqlite::memory:")
+        .await
+        .unwrap();
 
-    mem.store(make_entry("mix1", "convo", Some("s"), MemoryEntryType::Conversation)).await.unwrap();
-    mem.store(make_entry("mix2", "long term fact", None, MemoryEntryType::LongTerm)).await.unwrap();
-    mem.store(make_entry("mix3", "daily log", None, MemoryEntryType::DailyLog)).await.unwrap();
-    mem.store(make_entry("mix4", "skill definition", None, MemoryEntryType::Skill)).await.unwrap();
+    mem.store(make_entry(
+        "mix1",
+        "convo",
+        Some("s"),
+        MemoryEntryType::Conversation,
+    ))
+    .await
+    .unwrap();
+    mem.store(make_entry(
+        "mix2",
+        "long term fact",
+        None,
+        MemoryEntryType::LongTerm,
+    ))
+    .await
+    .unwrap();
+    mem.store(make_entry(
+        "mix3",
+        "daily log",
+        None,
+        MemoryEntryType::DailyLog,
+    ))
+    .await
+    .unwrap();
+    mem.store(make_entry(
+        "mix4",
+        "skill definition",
+        None,
+        MemoryEntryType::Skill,
+    ))
+    .await
+    .unwrap();
 
     // All should be retrievable
     assert!(mem.get("mix1").await.unwrap().is_some());

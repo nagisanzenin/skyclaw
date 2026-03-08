@@ -1,6 +1,6 @@
-use async_trait::async_trait;
-use crate::types::message::{CompletionRequest, CompletionResponse, StreamChunk};
 use crate::types::error::SkyclawError;
+use crate::types::message::{CompletionRequest, CompletionResponse, StreamChunk};
+use async_trait::async_trait;
 use futures::stream::BoxStream;
 
 /// AI model provider trait. Implement this for each AI backend (Anthropic, OpenAI, etc.)
@@ -10,10 +10,16 @@ pub trait Provider: Send + Sync {
     fn name(&self) -> &str;
 
     /// Send a completion request and get a full response
-    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, SkyclawError>;
+    async fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, SkyclawError>;
 
     /// Send a completion request and get a streaming response
-    async fn stream(&self, request: CompletionRequest) -> Result<BoxStream<'_, Result<StreamChunk, SkyclawError>>, SkyclawError>;
+    async fn stream(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<BoxStream<'_, Result<StreamChunk, SkyclawError>>, SkyclawError>;
 
     /// Check if the provider is healthy and reachable
     async fn health_check(&self) -> Result<bool, SkyclawError>;

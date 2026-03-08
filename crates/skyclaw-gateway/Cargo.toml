@@ -19,6 +19,13 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+async-trait.workspace = true
+uuid.workspace = true
+reqwest.workspace = true
+url.workspace = true
+base64.workspace = true
+rand.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 skyclaw-test-utils.workspace = true

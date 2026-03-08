@@ -79,24 +79,30 @@ impl Channel for CliChannel {
                         }
 
                         // Check if the user is sending a file path (prefixed with /file)
-                        let (text, attachments) = if let Some(path_str) = line.strip_prefix("/file ") {
-                            let path = std::path::Path::new(path_str.trim());
-                            if path.exists() {
-                                let att = AttachmentRef {
-                                    file_id: path.to_string_lossy().to_string(),
-                                    file_name: path.file_name().map(|n| n.to_string_lossy().to_string()),
-                                    mime_type: None,
-                                    size: tokio::fs::metadata(path).await.ok().map(|m| m.len() as usize),
-                                };
-                                (Some(format!("[file: {}]", path.display())), vec![att])
+                        let (text, attachments) =
+                            if let Some(path_str) = line.strip_prefix("/file ") {
+                                let path = std::path::Path::new(path_str.trim());
+                                if path.exists() {
+                                    let att = AttachmentRef {
+                                        file_id: path.to_string_lossy().to_string(),
+                                        file_name: path
+                                            .file_name()
+                                            .map(|n| n.to_string_lossy().to_string()),
+                                        mime_type: None,
+                                        size: tokio::fs::metadata(path)
+                                            .await
+                                            .ok()
+                                            .map(|m| m.len() as usize),
+                                    };
+                                    (Some(format!("[file: {}]", path.display())), vec![att])
+                                } else {
+                                    eprintln!("  [file not found: {}]", path.display());
+                                    eprint!("skyclaw> ");
+                                    continue;
+                                }
                             } else {
-                                eprintln!("  [file not found: {}]", path.display());
-                                eprint!("skyclaw> ");
-                                continue;
-                            }
-                        } else {
-                            (Some(line.clone()), vec![])
-                        };
+                                (Some(line.clone()), vec![])
+                            };
 
                         let msg = InboundMessage {
                             id: uuid::Uuid::new_v4().to_string(),
@@ -173,7 +179,10 @@ impl FileTransfer for CliChannel {
             let size = data.len();
             files.push(ReceivedFile {
                 name: att.file_name.clone().unwrap_or_else(|| "file".to_string()),
-                mime_type: att.mime_type.clone().unwrap_or_else(|| "application/octet-stream".to_string()),
+                mime_type: att
+                    .mime_type
+                    .clone()
+                    .unwrap_or_else(|| "application/octet-stream".to_string()),
                 size,
                 data: Bytes::from(data),
             });
@@ -186,17 +195,17 @@ impl FileTransfer for CliChannel {
         let data = match &file.data {
             FileData::Bytes(b) => b.clone(),
             FileData::Url(url) => {
-                return Err(SkyclawError::FileTransfer(
-                    format!("CLI channel does not support URL file sending: {url}"),
-                ));
+                return Err(SkyclawError::FileTransfer(format!(
+                    "CLI channel does not support URL file sending: {url}"
+                )));
             }
         };
-        tokio::fs::create_dir_all(&self.workspace).await.map_err(|e| {
-            SkyclawError::FileTransfer(format!("Failed to create workspace: {e}"))
-        })?;
-        tokio::fs::write(&dest, &data).await.map_err(|e| {
-            SkyclawError::FileTransfer(format!("Failed to write file: {e}"))
-        })?;
+        tokio::fs::create_dir_all(&self.workspace)
+            .await
+            .map_err(|e| SkyclawError::FileTransfer(format!("Failed to create workspace: {e}")))?;
+        tokio::fs::write(&dest, &data)
+            .await
+            .map_err(|e| SkyclawError::FileTransfer(format!("Failed to write file: {e}")))?;
 
         if let Some(caption) = &file.caption {
             println!("  [file saved: {} — {}]", dest.display(), caption);

@@ -91,7 +91,13 @@ impl SessionManager {
     }
 
     /// Create a new SessionContext.
-    fn make_session(&self, channel: &str, chat_id: &str, user_id: &str, key: &str) -> SessionContext {
+    fn make_session(
+        &self,
+        channel: &str,
+        chat_id: &str,
+        user_id: &str,
+        key: &str,
+    ) -> SessionContext {
         SessionContext {
             session_id: key.to_string(),
             channel: channel.to_string(),
@@ -160,7 +166,9 @@ mod tests {
     #[tokio::test]
     async fn create_session_returns_new_session() {
         let mgr = SessionManager::new();
-        let session = mgr.get_or_create_session("telegram", "chat1", "user1").await;
+        let session = mgr
+            .get_or_create_session("telegram", "chat1", "user1")
+            .await;
         assert_eq!(session.channel, "telegram");
         assert_eq!(session.chat_id, "chat1");
         assert_eq!(session.user_id, "user1");
@@ -215,10 +223,12 @@ mod tests {
         let mut session = mgr.get_or_create_session("cli", "c1", "u1").await;
 
         // Simulate adding history
-        session.history.push(skyclaw_core::types::message::ChatMessage {
-            role: skyclaw_core::types::message::Role::User,
-            content: skyclaw_core::types::message::MessageContent::Text("hello".to_string()),
-        });
+        session
+            .history
+            .push(skyclaw_core::types::message::ChatMessage {
+                role: skyclaw_core::types::message::Role::User,
+                content: skyclaw_core::types::message::MessageContent::Text("hello".to_string()),
+            });
         mgr.update_session(session).await;
 
         let restored = mgr.get_or_create_session("cli", "c1", "u1").await;
@@ -243,7 +253,8 @@ mod tests {
         for i in 0..10 {
             let m = mgr.clone();
             handles.push(tokio::spawn(async move {
-                m.get_or_create_session("cli", &format!("chat{i}"), "user").await
+                m.get_or_create_session("cli", &format!("chat{i}"), "user")
+                    .await
             }));
         }
 
@@ -270,7 +281,9 @@ mod tests {
     #[tokio::test]
     async fn session_key_with_special_characters() {
         let mgr = SessionManager::new();
-        let session = mgr.get_or_create_session("tg", "chat:with:colons", "user@domain").await;
+        let session = mgr
+            .get_or_create_session("tg", "chat:with:colons", "user@domain")
+            .await;
         assert_eq!(session.session_id, "tg:chat:with:colons:user@domain");
     }
 

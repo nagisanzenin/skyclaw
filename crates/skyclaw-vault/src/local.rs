@@ -14,8 +14,8 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
 
-use skyclaw_core::Vault;
 use skyclaw_core::types::error::SkyclawError;
+use skyclaw_core::Vault;
 
 /// On-disk representation of a single encrypted secret.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,9 +53,9 @@ impl LocalVault {
 
     /// Create (or open) a local vault in a custom directory.
     pub async fn with_dir(dir: PathBuf) -> Result<Self, SkyclawError> {
-        tokio::fs::create_dir_all(&dir).await.map_err(|e| {
-            SkyclawError::Vault(format!("failed to create vault directory: {e}"))
-        })?;
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| SkyclawError::Vault(format!("failed to create vault directory: {e}")))?;
 
         let vault_path = dir.join("vault.enc");
         let key_path = dir.join("vault.key");
@@ -86,9 +86,9 @@ impl LocalVault {
         let mut key_bytes = Zeroizing::new([0u8; 32]);
         OsRng.fill_bytes(key_bytes.as_mut());
 
-        tokio::fs::write(&self.key_path, key_bytes.as_ref()).await.map_err(|e| {
-            SkyclawError::Vault(format!("failed to write vault key: {e}"))
-        })?;
+        tokio::fs::write(&self.key_path, key_bytes.as_ref())
+            .await
+            .map_err(|e| SkyclawError::Vault(format!("failed to write vault key: {e}")))?;
 
         // Best-effort: restrict permissions to owner-only on Unix.
         #[cfg(unix)]
@@ -107,13 +107,13 @@ impl LocalVault {
     /// The returned key is wrapped in `Zeroizing` so it is automatically
     /// zeroized when dropped, preventing key material from lingering in memory.
     async fn read_key(&self) -> Result<Zeroizing<[u8; 32]>, SkyclawError> {
-        let bytes = tokio::fs::read(&self.key_path).await.map_err(|e| {
-            SkyclawError::Vault(format!("failed to read vault key: {e}"))
-        })?;
+        let bytes = tokio::fs::read(&self.key_path)
+            .await
+            .map_err(|e| SkyclawError::Vault(format!("failed to read vault key: {e}")))?;
 
-        let key: [u8; 32] = bytes.try_into().map_err(|_| {
-            SkyclawError::Vault("vault key must be exactly 32 bytes".into())
-        })?;
+        let key: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| SkyclawError::Vault("vault key must be exactly 32 bytes".into()))?;
 
         Ok(Zeroizing::new(key))
     }
@@ -124,7 +124,10 @@ impl LocalVault {
         ChaCha20Poly1305::new(key.as_ref().into())
     }
 
-    fn encrypt(cipher: &ChaCha20Poly1305, plaintext: &[u8]) -> Result<(Vec<u8>, [u8; 12]), SkyclawError> {
+    fn encrypt(
+        cipher: &ChaCha20Poly1305,
+        plaintext: &[u8],
+    ) -> Result<(Vec<u8>, [u8; 12]), SkyclawError> {
         let mut nonce_bytes = [0u8; 12];
         OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -152,13 +155,16 @@ impl LocalVault {
 
     /// Load the on-disk vault file into the in-memory cache.
     async fn load(&self) -> Result<(), SkyclawError> {
-        if !tokio::fs::try_exists(&self.vault_path).await.unwrap_or(false) {
+        if !tokio::fs::try_exists(&self.vault_path)
+            .await
+            .unwrap_or(false)
+        {
             return Ok(());
         }
 
-        let data = tokio::fs::read_to_string(&self.vault_path).await.map_err(|e| {
-            SkyclawError::Vault(format!("failed to read vault file: {e}"))
-        })?;
+        let data = tokio::fs::read_to_string(&self.vault_path)
+            .await
+            .map_err(|e| SkyclawError::Vault(format!("failed to read vault file: {e}")))?;
 
         if data.trim().is_empty() {
             return Ok(());
@@ -179,9 +185,9 @@ impl LocalVault {
         let json = serde_json::to_string_pretty(&*cache)?;
         drop(cache);
 
-        tokio::fs::write(&self.vault_path, json.as_bytes()).await.map_err(|e| {
-            SkyclawError::Vault(format!("failed to write vault file: {e}"))
-        })?;
+        tokio::fs::write(&self.vault_path, json.as_bytes())
+            .await
+            .map_err(|e| SkyclawError::Vault(format!("failed to write vault file: {e}")))?;
 
         Ok(())
     }
@@ -314,9 +320,14 @@ mod tests {
     #[tokio::test]
     async fn round_trip() {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
-        vault.store_secret("test/key", b"hello world").await.unwrap();
+        vault
+            .store_secret("test/key", b"hello world")
+            .await
+            .unwrap();
 
         assert!(vault.has_key("test/key").await.unwrap());
         assert!(!vault.has_key("missing").await.unwrap());
@@ -344,7 +355,9 @@ mod tests {
     #[tokio::test]
     async fn empty_vault_list_keys_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
         let keys = vault.list_keys().await.unwrap();
         assert!(keys.is_empty());
@@ -353,7 +366,9 @@ mod tests {
     #[tokio::test]
     async fn empty_vault_get_nonexistent_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
         let result = vault.get_secret("nonexistent").await.unwrap();
         assert!(result.is_none());
@@ -362,7 +377,9 @@ mod tests {
     #[tokio::test]
     async fn delete_nonexistent_key_does_not_error() {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
         // Deleting a missing key should not return an error
         let result = vault.delete_secret("ghost_key").await;
@@ -372,7 +389,9 @@ mod tests {
     #[tokio::test]
     async fn store_overwrite_preserves_created_at() {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
         vault.store_secret("ow", b"v1").await.unwrap();
         // Small delay to ensure timestamp difference
@@ -391,7 +410,9 @@ mod tests {
     #[tokio::test]
     async fn empty_plaintext_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
         vault.store_secret("empty", b"").await.unwrap();
         let plain = vault.get_secret("empty").await.unwrap().unwrap();
@@ -401,7 +422,9 @@ mod tests {
     #[tokio::test]
     async fn binary_data_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
         let binary: Vec<u8> = (0..=255).collect();
         vault.store_secret("bin", &binary).await.unwrap();
@@ -412,7 +435,9 @@ mod tests {
     #[tokio::test]
     async fn large_secret_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
         let large = vec![0xABu8; 64 * 1024]; // 64 KB
         vault.store_secret("large", &large).await.unwrap();
@@ -429,7 +454,9 @@ mod tests {
 
         // Create a valid key first
         {
-            let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+            let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+                .await
+                .unwrap();
             vault.store_secret("k", b"v").await.unwrap();
         }
 
@@ -447,7 +474,9 @@ mod tests {
 
         // Create vault and key, then empty the vault file
         {
-            let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+            let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+                .await
+                .unwrap();
             vault.store_secret("k", b"v").await.unwrap();
         }
 
@@ -456,7 +485,9 @@ mod tests {
         std::fs::write(&vault_path, "").unwrap();
 
         // Should load fine, treating empty as no secrets
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
         let keys = vault.list_keys().await.unwrap();
         assert!(keys.is_empty());
     }
@@ -467,13 +498,20 @@ mod tests {
 
         // Store with first instance
         {
-            let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
-            vault.store_secret("persist_key", b"persist_value").await.unwrap();
+            let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+                .await
+                .unwrap();
+            vault
+                .store_secret("persist_key", b"persist_value")
+                .await
+                .unwrap();
         }
 
         // Load with second instance
         {
-            let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+            let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+                .await
+                .unwrap();
             let plain = vault.get_secret("persist_key").await.unwrap().unwrap();
             assert_eq!(plain, b"persist_value");
         }
@@ -483,7 +521,9 @@ mod tests {
     async fn concurrent_reads_succeed() {
         let tmp = tempfile::tempdir().unwrap();
         let vault = std::sync::Arc::new(
-            LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap()
+            LocalVault::with_dir(tmp.path().to_path_buf())
+                .await
+                .unwrap(),
         );
 
         vault.store_secret("concurrent", b"data").await.unwrap();
@@ -505,7 +545,9 @@ mod tests {
     #[tokio::test]
     async fn multiple_keys_sorted_order() {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
         vault.store_secret("zeta", b"z").await.unwrap();
         vault.store_secret("alpha", b"a").await.unwrap();
@@ -518,7 +560,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_uri_nonexistent_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
         let result = vault.resolve_uri("vault://skyclaw/missing").await.unwrap();
         assert!(result.is_none());
@@ -527,7 +571,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_uri_invalid_prefix_errors() {
         let tmp = tempfile::tempdir().unwrap();
-        let vault = LocalVault::with_dir(tmp.path().to_path_buf()).await.unwrap();
+        let vault = LocalVault::with_dir(tmp.path().to_path_buf())
+            .await
+            .unwrap();
 
         let result = vault.resolve_uri("http://skyclaw/key").await;
         assert!(result.is_err());

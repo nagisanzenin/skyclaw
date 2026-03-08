@@ -57,7 +57,11 @@ impl Tool for CheckMessagesTool {
         }
     }
 
-    async fn execute(&self, _input: ToolInput, ctx: &ToolContext) -> Result<ToolOutput, SkyclawError> {
+    async fn execute(
+        &self,
+        _input: ToolInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, SkyclawError> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let messages = pending.remove(&ctx.chat_id).unwrap_or_default();
 

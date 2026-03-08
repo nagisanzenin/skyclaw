@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use crate::types::error::SkyclawError;
+use async_trait::async_trait;
 
 /// A secret entry in the vault
 #[derive(Debug, Clone)]

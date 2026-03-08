@@ -75,12 +75,12 @@ mod tests {
     fn health_response_serializes_correctly() {
         let resp = HealthResponse {
             status: "ok",
-            version: "0.1.0",
+            version: "1.0.0",
             uptime_seconds: 42,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["status"], "ok");
-        assert_eq!(json["version"], "0.1.0");
+        assert_eq!(json["version"], "1.0.0");
         assert_eq!(json["uptime_seconds"], 42);
     }
 
@@ -88,7 +88,7 @@ mod tests {
     fn status_response_serializes_correctly() {
         let resp = StatusResponse {
             status: "ok",
-            version: "0.1.0",
+            version: "1.0.0",
             provider: "anthropic".to_string(),
             channels: vec!["telegram".to_string(), "cli".to_string()],
             tools: vec!["shell".to_string()],
