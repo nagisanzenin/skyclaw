@@ -12,6 +12,7 @@
 use std::path::Path;
 
 use skyclaw_core::types::config::AgentConfig;
+use skyclaw_core::types::optimization::PromptTier;
 use skyclaw_core::Tool;
 use tracing::debug;
 
@@ -64,6 +65,7 @@ pub struct SystemPromptBuilder<'a> {
     tools: &'a [&'a dyn Tool],
     has_done_criteria: bool,
     config: Option<&'a AgentConfig>,
+    prompt_tier: PromptTier,
 }
 
 impl<'a> SystemPromptBuilder<'a> {
@@ -74,6 +76,7 @@ impl<'a> SystemPromptBuilder<'a> {
             tools: &[],
             has_done_criteria: false,
             config: None,
+            prompt_tier: PromptTier::Standard,
         }
     }
 
@@ -104,6 +107,12 @@ impl<'a> SystemPromptBuilder<'a> {
         self
     }
 
+    /// Set the prompt tier for token-optimized prompt construction.
+    pub fn prompt_tier(mut self, tier: PromptTier) -> Self {
+        self.prompt_tier = tier;
+        self
+    }
+
     /// Build the final system prompt string.
     pub fn build(self) -> String {
         let sections = self.build_sections();
@@ -131,46 +140,76 @@ impl<'a> SystemPromptBuilder<'a> {
             .join("\n\n")
     }
 
-    /// Assemble the ordered list of sections.
+    /// Assemble the ordered list of sections based on the active prompt tier.
+    ///
+    /// - **Minimal**: Identity only — minimum viable prompt.
+    /// - **Basic**: Identity + tool list + workspace + general guidelines.
+    /// - **Standard**: Full current behavior (default).
+    /// - **Full**: Standard + planning protocol.
     fn build_sections(&self) -> Vec<PromptSection> {
         let mut sections = Vec::new();
 
-        // 1. Identity
+        // Identity is always included (all tiers)
         sections.push(self.section_identity());
 
-        // 2. Tools (only if any are present)
-        if !self.tools.is_empty() {
-            sections.push(self.section_tools());
+        match self.prompt_tier {
+            PromptTier::Minimal => {
+                // Minimal: identity only. Done.
+            }
+            PromptTier::Basic => {
+                // Basic: identity + tool list + general guidelines
+                if !self.tools.is_empty() {
+                    sections.push(self.section_tools());
+                }
+                if let Some(ws) = self.workspace {
+                    sections.push(self.section_workspace(ws));
+                }
+                sections.push(self.section_general_guidelines());
+            }
+            PromptTier::Standard => {
+                // Standard: full current behavior
+                if !self.tools.is_empty() {
+                    sections.push(self.section_tools());
+                }
+                if let Some(ws) = self.workspace {
+                    sections.push(self.section_workspace(ws));
+                }
+                if self.has_file_tools() {
+                    sections.push(self.section_file_protocol());
+                }
+                if !self.tools.is_empty() {
+                    sections.push(self.section_tool_guidelines());
+                }
+                sections.push(self.section_general_guidelines());
+                sections.push(self.section_verification());
+                if self.has_done_criteria {
+                    sections.push(self.section_done_criteria());
+                }
+                sections.push(self.section_self_correction());
+            }
+            PromptTier::Full => {
+                // Full: everything in Standard + planning protocol
+                if !self.tools.is_empty() {
+                    sections.push(self.section_tools());
+                }
+                if let Some(ws) = self.workspace {
+                    sections.push(self.section_workspace(ws));
+                }
+                if self.has_file_tools() {
+                    sections.push(self.section_file_protocol());
+                }
+                if !self.tools.is_empty() {
+                    sections.push(self.section_tool_guidelines());
+                }
+                sections.push(self.section_general_guidelines());
+                sections.push(self.section_verification());
+                if self.has_done_criteria {
+                    sections.push(self.section_done_criteria());
+                }
+                sections.push(self.section_self_correction());
+                sections.push(self.section_planning_protocol());
+            }
         }
-
-        // 3. Workspace
-        if let Some(ws) = self.workspace {
-            sections.push(self.section_workspace(ws));
-        }
-
-        // 4. File protocol (only when file-related tools exist)
-        if self.has_file_tools() {
-            sections.push(self.section_file_protocol());
-        }
-
-        // 5. Tool guidelines (only when tools exist)
-        if !self.tools.is_empty() {
-            sections.push(self.section_tool_guidelines());
-        }
-
-        // 6. General guidelines (always)
-        sections.push(self.section_general_guidelines());
-
-        // 7. Verification (always)
-        sections.push(self.section_verification());
-
-        // 8. DONE criteria (conditional)
-        if self.has_done_criteria {
-            sections.push(self.section_done_criteria());
-        }
-
-        // 9. Self-correction (always)
-        sections.push(self.section_self_correction());
 
         sections
     }
@@ -299,6 +338,20 @@ impl<'a> SystemPromptBuilder<'a> {
         }
     }
 
+    fn section_planning_protocol(&self) -> PromptSection {
+        PromptSection {
+            name: "planning",
+            text: concat!(
+                "Planning for complex tasks:\n",
+                "- Decompose into numbered steps before executing\n",
+                "- Identify dependencies between steps\n",
+                "- Execute sequentially, verify each step\n",
+                "- If a step fails, reassess remaining steps"
+            )
+            .to_string(),
+        }
+    }
+
     // -- Helpers ------------------------------------------------------------
 
     /// Check whether a tool with the given name is in the enabled set.
@@ -341,6 +394,24 @@ pub fn build_system_prompt(
         .tools(tools)
         .workspace(workspace)
         .done_criteria(has_done_criteria)
+        .build()
+}
+
+/// Build a tier-aware system prompt. Uses prompt stratification to minimize
+/// token usage based on task complexity.
+pub fn build_tiered_system_prompt(
+    config: &AgentConfig,
+    tools: &[&dyn Tool],
+    workspace: &Path,
+    has_done_criteria: bool,
+    tier: PromptTier,
+) -> String {
+    SystemPromptBuilder::new()
+        .config(config)
+        .tools(tools)
+        .workspace(workspace)
+        .done_criteria(has_done_criteria)
+        .prompt_tier(tier)
         .build()
 }
 
@@ -694,5 +765,147 @@ If an approach fails repeatedly, do NOT retry the same way:\n\
         let prompt = build_system_prompt(&config, &tools, &workspace(), true);
 
         assert!(prompt.contains("Never expose secrets"));
+    }
+
+    // -- Prompt tier tests --------------------------------------------------
+
+    #[test]
+    fn minimal_tier_is_smallest() {
+        let shell = MockTool::new("shell");
+        let tools: Vec<&dyn Tool> = vec![&shell];
+
+        let minimal = SystemPromptBuilder::new()
+            .workspace(&workspace())
+            .tools(&tools)
+            .prompt_tier(PromptTier::Minimal)
+            .build();
+
+        let standard = SystemPromptBuilder::new()
+            .workspace(&workspace())
+            .tools(&tools)
+            .prompt_tier(PromptTier::Standard)
+            .build();
+
+        assert!(
+            estimate_prompt_tokens(&minimal) < estimate_prompt_tokens(&standard),
+            "Minimal ({}) should be smaller than Standard ({})",
+            estimate_prompt_tokens(&minimal),
+            estimate_prompt_tokens(&standard)
+        );
+    }
+
+    #[test]
+    fn minimal_tier_only_has_identity() {
+        let shell = MockTool::new("shell");
+        let tools: Vec<&dyn Tool> = vec![&shell];
+
+        let prompt = SystemPromptBuilder::new()
+            .workspace(&workspace())
+            .tools(&tools)
+            .prompt_tier(PromptTier::Minimal)
+            .build();
+
+        assert!(prompt.contains("SkyClaw"));
+        assert!(!prompt.contains("Available tools:"));
+        assert!(!prompt.contains("Verification"));
+        assert!(!prompt.contains("Self-correction"));
+    }
+
+    #[test]
+    fn basic_tier_has_tools_but_no_verification() {
+        let shell = MockTool::new("shell");
+        let tools: Vec<&dyn Tool> = vec![&shell];
+
+        let prompt = SystemPromptBuilder::new()
+            .workspace(&workspace())
+            .tools(&tools)
+            .prompt_tier(PromptTier::Basic)
+            .build();
+
+        assert!(prompt.contains("SkyClaw"));
+        assert!(prompt.contains("Available tools:"));
+        assert!(!prompt.contains("Verification"));
+        assert!(!prompt.contains("Self-correction"));
+    }
+
+    #[test]
+    fn full_tier_has_planning() {
+        let shell = MockTool::new("shell");
+        let tools: Vec<&dyn Tool> = vec![&shell];
+
+        let prompt = SystemPromptBuilder::new()
+            .workspace(&workspace())
+            .tools(&tools)
+            .prompt_tier(PromptTier::Full)
+            .build();
+
+        assert!(prompt.contains("Planning for complex tasks"));
+    }
+
+    #[test]
+    fn standard_tier_matches_default_behavior() {
+        let shell = MockTool::new("shell");
+        let browser = MockTool::new("browser");
+        let tools: Vec<&dyn Tool> = vec![&shell, &browser];
+
+        let default = SystemPromptBuilder::new()
+            .workspace(&workspace())
+            .tools(&tools)
+            .done_criteria(true)
+            .build();
+
+        let standard = SystemPromptBuilder::new()
+            .workspace(&workspace())
+            .tools(&tools)
+            .done_criteria(true)
+            .prompt_tier(PromptTier::Standard)
+            .build();
+
+        assert_eq!(
+            default, standard,
+            "Standard tier should match default behavior"
+        );
+    }
+
+    #[test]
+    fn tier_token_ordering() {
+        let shell = MockTool::new("shell");
+        let file_read = MockTool::new("file_read");
+        let tools: Vec<&dyn Tool> = vec![&shell, &file_read];
+
+        let minimal_tokens = estimate_prompt_tokens(
+            &SystemPromptBuilder::new()
+                .workspace(&workspace())
+                .tools(&tools)
+                .prompt_tier(PromptTier::Minimal)
+                .build(),
+        );
+        let basic_tokens = estimate_prompt_tokens(
+            &SystemPromptBuilder::new()
+                .workspace(&workspace())
+                .tools(&tools)
+                .prompt_tier(PromptTier::Basic)
+                .build(),
+        );
+        let standard_tokens = estimate_prompt_tokens(
+            &SystemPromptBuilder::new()
+                .workspace(&workspace())
+                .tools(&tools)
+                .done_criteria(true)
+                .prompt_tier(PromptTier::Standard)
+                .build(),
+        );
+        let full_tokens = estimate_prompt_tokens(
+            &SystemPromptBuilder::new()
+                .workspace(&workspace())
+                .tools(&tools)
+                .done_criteria(true)
+                .prompt_tier(PromptTier::Full)
+                .build(),
+        );
+
+        assert!(minimal_tokens < basic_tokens, "Minimal < Basic");
+        assert!(basic_tokens < standard_tokens, "Basic < Standard");
+        assert!(standard_tokens < full_tokens, "Standard < Full");
     }
 }

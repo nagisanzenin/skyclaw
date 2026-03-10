@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use skyclaw_core::types::message::{ChatMessage, ContentPart, MessageContent, Role};
+use skyclaw_core::types::optimization::ExecutionProfile;
 use tracing::{debug, info};
 
 // ── Read-only / simple tool names ────────────────────────────────────────
@@ -44,6 +45,78 @@ const COMPLEX_KEYWORDS: &[&str] = &[
     "rewrite",
 ];
 
+/// Greeting/farewell patterns that indicate a trivial message.
+const TRIVIAL_PATTERNS: &[&str] = &[
+    "hi",
+    "hello",
+    "hey",
+    "thanks",
+    "thank you",
+    "bye",
+    "goodbye",
+    "good morning",
+    "good evening",
+    "good night",
+    "ok",
+    "okay",
+    "got it",
+    "sure",
+    "yes",
+    "no",
+    "yep",
+    "nope",
+    "cool",
+    "nice",
+    "great",
+    "awesome",
+    "perfect",
+    "understood",
+    "\u{1f44d}",
+    "\u{1f64f}",
+];
+
+/// Action verbs that indicate a non-trivial task.
+const ACTION_VERBS: &[&str] = &[
+    "find",
+    "create",
+    "run",
+    "deploy",
+    "read",
+    "write",
+    "search",
+    "build",
+    "fix",
+    "update",
+    "delete",
+    "install",
+    "configure",
+    "setup",
+    "check",
+    "test",
+    "compile",
+    "execute",
+    "fetch",
+    "download",
+    "upload",
+    "send",
+    "list",
+    "show",
+    "display",
+    "open",
+    "close",
+    "start",
+    "stop",
+    "restart",
+    "analyze",
+    "explain",
+    "help me",
+    "can you",
+    "please",
+];
+
+/// Maximum message length in chars for a trivial classification.
+const TRIVIAL_MAX_LEN: usize = 50;
+
 /// Maximum task description length (in chars) for a task to be considered Simple.
 const SIMPLE_DESCRIPTION_MAX_LEN: usize = 100;
 
@@ -55,6 +128,9 @@ const COMPLEX_HISTORY_THRESHOLD: usize = 10;
 /// Task complexity level as determined by rule-based classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TaskComplexity {
+    /// Trivial: pure conversation, no tools needed.
+    /// Greetings, thanks, one-word responses, simple questions with no action verbs.
+    Trivial,
     /// Simple: single read-only tool, short description, shallow history.
     Simple,
     /// Standard: the default bucket for everything that is neither
@@ -63,6 +139,18 @@ pub enum TaskComplexity {
     /// Complex: architecture/debug/refactor tasks, deep history, compound
     /// tool usage, or DONE criteria present.
     Complex,
+}
+
+impl TaskComplexity {
+    /// Get the execution profile for this complexity level.
+    pub fn execution_profile(&self) -> ExecutionProfile {
+        match self {
+            TaskComplexity::Trivial => ExecutionProfile::trivial(),
+            TaskComplexity::Simple => ExecutionProfile::simple(),
+            TaskComplexity::Standard => ExecutionProfile::standard(),
+            TaskComplexity::Complex => ExecutionProfile::complex(),
+        }
+    }
 }
 
 /// Model tier that maps to a configured model name.
@@ -218,6 +306,26 @@ impl ModelRouter {
     ) -> TaskComplexity {
         let desc_lower = task_description.to_lowercase();
 
+        // ── Trivial signals ─────────────────────────────────────────
+        let short_msg = task_description.len() <= TRIVIAL_MAX_LEN;
+        let no_tools = tool_names.is_empty();
+        let shallow_history = history.len() <= 3;
+        let has_action_verb = ACTION_VERBS.iter().any(|v| desc_lower.contains(v));
+        let is_greeting = TRIVIAL_PATTERNS
+            .iter()
+            .any(|p| desc_lower.trim() == *p || desc_lower.starts_with(p));
+        let has_path_or_url =
+            desc_lower.contains('/') || desc_lower.contains("http") || desc_lower.contains("```");
+
+        if short_msg
+            && no_tools
+            && (shallow_history || is_greeting)
+            && !has_action_verb
+            && !has_path_or_url
+        {
+            return TaskComplexity::Trivial;
+        }
+
         // ── Complex signals ──────────────────────────────────────────
 
         // 1. Keywords indicating complex work.
@@ -262,6 +370,7 @@ impl ModelRouter {
     /// Map a complexity level to a model tier.
     pub fn select_tier(complexity: TaskComplexity) -> ModelTier {
         match complexity {
+            TaskComplexity::Trivial => ModelTier::Fast,
             TaskComplexity::Simple => ModelTier::Fast,
             TaskComplexity::Standard => ModelTier::Primary,
             TaskComplexity::Complex => ModelTier::Premium,
@@ -392,7 +501,7 @@ mod tests {
         let router = make_router();
         let history = vec![user_msg("hi")];
         let complexity = router.classify_complexity(&history, &[], "hi");
-        assert_eq!(complexity, TaskComplexity::Simple);
+        assert_eq!(complexity, TaskComplexity::Trivial);
     }
 
     #[test]
@@ -767,10 +876,10 @@ mod tests {
     // ── Edge cases ───────────────────────────────────────────────────
 
     #[test]
-    fn empty_history_and_no_tools_is_simple() {
+    fn empty_history_and_no_tools_is_trivial() {
         let router = make_router();
         let complexity = router.classify_complexity(&[], &[], "hello");
-        assert_eq!(complexity, TaskComplexity::Simple);
+        assert_eq!(complexity, TaskComplexity::Trivial);
     }
 
     #[test]
@@ -811,5 +920,76 @@ mod tests {
             "build feature X. acceptance criteria: tests pass, docs updated",
         );
         assert_eq!(complexity, TaskComplexity::Complex);
+    }
+
+    // ── Trivial classification tests ────────────────────────────────
+
+    #[test]
+    fn trivial_greeting_hi() {
+        let router = make_router();
+        let complexity = router.classify_complexity(&[], &[], "hi");
+        assert_eq!(complexity, TaskComplexity::Trivial);
+    }
+
+    #[test]
+    fn trivial_greeting_thanks() {
+        let router = make_router();
+        let complexity = router.classify_complexity(&[], &[], "thanks");
+        assert_eq!(complexity, TaskComplexity::Trivial);
+    }
+
+    #[test]
+    fn trivial_short_no_action() {
+        let router = make_router();
+        let complexity = router.classify_complexity(&[], &[], "cool");
+        assert_eq!(complexity, TaskComplexity::Trivial);
+    }
+
+    #[test]
+    fn not_trivial_with_action_verb() {
+        let router = make_router();
+        let complexity = router.classify_complexity(&[], &[], "help me fix this");
+        assert_ne!(complexity, TaskComplexity::Trivial);
+    }
+
+    #[test]
+    fn not_trivial_with_path() {
+        let router = make_router();
+        let complexity = router.classify_complexity(&[], &[], "read /etc/hosts");
+        assert_ne!(complexity, TaskComplexity::Trivial);
+    }
+
+    #[test]
+    fn not_trivial_long_message() {
+        let router = make_router();
+        let long = "I was wondering if you could tell me a bit about how the authentication system works in this project";
+        let complexity = router.classify_complexity(&[], &[], long);
+        assert_ne!(complexity, TaskComplexity::Trivial);
+    }
+
+    #[test]
+    fn trivial_emoji_response() {
+        let router = make_router();
+        let complexity = router.classify_complexity(&[], &[], "\u{1f44d}");
+        assert_eq!(complexity, TaskComplexity::Trivial);
+    }
+
+    #[test]
+    fn execution_profile_from_complexity() {
+        assert!(TaskComplexity::Trivial.execution_profile().skip_tool_loop);
+        assert!(!TaskComplexity::Simple.execution_profile().skip_tool_loop);
+        assert!(TaskComplexity::Standard.execution_profile().use_learn);
+        assert_eq!(
+            TaskComplexity::Complex.execution_profile().max_iterations,
+            10
+        );
+    }
+
+    #[test]
+    fn select_tier_trivial_maps_to_fast() {
+        assert_eq!(
+            ModelRouter::select_tier(TaskComplexity::Trivial),
+            ModelTier::Fast
+        );
     }
 }

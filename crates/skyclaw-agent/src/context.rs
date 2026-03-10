@@ -19,12 +19,14 @@ use std::sync::Arc;
 use skyclaw_core::types::message::{
     ChatMessage, CompletionRequest, ContentPart, MessageContent, Role, ToolDefinition,
 };
+use skyclaw_core::types::optimization::PromptTier;
 use skyclaw_core::types::session::SessionContext;
 use skyclaw_core::MemoryEntryType;
 use skyclaw_core::{Memory, SearchOpts, Tool};
 use tracing::{debug, warn};
 
 use crate::learning;
+use crate::prompt_optimizer::build_tiered_system_prompt;
 use crate::runtime::model_supports_vision;
 
 /// Minimum number of recent messages to always keep in context.
@@ -65,6 +67,7 @@ fn estimate_message_tokens(msg: &ChatMessage) -> usize {
 
 /// Build a CompletionRequest from all available context using priority-based
 /// token budgeting.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_context(
     session: &SessionContext,
     memory: &dyn Memory,
@@ -73,11 +76,26 @@ pub async fn build_context(
     system_prompt: Option<&str>,
     max_turns: usize,
     max_context_tokens: usize,
+    prompt_tier: Option<PromptTier>,
 ) -> CompletionRequest {
     let budget = max_context_tokens;
 
     // ── Category 1: System prompt ──────────────────────────────────
-    let system = build_system_prompt(system_prompt, tools, session);
+    let system = match prompt_tier {
+        Some(tier) if system_prompt.is_none() => {
+            // V2: Use tiered prompt from prompt_optimizer
+            let config = skyclaw_core::types::config::AgentConfig::default();
+            let tool_refs: Vec<&dyn Tool> = tools.iter().map(|t| t.as_ref()).collect();
+            Some(build_tiered_system_prompt(
+                &config,
+                &tool_refs,
+                &session.workspace_path,
+                false, // done_criteria handled separately
+                tier,
+            ))
+        }
+        _ => build_system_prompt(system_prompt, tools, session),
+    };
     let system_tokens = system.as_ref().map_or(0, |s| estimate_tokens(s));
 
     // ── Category 2: Tool definitions ───────────────────────────────
@@ -621,6 +639,7 @@ mod tests {
             Some("Custom prompt"),
             6,
             30_000,
+            None,
         )
         .await;
         assert_eq!(req.system.as_deref(), Some("Custom prompt"));
@@ -633,7 +652,17 @@ mod tests {
         let tools: Vec<Arc<dyn Tool>> = vec![];
         let session = make_session();
 
-        let req = build_context(&session, &memory, &tools, "test-model", None, 6, 30_000).await;
+        let req = build_context(
+            &session,
+            &memory,
+            &tools,
+            "test-model",
+            None,
+            6,
+            30_000,
+            None,
+        )
+        .await;
         assert!(req.system.is_some());
         assert!(req.system.unwrap().contains("SkyClaw"));
     }
@@ -647,7 +676,7 @@ mod tests {
         ];
         let session = make_session();
 
-        let req = build_context(&session, &memory, &tools, "model", None, 6, 30_000).await;
+        let req = build_context(&session, &memory, &tools, "model", None, 6, 30_000, None).await;
         assert_eq!(req.tools.len(), 2);
         assert_eq!(req.tools[0].name, "shell");
         assert_eq!(req.tools[1].name, "browser");
@@ -667,7 +696,7 @@ mod tests {
             content: MessageContent::Text("Hi there".to_string()),
         });
 
-        let req = build_context(&session, &memory, &tools, "model", None, 6, 30_000).await;
+        let req = build_context(&session, &memory, &tools, "model", None, 6, 30_000, None).await;
         // Messages should include the history
         assert!(req.messages.len() >= 2);
     }
@@ -691,7 +720,7 @@ mod tests {
         }
 
         // Use a very small budget to force dropping older messages
-        let req = build_context(&session, &memory, &tools, "model", None, 200, 2_000).await;
+        let req = build_context(&session, &memory, &tools, "model", None, 200, 2_000, None).await;
 
         // The most recent messages should always be present
         let last_msg = req.messages.last().expect("messages should not be empty");
@@ -722,7 +751,7 @@ mod tests {
         }
 
         // Budget of 2000 tokens can't fit all 5000 tokens of messages + system prompt
-        let req = build_context(&session, &memory, &tools, "model", None, 200, 2_000).await;
+        let req = build_context(&session, &memory, &tools, "model", None, 200, 2_000, None).await;
 
         // Check that a summary message was injected
         let has_summary = req.messages.iter().any(|m| {
@@ -934,7 +963,7 @@ mod tests {
             });
         }
 
-        let req = build_context(&session, &memory, &tools, "model", None, 200, 100_000).await;
+        let req = build_context(&session, &memory, &tools, "model", None, 200, 100_000, None).await;
 
         // Should have a chat digest in the messages
         let has_digest = req.messages.iter().any(|m| {

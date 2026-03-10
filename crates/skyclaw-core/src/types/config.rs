@@ -370,6 +370,11 @@ pub struct AgentConfig {
     /// Maximum total USD spend allowed per session (0.0 = unlimited).
     #[serde(default = "default_max_spend_usd")]
     pub max_spend_usd: f64,
+    /// Enable v2 agentic core optimizations: complexity classification,
+    /// prompt stratification, structured failures, trivial fast-path.
+    /// Default: false (v1 behavior preserved).
+    #[serde(default)]
+    pub v2_optimizations: bool,
 }
 
 impl Default for AgentConfig {
@@ -383,6 +388,7 @@ impl Default for AgentConfig {
             streaming_flush_interval_ms: 1000,
             streaming_tool_updates: true,
             max_spend_usd: 0.0,
+            v2_optimizations: false,
         }
     }
 }

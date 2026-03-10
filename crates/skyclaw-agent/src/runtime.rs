@@ -19,6 +19,11 @@ use tracing::{debug, info, warn};
 /// Image MIME types that vision-capable models can process.
 const IMAGE_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
 
+use crate::model_router::{ModelRouter, ModelRouterConfig};
+use crate::output_compression::compress_tool_output;
+use skyclaw_core::types::error::classify_tool_failure;
+use skyclaw_core::types::optimization::VerifyMode;
+
 use crate::budget::{self, BudgetTracker, ModelPricing};
 use crate::circuit_breaker::CircuitBreaker;
 use crate::context::build_context;
@@ -57,6 +62,10 @@ pub struct AgentRuntime {
     budget: BudgetTracker,
     /// Pricing for the current model.
     model_pricing: ModelPricing,
+    /// Whether v2 agentic core optimizations are enabled.
+    /// When true: complexity classification, prompt stratification,
+    /// structured failure injection, and trivial fast-path.
+    v2_optimizations: bool,
 }
 
 impl AgentRuntime {
@@ -85,6 +94,7 @@ impl AgentRuntime {
             task_queue: None,
             budget: BudgetTracker::new(0.0),
             model_pricing,
+            v2_optimizations: false,
         }
     }
 
@@ -119,6 +129,7 @@ impl AgentRuntime {
             task_queue: None,
             budget: BudgetTracker::new(max_spend_usd),
             model_pricing,
+            v2_optimizations: false,
         }
     }
 
@@ -126,6 +137,19 @@ impl AgentRuntime {
     pub fn with_task_queue(mut self, task_queue: Arc<TaskQueue>) -> Self {
         self.task_queue = Some(task_queue);
         self
+    }
+
+    /// Enable or disable v2 agentic core optimizations.
+    /// When enabled: complexity-aware prompt tiers, trivial fast-path,
+    /// structured failure classification, and complexity-scaled output caps.
+    pub fn with_v2_optimizations(mut self, enabled: bool) -> Self {
+        self.v2_optimizations = enabled;
+        self
+    }
+
+    /// Check whether v2 optimizations are enabled.
+    pub fn v2_enabled(&self) -> bool {
+        self.v2_optimizations
     }
 
     /// Process an inbound message through the full agent loop.
@@ -259,6 +283,27 @@ impl AgentRuntime {
             user_text = format!("{}\n\n{}", notice, user_text);
         }
 
+        // ── V2 Complexity Classification ─────────────────────────────
+        let execution_profile = if self.v2_optimizations {
+            let router = ModelRouter::new(ModelRouterConfig::default());
+            let complexity = router.classify_complexity(
+                &session.history,
+                &[], // no tool names known yet
+                &user_text,
+            );
+            let profile = complexity.execution_profile();
+            info!(
+                complexity = ?complexity,
+                prompt_tier = ?profile.prompt_tier,
+                skip_tool_loop = profile.skip_tool_loop,
+                max_iterations = profile.max_iterations,
+                "V2: Task classified"
+            );
+            Some(profile)
+        } else {
+            None
+        };
+
         // Append the user message to session history
         // If we have image parts, use Parts content; otherwise plain text.
         if image_parts.is_empty() {
@@ -347,7 +392,10 @@ impl AgentRuntime {
                 break;
             }
 
-            if rounds > self.max_tool_rounds {
+            let effective_max_rounds = execution_profile
+                .as_ref()
+                .map_or(self.max_tool_rounds, |p| p.max_iterations as usize);
+            if rounds > effective_max_rounds {
                 warn!(
                     "Exceeded maximum tool rounds ({}), forcing text reply",
                     self.max_tool_rounds
@@ -356,6 +404,7 @@ impl AgentRuntime {
             }
 
             // Build the completion request from full context
+            let prompt_tier = execution_profile.as_ref().map(|p| p.prompt_tier);
             let request = build_context(
                 session,
                 self.memory.as_ref(),
@@ -364,6 +413,7 @@ impl AgentRuntime {
                 self.system_prompt.as_deref(),
                 self.max_turns,
                 self.max_context_tokens,
+                prompt_tier,
             )
             .await;
 
@@ -483,9 +533,13 @@ impl AgentRuntime {
                 });
 
                 // ── Cross-Task Learning ──────────────────────────────
-                // Extract learnings from the completed conversation and
-                // persist them to memory for future context injection.
-                let learnings = learning::extract_learnings(&session.history);
+                // V2: Skip learning for trivial/simple tasks (use_learn=false)
+                let should_learn = execution_profile.as_ref().is_none_or(|p| p.use_learn);
+                let learnings = if should_learn {
+                    learning::extract_learnings(&session.history)
+                } else {
+                    Vec::new()
+                };
                 for l in &learnings {
                     let learning_json = serde_json::to_string(l).unwrap_or_default();
                     let entry = skyclaw_core::MemoryEntry {
@@ -555,15 +609,28 @@ impl AgentRuntime {
 
                 let result = execute_tool(tool_name, arguments.clone(), &self.tools, session).await;
 
+                let output_cap = execution_profile
+                    .as_ref()
+                    .map_or(MAX_TOOL_OUTPUT_CHARS, |p| p.max_tool_output_chars);
+
                 let (mut content, is_error) = match result {
                     Ok(output) => {
-                        let c = if output.content.len() > MAX_TOOL_OUTPUT_CHARS {
-                            let truncated = &output.content[..MAX_TOOL_OUTPUT_CHARS];
-                            format!(
-                                "{}...\n\n[Output truncated — {} chars total]",
-                                truncated,
-                                output.content.len()
-                            )
+                        let c = if output.content.len() > output_cap {
+                            // V2: use compress_tool_output for smarter truncation
+                            if self.v2_optimizations {
+                                compress_tool_output(
+                                    tool_name,
+                                    &output.content,
+                                    output_cap / 4, // convert chars to approx tokens
+                                )
+                            } else {
+                                let truncated = &output.content[..output_cap];
+                                format!(
+                                    "{}...\n\n[Output truncated — {} chars total]",
+                                    truncated,
+                                    output.content.len()
+                                )
+                            }
                         } else {
                             output.content
                         };
@@ -595,6 +662,18 @@ impl AgentRuntime {
                     }
                 } else {
                     failure_tracker.record_success(tool_name);
+                }
+
+                // V2: Structured failure classification
+                if self.v2_optimizations && is_error {
+                    let structured = classify_tool_failure(tool_name, None, &content);
+                    let compact = structured.to_context_string();
+                    content.push_str(&format!("\n\n{}", compact));
+                    debug!(
+                        kind = %structured.kind,
+                        retryable = %structured.retryable,
+                        "V2: Structured failure classified"
+                    );
                 }
 
                 tool_result_parts.push(ContentPart::ToolResult {
@@ -639,7 +718,14 @@ impl AgentRuntime {
             // Append a verification hint to the last tool result so the
             // LLM reviews outputs before proceeding. This is a zero-cost
             // prompt injection — no extra API call.
-            if self.verification_enabled {
+            // V2: Skip verification for Trivial/Simple tasks with VerifyMode::Skip or RuleBased
+            let should_verify = if let Some(ref profile) = execution_profile {
+                !matches!(profile.verify_mode, VerifyMode::Skip)
+            } else {
+                self.verification_enabled
+            };
+
+            if should_verify {
                 if let Some(ContentPart::ToolResult { content, .. }) = tool_result_parts.last_mut()
                 {
                     content.push_str(

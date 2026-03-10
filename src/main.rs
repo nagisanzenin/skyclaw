@@ -1417,18 +1417,21 @@ async fn main() -> Result<()> {
                     };
                     let provider: Arc<dyn skyclaw_core::Provider> =
                         Arc::from(skyclaw_providers::create_provider(&provider_config)?);
-                    let agent = Arc::new(skyclaw_agent::AgentRuntime::with_limits(
-                        provider.clone(),
-                        memory.clone(),
-                        tools.clone(),
-                        model.clone(),
-                        system_prompt.clone(),
-                        config.agent.max_turns,
-                        config.agent.max_context_tokens,
-                        config.agent.max_tool_rounds,
-                        config.agent.max_task_duration_secs,
-                        config.agent.max_spend_usd,
-                    ));
+                    let agent = Arc::new(
+                        skyclaw_agent::AgentRuntime::with_limits(
+                            provider.clone(),
+                            memory.clone(),
+                            tools.clone(),
+                            model.clone(),
+                            system_prompt.clone(),
+                            config.agent.max_turns,
+                            config.agent.max_context_tokens,
+                            config.agent.max_tool_rounds,
+                            config.agent.max_task_duration_secs,
+                            config.agent.max_spend_usd,
+                        )
+                        .with_v2_optimizations(config.agent.v2_optimizations),
+                    );
                     *agent_state.write().await = Some(agent);
                     tracing::info!(provider = %pname, model = %model, "Agent initialized");
                 }
@@ -1505,6 +1508,7 @@ async fn main() -> Result<()> {
                 let agent_max_tool_rounds = config.agent.max_tool_rounds;
                 let agent_max_task_duration = config.agent.max_task_duration_secs;
                 let agent_max_spend_usd = config.agent.max_spend_usd;
+                let agent_v2_opt = config.agent.v2_optimizations;
                 let provider_base_url = config.provider.base_url.clone();
                 let ws_path = workspace_path.clone();
                 let pending_clone = pending_messages.clone();
@@ -1588,6 +1592,7 @@ async fn main() -> Result<()> {
                             let max_rounds = agent_max_tool_rounds;
                             let max_task_duration = agent_max_task_duration;
                             let max_spend = agent_max_spend_usd;
+                            let v2_opt = agent_v2_opt;
                             let base_url = provider_base_url.clone();
                             let sender = sender.clone();
                             let workspace_path = ws_path.clone();
@@ -1751,7 +1756,7 @@ async fn main() -> Result<()> {
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ));
+                                                            ).with_v2_optimizations(v2_opt));
                                                             *agent_state.write().await = Some(new_agent);
                                                             tracing::info!(
                                                                 provider = %creds.active,
@@ -1886,7 +1891,7 @@ async fn main() -> Result<()> {
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ));
+                                                            ).with_v2_optimizations(v2_opt));
                                                             *agent_state.write().await = Some(new_agent);
                                                             let reply = skyclaw_core::types::message::OutboundMessage {
                                                                 chat_id: msg.chat_id.clone(),
@@ -1998,7 +2003,7 @@ async fn main() -> Result<()> {
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ));
+                                                            ).with_v2_optimizations(v2_opt));
                                                             *agent_state.write().await = Some(new_agent);
                                                             let key_count = keys.len();
                                                             let reply = skyclaw_core::types::message::OutboundMessage {
@@ -2253,7 +2258,7 @@ async fn main() -> Result<()> {
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ));
+                                                            ).with_v2_optimizations(v2_opt));
                                                             *agent_state.write().await = Some(new_agent);
                                                             tracing::info!(provider = %new_name, model = %new_model, "Agent hot-reloaded (key validated)");
                                                         }
@@ -2330,7 +2335,7 @@ async fn main() -> Result<()> {
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ));
+                                                            ).with_v2_optimizations(v2_opt));
                                                             *agent_state.write().await = Some(new_agent);
 
                                                             if let Err(e) = save_credentials(provider_name, &api_key, &model, custom_base_url.as_deref()).await {
@@ -2614,6 +2619,7 @@ async fn main() -> Result<()> {
             let max_rounds = config.agent.max_tool_rounds;
             let max_task_duration = config.agent.max_task_duration_secs;
             let max_spend = config.agent.max_spend_usd;
+            let v2_opt = config.agent.v2_optimizations;
 
             let mut agent_opt: Option<skyclaw_agent::AgentRuntime> = None;
 
@@ -2642,18 +2648,21 @@ async fn main() -> Result<()> {
                         Ok(provider) => {
                             let provider: Arc<dyn skyclaw_core::Provider> = Arc::from(provider);
                             let system_prompt = Some(build_system_prompt());
-                            agent_opt = Some(skyclaw_agent::AgentRuntime::with_limits(
-                                provider,
-                                memory.clone(),
-                                tools_template.clone(),
-                                model.clone(),
-                                system_prompt,
-                                max_turns,
-                                max_ctx,
-                                max_rounds,
-                                max_task_duration,
-                                max_spend,
-                            ));
+                            agent_opt = Some(
+                                skyclaw_agent::AgentRuntime::with_limits(
+                                    provider,
+                                    memory.clone(),
+                                    tools_template.clone(),
+                                    model.clone(),
+                                    system_prompt,
+                                    max_turns,
+                                    max_ctx,
+                                    max_rounds,
+                                    max_task_duration,
+                                    max_spend,
+                                )
+                                .with_v2_optimizations(v2_opt),
+                            );
                             println!("Connected to {} (model: {})", pname, model);
                             if max_spend > 0.0 {
                                 println!("Budget: ${:.2} per session", max_spend);
@@ -2808,18 +2817,21 @@ async fn main() -> Result<()> {
                                             eprintln!("Failed to save credentials: {}", e);
                                         }
                                         let system_prompt = Some(build_system_prompt());
-                                        agent_opt = Some(skyclaw_agent::AgentRuntime::with_limits(
-                                            validated_provider,
-                                            memory.clone(),
-                                            tools_template.clone(),
-                                            model.clone(),
-                                            system_prompt,
-                                            max_turns,
-                                            max_ctx,
-                                            max_rounds,
-                                            max_task_duration,
-                                            max_spend,
-                                        ));
+                                        agent_opt = Some(
+                                            skyclaw_agent::AgentRuntime::with_limits(
+                                                validated_provider,
+                                                memory.clone(),
+                                                tools_template.clone(),
+                                                model.clone(),
+                                                system_prompt,
+                                                max_turns,
+                                                max_ctx,
+                                                max_rounds,
+                                                max_task_duration,
+                                                max_spend,
+                                            )
+                                            .with_v2_optimizations(v2_opt),
+                                        );
                                         println!(
                                             "\nAPI key securely received and verified! Configured {} with model {}.",
                                             cred.provider, model
@@ -2872,18 +2884,21 @@ async fn main() -> Result<()> {
                                 eprintln!("Failed to save credentials: {}", e);
                             }
                             let system_prompt = Some(build_system_prompt());
-                            agent_opt = Some(skyclaw_agent::AgentRuntime::with_limits(
-                                validated_provider,
-                                memory.clone(),
-                                tools_template.clone(),
-                                model.clone(),
-                                system_prompt,
-                                max_turns,
-                                max_ctx,
-                                max_rounds,
-                                max_task_duration,
-                                max_spend,
-                            ));
+                            agent_opt = Some(
+                                skyclaw_agent::AgentRuntime::with_limits(
+                                    validated_provider,
+                                    memory.clone(),
+                                    tools_template.clone(),
+                                    model.clone(),
+                                    system_prompt,
+                                    max_turns,
+                                    max_ctx,
+                                    max_rounds,
+                                    max_task_duration,
+                                    max_spend,
+                                )
+                                .with_v2_optimizations(v2_opt),
+                            );
                             println!(
                                 "\nAPI key verified! Configured {} with model {}.",
                                 cred.provider, model

@@ -34,7 +34,9 @@ pub use history_pruning::{
 pub use learning::TaskLearning;
 pub use model_router::{ModelRouter, ModelRouterConfig, ModelTier, TaskComplexity};
 pub use proactive::{ProactiveAction, ProactiveManager, Trigger, TriggerRule};
-pub use prompt_optimizer::{build_system_prompt, estimate_prompt_tokens, SystemPromptBuilder};
+pub use prompt_optimizer::{
+    build_system_prompt, build_tiered_system_prompt, estimate_prompt_tokens, SystemPromptBuilder,
+};
 pub use prompt_patches::{PatchStatus, PatchType, PromptPatch, PromptPatchManager};
 pub use recovery::{RecoveryAction, RecoveryManager, RecoveryPlan};
 pub use runtime::AgentRuntime;
