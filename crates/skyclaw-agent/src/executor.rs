@@ -544,7 +544,12 @@ fn validate_sandbox(tool: &dyn Tool, session: &SessionContext) -> Result<(), Sky
             .canonicalize()
             .unwrap_or_else(|_| workspace.clone());
 
-        let path_canonical = abs_path.canonicalize().unwrap_or(abs_path);
+        // For existing paths, canonicalize to resolve symlinks and ..
+        // For non-existent paths, lexical_normalize catches traversal
+        let path_canonical = match abs_path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => lexical_normalize(&abs_path),
+        };
 
         if !path_canonical.starts_with(&workspace_canonical) {
             return Err(SkyclawError::SandboxViolation(format!(
