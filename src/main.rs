@@ -1533,7 +1533,7 @@ async fn main() -> Result<()> {
 
     // Load configuration
     let config_path = cli.config.as_ref().map(std::path::Path::new);
-    let config = skyclaw_core::config::load_config(config_path)?;
+    let mut config = skyclaw_core::config::load_config(config_path)?;
 
     tracing::info!(mode = %cli.mode, "SkyClaw starting");
 
@@ -1740,6 +1740,26 @@ async fn main() -> Result<()> {
             let mut tg_rx: Option<
                 tokio::sync::mpsc::Receiver<skyclaw_core::types::message::InboundMessage>,
             > = None;
+
+            // Auto-inject Telegram config from env var when no config entry exists.
+            // This enables zero-config VPS deployments: just set TELEGRAM_BOT_TOKEN.
+            if !config.channel.contains_key("telegram") {
+                if let Ok(token) = std::env::var("TELEGRAM_BOT_TOKEN") {
+                    if !token.is_empty() {
+                        config.channel.insert(
+                            "telegram".to_string(),
+                            skyclaw_core::types::config::ChannelConfig {
+                                enabled: true,
+                                token: Some(token),
+                                allowlist: vec![],
+                                file_transfer: true,
+                                max_file_size: None,
+                            },
+                        );
+                        tracing::info!("Auto-configured Telegram from TELEGRAM_BOT_TOKEN env var");
+                    }
+                }
+            }
 
             if let Some(tg_config) = config.channel.get("telegram") {
                 if tg_config.enabled {
