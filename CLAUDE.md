@@ -4,7 +4,7 @@
 
 SkyClaw is a cloud-native Rust AI agent runtime. It connects to messaging channels (Telegram, Discord, Slack, CLI), routes messages through an agent loop that calls AI providers (Anthropic, OpenAI-compatible), executes tools (shell, browser, file ops), and persists conversation history to memory backends (SQLite, Markdown).
 
-The codebase is a Cargo workspace with 13 crates plus a root binary.
+The codebase is a Cargo workspace with 15 crates plus a root binary.
 
 ## Build commands
 
