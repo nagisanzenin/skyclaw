@@ -949,6 +949,12 @@ impl AgentRuntime {
                     });
                 }
                 let mut reply_text = text_parts.join("\n");
+                
+                // Fallback: if reply_text is empty, provide a default message
+                if reply_text.trim().is_empty() {
+                    reply_text = "Task completed.".to_string();
+                    debug!("Empty reply text detected, using fallback message");
+                }
 
                 // If send_message was used during this turn, the user already
                 // received the substantive response. The final text is typically

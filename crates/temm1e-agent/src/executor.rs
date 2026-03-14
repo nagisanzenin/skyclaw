@@ -530,7 +530,20 @@ fn validate_sandbox(tool: &dyn Tool, session: &SessionContext) -> Result<(), Tem
             PathAccess::ReadWrite(p) => p,
         };
 
-        let path = std::path::Path::new(path_str);
+        // Expand tilde (~) to home directory
+        let expanded_path = if path_str.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(&path_str[2..])
+            } else {
+                std::path::PathBuf::from(path_str)
+            }
+        } else if path_str == "~" {
+            dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(path_str))
+        } else {
+            std::path::PathBuf::from(path_str)
+        };
+
+        let path = expanded_path.as_path();
 
         // Resolve to absolute if relative
         let abs_path = if path.is_relative() {
@@ -545,6 +558,14 @@ fn validate_sandbox(tool: &dyn Tool, session: &SessionContext) -> Result<(), Tem
             .unwrap_or_else(|_| workspace.clone());
 
         let path_canonical = abs_path.canonicalize().unwrap_or(abs_path);
+
+        // Allow access to ~/.skyclaw/* paths (system-level tool data)
+        if let Some(home) = dirs::home_dir() {
+            let skyclaw_dir = home.join(".skyclaw");
+            if path_canonical.starts_with(&skyclaw_dir) {
+                continue; // Allow ~/.skyclaw/* paths
+            }
+        }
 
         if !path_canonical.starts_with(&workspace_canonical) {
             return Err(Temm1eError::SandboxViolation(format!(

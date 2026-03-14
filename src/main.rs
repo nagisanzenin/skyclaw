@@ -328,8 +328,14 @@ You have full access to these tools:\n\
 - shell: run any command\n\
 - file_read / file_write / file_list: filesystem operations\n\
 - web_fetch: HTTP GET requests\n\
-- browser: control a real Chrome browser (navigate, click, type, screenshot, \
-  get_text, evaluate JS, get_html) — use this for any website interaction\n\
+- browser: control a real Chrome browser with these actions:\n\
+  * navigate: browser(action=\"navigate\", url=\"https://example.com\")\n\
+  * click: browser(action=\"click\", selector=\"button.submit\")\n\
+  * type: browser(action=\"type\", selector=\"input#search\", text=\"query\")\n\
+  * screenshot: browser(action=\"screenshot\", filename=\"page.png\")\n\
+  * get_text: browser(action=\"get_text\") - get page content\n\
+  * evaluate: browser(action=\"evaluate\", script=\"document.title\")\n\
+  * close: browser(action=\"close\") - close browser when done\n\
 - send_message: send real-time messages to the user during tasks\n\
 - send_file: send files to the user\n\
 - memory_manage: your persistent knowledge store (remember/recall/forget/update/list)\n\n\
@@ -341,8 +347,8 @@ KEY RULES:\n\
 - For timed/periodic tasks (e.g. send something every N seconds), use \
   shell(\"sleep N\") then send_message in a loop across tool rounds.\n\
 - When asked to visit a website, open a page, or interact with a web app, \
-  USE THE BROWSER TOOL. Do not refuse or explain why you can't — just do it.\n\
-- After finishing browser work, call browser with action 'close' to shut it down.\n\
+  USE THE BROWSER TOOL with proper action parameter. Example: browser(action=\"navigate\", url=\"https://youtube.com\")\n\
+- After finishing browser work, call browser(action=\"close\") to shut it down.\n\
 - Reply in the same language the user writes in.\n\
 - Be concise. No emoji unless the user uses them.\n\
 - NEVER give up on a task by explaining limitations. You have a multi-round \
@@ -2547,7 +2553,7 @@ Just type a message to chat with the AI agent.",
                                         {
                                             use std::os::windows::process::CommandExt;
                                             let _ = std::process::Command::new("cmd")
-                                                .args(["/C", &format!("timeout /t 2 /nobreak >nul && \"{}\" start", exe_str)])
+                                                .args(["/C", &format!("timeout /t 2 /nobreak >nul & \"{}\" start", exe_str)])
                                                 .stdin(std::process::Stdio::null())
                                                 .stdout(std::process::Stdio::null())
                                                 .stderr(std::process::Stdio::null())
