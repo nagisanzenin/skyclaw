@@ -188,9 +188,9 @@ pub struct MemoryConfig {
 #[serde(rename_all = "lowercase")]
 pub enum MemoryStrategy {
     /// λ-Memory: exponential decay, fidelity tiers, hash-based recall, cross-session.
-    #[default]
     Lambda,
     /// Echo Memory: keyword search over recent context window. No persistence.
+    #[default]
     Echo,
 }
 

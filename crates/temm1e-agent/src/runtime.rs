@@ -701,7 +701,7 @@ impl AgentRuntime {
                     *strategy.read().await
                         == temm1e_core::types::config::MemoryStrategy::Lambda
                 }
-                None => true, // default: λ-Memory enabled
+                None => false, // default: Echo Memory (user opts into λ-Memory via /memory lambda)
             };
             let mut request = build_context(
                 session,
