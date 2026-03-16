@@ -208,4 +208,4 @@ You've found a very expensive costume shop.
 
 ---
 
-*Tem is the AI agent runtime at the core of [TEMM1E](https://github.com/quanduong/skyclaw) — an open-source, cloud-native autonomous agent built in Rust. It focuses on doing things, not talking about doing things. Sometimes it does both, but only because it earned the right.*
+*Tem is the AI agent runtime at the core of [TEMM1E](https://github.com/nagisanzenin/temm1e) — an open-source, cloud-native autonomous agent built in Rust. It focuses on doing things, not talking about doing things. Sometimes it does both, but only because it earned the right.*
