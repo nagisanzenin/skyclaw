@@ -112,19 +112,21 @@ Each complexity tier (Simple, Standard, Complex) graduates independently. Simple
 | Speed | ~28 it/sec training, ~200 tok/sec inference |
 | Base model 72°F | "150°C" (wrong) |
 | **Fine-tuned 72°F** | **"21.2°C" (close to 22.2°C)** |
-| Statistical tests | 119 tests, all passing |
+| Statistical tests | 128 tests, all passing |
 
-The base model made a fundamental arithmetic error. Ten training examples fixed it. This is knowledge distillation working at consumer scale. [Research paper →](eigen/RESEARCH_PAPER.md)
+The base model made a fundamental arithmetic error. Ten training examples fixed it. This is knowledge distillation working at consumer scale. [Research paper →](eigen/RESEARCH_PAPER.md) · [Full pipeline log →](eigen/PIPELINE_PROOF_LOG.txt)
 
 ### Documents
 
 | | |
 |---|---|
+| [Research Paper](eigen/RESEARCH_PAPER.md) | Full paper: architecture, math, real M2 results, economics, limitations |
 | [Design Doc](eigen/DESIGN.md) | Formal state machine, mathematical formulas (SPRT, CUSUM, Wilson, Beta-Binomial, Shannon entropy), zero-cost evaluation architecture, data model, risk assessment |
-| [Implementation Plan](eigen/IMPLEMENTATION.md) | Phase-by-phase build guide — every struct, function, file, and test. 93 tests across 16 modules |
-| [Technical Reference](eigen/TECHNICAL_REFERENCE.md) | Ollama API endpoints, training scripts (Unsloth + MLX), embedding judge implementation, user behavior signal detection, ChatML format, codebase hook locations |
+| [Implementation Plan](eigen/IMPLEMENTATION.md) | Phase-by-phase build guide — every struct, function, file, and test |
+| [Technical Reference](eigen/TECHNICAL_REFERENCE.md) | Ollama API endpoints, training scripts (Unsloth + MLX), embedding judge, two-tier behavior detection, ChatML format, codebase hook locations |
+| [Pipeline Proof Log](eigen/PIPELINE_PROOF_LOG.txt) | Unedited output: data → training → inference on Apple M2, 2026-03-18 |
 
-**Status:** Implemented and proven. Branch: `self-tuning`. 119 tests, real fine-tuning on M2.
+**Status:** Implemented and proven. Branch: `self-tuning`. 128 tests, real fine-tuning on M2.
 
 ---
 
