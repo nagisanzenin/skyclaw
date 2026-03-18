@@ -192,17 +192,15 @@ pub async fn classify_message(
     available_blueprint_categories: &[String],
     mode: Temm1eMode,
 ) -> Result<(MessageClassification, Usage), Temm1eError> {
-    // Use last 10 *text* history messages for conversational context.
-    // History already includes the current user message (pushed by runtime
-    // before calling classify), so we don't add it again.
-    // Strip tool messages (Role::Tool, ToolUse/ToolResult parts) — the classifier
-    // only needs user/assistant text for classification, and tool messages cause
-    // errors with providers like Gemini that enforce strict tool_call ordering.
-    let messages: Vec<ChatMessage> = history
+    // Extract ONLY the current user message (the last one in history) for classification.
+    // Previous history is reduced to 2 recent turns max for conversational context,
+    // preventing the model from classifying/responding to older messages.
+    //
+    // Strip tool messages — the classifier only needs user/assistant text.
+    let text_messages: Vec<ChatMessage> = history
         .iter()
         .filter(|msg| !matches!(msg.role, Role::Tool))
         .filter(|msg| {
-            // Also skip assistant messages that are purely tool calls (no text)
             if matches!(msg.role, Role::Assistant) {
                 if let MessageContent::Parts(parts) = &msg.content {
                     return parts.iter().any(|p| matches!(p, ContentPart::Text { .. }));
@@ -212,20 +210,44 @@ pub async fn classify_message(
         })
         .cloned()
         .collect::<Vec<_>>();
-    // Take last 10 after filtering
-    let context_start = messages.len().saturating_sub(10);
-    let messages: Vec<ChatMessage> = messages[context_start..].to_vec();
+
+    // Split: last message is the CURRENT one, prior messages are context
+    let (context, current) = if text_messages.len() > 1 {
+        let split = text_messages.len() - 1;
+        // Take at most 2 prior messages for context (enough for "what did I just say?" style queries)
+        let ctx_start = split.saturating_sub(2);
+        (&text_messages[ctx_start..split], &text_messages[split..])
+    } else {
+        (&text_messages[..0], &text_messages[..])
+    };
 
     let system_prompt = build_classify_prompt(available_blueprint_categories, mode);
 
-    // Append a classification reminder AFTER the user's message to reinforce
-    // the JSON-only instruction. This helps models like Gemini that ignore
-    // system prompts when the user message looks like a complex task.
-    let mut classify_messages = messages;
+    // Build classifier messages: context (small) + marker + current message + classify instruction
+    let mut classify_messages: Vec<ChatMessage> = context.to_vec();
+
+    // Mark the current message explicitly so the model knows what to classify
+    if !context.is_empty() {
+        classify_messages.push(ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text(
+                "[The following is the NEW message to classify. Ignore all previous messages for classification — they are only context.]"
+                    .to_string(),
+            ),
+        });
+        classify_messages.push(ChatMessage {
+            role: Role::Assistant,
+            content: MessageContent::Text("Understood. I will classify only the next message.".to_string()),
+        });
+    }
+
+    classify_messages.extend_from_slice(current);
+
+    // Append classification instruction AFTER the current message
     classify_messages.push(ChatMessage {
         role: Role::User,
         content: MessageContent::Text(
-            "Now CLASSIFY the message above. Output ONLY a JSON object with exactly 3 fields: \
+            "CLASSIFY the message directly above this line. Output ONLY a JSON object with exactly 3 fields: \
              category (\"chat\" or \"order\" or \"stop\"), chat_text (string), difficulty (\"simple\" or \"standard\" or \"complex\"). \
              Do NOT solve the task. Do NOT write code. Do NOT explain. Just the JSON."
                 .to_string(),
