@@ -4,15 +4,33 @@ You know what you're doing. Here's what you need.
 
 ## Requirements
 
-- Rust 1.82+ (or Docker)
+- Rust 1.82+ (or Docker, or [one-line installer](#one-line-install))
 - Chrome/Chromium (optional, for browser tool)
-- Telegram bot token via [@BotFather](https://t.me/BotFather)
+- At least one channel: Telegram bot token, Discord bot token, or WhatsApp on your phone
 
-## Build
+## One-Line Install
+
+No Rust needed. Downloads pre-built binary for your platform:
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/temm1e-labs/temm1e/main/install.sh | sh
+temm1e setup    # Interactive wizard
+temm1e start
+```
+
+## Build from Source
 
 ```bash
 git clone https://github.com/nagisanzenin/temm1e.git && cd temm1e
 cargo build --release   # ~2.5min cold, 9.6 MB binary
+```
+
+### Optional features
+
+```bash
+cargo build --release --features whatsapp-web   # WhatsApp Web (QR scan)
+cargo build --release --features whatsapp       # WhatsApp Cloud API (webhook)
+cargo build --release --features tui            # Interactive TUI
 ```
 
 ## Authentication — Pick Your Poison
@@ -69,6 +87,14 @@ max_spend_usd = 5.0   # 0.0 = unlimited (default)
 enabled = true
 token = "${TELEGRAM_BOT_TOKEN}"
 allowlist = []         # empty = auto-whitelist first user
+file_transfer = true
+
+# WhatsApp Web — scan QR code, bot runs as your linked device
+# Build with: cargo build --release --features whatsapp-web
+[channel.whatsapp_web]
+enabled = true
+token = "allow_all:ignore"   # dm_policy:group_policy
+allowlist = []               # everyone can chat (AllowAll default)
 file_transfer = true
 
 [memory]

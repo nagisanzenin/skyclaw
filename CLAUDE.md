@@ -2,7 +2,7 @@
 
 ## Project overview
 
-TEMM1E is a cloud-native Rust AI agent runtime. It connects to messaging channels (Telegram, Discord, Slack, CLI), routes messages through an agent loop that calls AI providers (Anthropic, OpenAI-compatible), executes tools (shell, browser, file ops), and persists conversation history to memory backends (SQLite, Markdown).
+TEMM1E is a cloud-native Rust AI agent runtime. It connects to messaging channels (Telegram, Discord, WhatsApp, Slack, CLI), routes messages through an agent loop that calls AI providers (Anthropic, OpenAI-compatible), executes tools (shell, browser, file ops), and persists conversation history to memory backends (SQLite, Markdown).
 
 The codebase is a Cargo workspace with 18 crates plus a root binary.
 
@@ -56,7 +56,7 @@ crates/
   temm1e-providers   -- AI provider integrations (Anthropic, OpenAI-compatible)
   temm1e-codex-oauth -- ChatGPT Plus/Pro via OAuth PKCE
   temm1e-tui         -- Interactive terminal UI (ratatui, syntect, crossterm)
-  temm1e-channels    -- Messaging channels (CLI, Telegram, Discord, Slack)
+  temm1e-channels    -- Messaging channels (CLI, Telegram, Discord, WhatsApp Web, WhatsApp Cloud API, Slack)
   temm1e-memory      -- Persistent memory backends (SQLite, Markdown)
   temm1e-tools       -- Agent tool implementations (shell, browser, Prowl, file ops)
     browser_session.rs     -- OTK interactive login with annotated screenshots
@@ -84,7 +84,7 @@ src/
 
 2. **No cross-implementation dependencies**: Leaf crates (providers, channels, tools, memory backends) must never depend on each other. Shared types live in `temm1e-core`.
 
-3. **Feature flags for optional dependencies**: Platform-specific channels (Telegram, Discord, Slack) and tools (browser) are behind Cargo feature flags. Never import their SDKs unconditionally.
+3. **Feature flags for optional dependencies**: Platform-specific channels (Telegram, Discord, WhatsApp, Slack) and tools (browser) are behind Cargo feature flags. Never import their SDKs unconditionally.
 
 4. **Factory pattern**: Each crate exposes a `create_*()` factory function (e.g., `create_channel()`, `create_provider()`, `create_memory_backend()`) that dispatches by name string.
 
