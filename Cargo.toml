@@ -178,6 +178,7 @@ uuid.workspace = true
 chrono.workspace = true
 futures.workspace = true
 tokio-util.workspace = true
+openssl = { version = "0.10", features = ["vendored"], optional = true }
 
 [features]
 default = ["telegram", "discord", "browser", "mcp", "codex-oauth"]
@@ -191,6 +192,7 @@ codex-oauth = ["dep:temm1e-codex-oauth"]
 tui = ["dep:temm1e-tui"]
 whatsapp = ["temm1e-channels/whatsapp"]
 whatsapp-web = ["temm1e-channels/whatsapp-web"]
+openssl-vendored = ["dep:openssl"]
 
 [profile.release]
 opt-level = "z"
