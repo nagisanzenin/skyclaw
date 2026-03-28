@@ -73,7 +73,9 @@ jobs:
       matrix:
         target:
           - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
+          # aarch64-linux-musl disabled: cross-compiling vendored OpenSSL
+          # + desktop-control system libs for musl+aarch64 is unsupported.
+          # - aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v4
 

@@ -12,10 +12,11 @@ ARG BUILD_DATE=unknown
 ARG FEATURES=telegram,discord,browser,mcp,codex-oauth,tui,desktop-control
 
 
-# Build dependencies for desktop-control (xcap → wayland/xcb)
+# Build dependencies for desktop-control (xcap + enigo)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libwayland-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
-        libxkbcommon-dev pkg-config \
+        libxkbcommon-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev \
+        libegl1-mesa-dev libgbm-dev libdrm-dev libxdo-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
