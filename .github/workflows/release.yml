@@ -78,8 +78,15 @@ jobs:
       - name: Build release binary
         run: |
           if [[ "${{ matrix.target }}" == *"linux"* ]]; then
-            cargo build --release --target ${{ matrix.target }} --features openssl-vendored
+            # Linux musl: exclude desktop-control (xcap needs wayland/xcb system libs
+            # which can't statically link with musl). Linux users who want desktop
+            # control should build from source or use Docker.
+            cargo build --release --target ${{ matrix.target }} \
+              --features openssl-vendored \
+              --no-default-features \
+              --features telegram,discord,browser,mcp,codex-oauth,openssl-vendored
           else
+            # macOS: all default features including desktop-control
             cargo build --release --target ${{ matrix.target }}
           fi
 

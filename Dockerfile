@@ -1,7 +1,7 @@
 # ============================================================================
 # TEMM1E — Cloud-Native AI Agent Runtime
 # Multi-stage Docker build with all features: Telegram, Discord, Browser,
-# MCP, Codex OAuth, TUI, and Prowl web-native browsing.
+# MCP, Codex OAuth, TUI, Desktop Control (Tem Gaze), and Prowl web-native browsing.
 # ============================================================================
 
 # ---- Builder stage ----
@@ -9,7 +9,14 @@ FROM rust:1.88-bookworm AS builder
 
 ARG GIT_HASH=unknown
 ARG BUILD_DATE=unknown
-ARG FEATURES=telegram,discord,browser,mcp,codex-oauth,tui
+ARG FEATURES=telegram,discord,browser,mcp,codex-oauth,tui,desktop-control
+
+
+# Build dependencies for desktop-control (xcap → wayland/xcb)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libwayland-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
+        libxkbcommon-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -44,12 +51,17 @@ LABEL org.opencontainers.image.title="TEMM1E" \
 #   tini              — proper PID 1 signal forwarding (SIGTERM → graceful shutdown)
 #   curl              — health check probe
 #   tzdata            — timezone support for cron jobs and timestamps
+#   libxcb1, libxkbcommon0 — runtime libs for xcap screen capture (desktop-control)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         chromium \
         tini \
         curl \
         tzdata \
+        libxcb1 \
+        libxcb-randr0 \
+        libxcb-shm0 \
+        libxkbcommon0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Chromium path for chromiumoxide (Prowl browser engine)

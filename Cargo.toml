@@ -184,7 +184,7 @@ tokio-util.workspace = true
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 
 [features]
-default = ["telegram", "discord", "browser", "mcp", "codex-oauth"]
+default = ["telegram", "discord", "browser", "mcp", "codex-oauth", "desktop-control"]
 telegram = ["temm1e-channels/telegram"]
 discord = ["temm1e-channels/discord"]
 slack = ["temm1e-channels/slack"]
