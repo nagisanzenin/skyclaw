@@ -137,6 +137,15 @@ pub fn create_tools(
         tools.push(Arc::new(browser_tool));
     }
 
+    // desktop: OS-level screen capture + input simulation (Tem Gaze)
+    #[cfg(feature = "desktop-control")]
+    {
+        match desktop_tool::DesktopTool::new(0) {
+            Ok(dt) => tools.push(Arc::new(dt)),
+            Err(e) => tracing::warn!("Desktop tool unavailable: {}", e),
+        }
+    }
+
     tracing::info!(count = tools.len(), "Tools registered");
     tools
 }
@@ -217,6 +226,15 @@ pub fn create_tools_with_browser(
     } else {
         None
     };
+
+    // desktop: OS-level screen capture + input simulation (Tem Gaze)
+    #[cfg(feature = "desktop-control")]
+    {
+        match desktop_tool::DesktopTool::new(0) {
+            Ok(dt) => tools.push(Arc::new(dt)),
+            Err(e) => tracing::warn!("Desktop tool unavailable: {}", e),
+        }
+    }
 
     tracing::info!(count = tools.len(), "Tools registered (with browser ref)");
     (tools, browser_ref)
