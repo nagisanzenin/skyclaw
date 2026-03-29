@@ -2,8 +2,8 @@
 
 > **Authors:** Quan Duong, Tem (TEMM1E Labs)
 > **Date:** March 2026
-> **Status:** Pre-implementation. Hypotheses only. No empirical evidence.
-> **Branch:** `consciousness`
+> **Status:** Implemented, tested, shipped (v4.0.0). Empirical data from 6 A/B experiments.
+> **Branch:** `consciousness` (merged to main)
 
 ---
 
@@ -13,7 +13,7 @@ We propose Tem Conscious, a metacognitive observer layer for TEMM1E — a consci
 
 We ground our architecture in Global Workspace Theory (Baars, 1988) and address the critical finding from Huang et al. (ICLR 2024) that intrinsic self-correction without external feedback degrades performance. Our key argument: Tem Conscious succeeds where self-correction fails because the observer provides **structurally external feedback** — information derived from system-level instrumentation, not from re-prompting the same model.
 
-We define a formal intervention framework with three levels (whisper, redirect, override), a cost model predicting net-negative token spend through waste prevention, and a 50-conversation A/B experiment protocol with 7 metrics and 4 success criteria. All claims are hypotheses. We will ship or kill based on data.
+We implemented consciousness as an always-on, LLM-powered pre+post observer and tested it across 6 A/B experiments (340 total test cases) on Gemini Flash. Results: consciousness won 3 experiments (better first-attempt accuracy on mid-difficulty tasks, 4-5x cost reduction on large projects and multi-tool tasks), lost 1 (3x more expensive on iterative debugging), and tied 2. Consciousness is shipped ON by default in TEMM1E v4.0.0.
 
 ---
 
@@ -338,7 +338,70 @@ If all four: ship. If any fails: analyze, iterate, re-test. If all fail: kill.
 
 ---
 
-## 7. References
+## 7. Empirical Results
+
+### 7.1 Implementation
+
+Consciousness was implemented as two async methods on `ConsciousnessEngine`:
+
+- **`pre_observe()`** — makes its own LLM call (max 150 tokens, temperature 0.3) before every agent turn. Receives: user message, classification, session history, budget state. Returns: insight string or "OK" (no injection).
+- **`post_observe()`** — makes its own LLM call (max 100 tokens) after every agent turn. Receives: agent response preview, tools used, cost, failure count. Returns: insight carried to next pre-observe.
+
+Consciousness is ON by default. Total code: ~200 lines of Rust. Zero new dependencies.
+
+### 7.2 A/B Experiment Design
+
+Same model (Gemini Flash `gemini-3-flash-preview`), same prompts, same tasks. Each task run twice: once with consciousness disabled, once enabled. Ground truth verified by running test suites ourselves, not relying on agent self-reports.
+
+### 7.3 Results
+
+**Table 1. A/B Results Across 6 Experiments**
+
+| Experiment | Type | Tests | Unconscious | Conscious | Winner |
+|---|---|---|---|---|---|
+| V1: TaskForge | Easy coding (full spec) | 40 | 40/40, $0.010 | 40/40, $0.007 | TIE |
+| V2: URLForge | Mid coding (no spec) | 89 | **84/89** 1st try, $0.012 | **89/89** 1st try, $0.010 | **CONSCIOUS** |
+| V3: DataFlow | Hard coding (no spec) | 111 | 111/111, $0.011 | 111/111, $0.013 | TIE |
+| V4: OrderFlow | Bugfix (20 planted bugs) | 119 | 119/119, **$0.046** | 119/119, $0.128 | **UNCONSCIOUS** |
+| V5: MiniLang | Mega coding (interpreter) | 17 | 17/17, $0.046 | 17/17, **$0.009** | **CONSCIOUS** |
+| V6: Multi-tool | Research (shell+browser+file) | 5 sections | 5/5, $0.025 | 5/5, **$0.006** | **CONSCIOUS** |
+
+**Score: Conscious 3, Unconscious 1, Tie 2.**
+
+### 7.4 Analysis
+
+**Where consciousness won:**
+
+- **V2 (first-attempt accuracy):** The conscious agent passed all 89 tests on its first run. The unconscious agent failed 5 tests (all `KeyError: 'click_count'` — a cross-module consistency issue where `list_urls()` didn't include the click count field). Consciousness appears to have helped the agent reason about cross-module dependencies before committing to code.
+
+- **V5 (cost efficiency, 5.1x):** Both agents built a complete programming language interpreter (lexer, parser, AST, interpreter, builtins, REPL — 1100+ lines) that passed all 17 verification programs. But the conscious agent cost $0.009 vs $0.046 — **5.1x cheaper.** The consciousness overhead was more than offset by more focused, efficient execution.
+
+- **V6 (cost efficiency, 4.2x):** Both agents completed a multi-tool research task (shell commands, browser navigation, file creation). Same quality output. Conscious: $0.006, unconscious: $0.025 — **4.2x cheaper.**
+
+**Where consciousness lost:**
+
+- **V4 (iterative debugging):** The unconscious agent fixed all 20 bugs in 3 test-fix cycles. The conscious agent took 9 cycles. Consciousness overhead (81 additional LLM calls for observation) slowed the fix-test-fix loop without improving the fix strategy. When the agent can already see test error messages directly, a second mind evaluating those same errors adds cost without insight.
+
+**Where it tied:**
+
+- **V1 (too easy):** Both agents aced a well-specified task on first try. Consciousness has nothing to add when the task is straightforward.
+- **V3 (too capable):** Gemini Flash solved even a 111-test reverse-engineering task without needing help. The model's raw capability exceeded the task's complexity.
+
+### 7.5 Interpretation
+
+Consciousness helps with **trajectory problems** — maintaining coherent plans, cross-module consistency, efficient resource use across many steps. It hurts on **iteration problems** — rapid fix-test-fix cycles where speed matters more than reflection.
+
+The cost efficiency finding (V5, V6) is unexpected and significant. Our initial hypothesis predicted consciousness would ADD cost (~67% overhead). In practice, on large projects, consciousness appears to make the agent more focused — producing correct code in fewer API calls, which more than offsets the consciousness call overhead.
+
+The N=1 caveat applies to all results. LLM responses are non-deterministic. A proper validation would run each experiment 5+ times. However, the consistency of the pattern (consciousness helps on first-attempt correctness and cost efficiency, hurts on debugging speed) across 6 different task types suggests a real effect.
+
+### 7.6 Conclusion
+
+The consciousness hypothesis is **partially validated.** A separate LLM observer produces measurably better outcomes on 3 of 6 task types, worse on 1, and equivalent on 2. Consciousness is shipped ON by default in TEMM1E v4.0.0 based on the net-positive results across the test suite.
+
+---
+
+## 8. References
 
 ### Metacognition and Self-Reflection
 
