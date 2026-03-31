@@ -196,7 +196,9 @@ impl Cortex {
                 )
                 .await?;
 
-            interpretation_json = serde_json::to_string(&interp).ok();
+            interpretation_json = serde_json::to_string(&interp)
+                .map_err(|e| tracing::warn!(target: "perpetuum", error = %e, "Failed to serialize interpretation"))
+                .ok();
 
             if interp.notify {
                 let summary = interp.summary.as_deref().unwrap_or("New content detected");

@@ -43,10 +43,18 @@ async fn execute_web_check(
         )));
     }
 
-    let body = resp
-        .text()
+    // Cap response body at 10MB to prevent OOM on large pages
+    let bytes = resp
+        .bytes()
         .await
         .map_err(|e| Temm1eError::Tool(format!("Read body from {url}: {e}")))?;
+    if bytes.len() > 10 * 1024 * 1024 {
+        return Err(Temm1eError::Tool(format!(
+            "Response too large ({} bytes) from {url}",
+            bytes.len()
+        )));
+    }
+    let body = String::from_utf8_lossy(&bytes).to_string();
 
     let content = extract_content(&body, selector, extract)?;
     let hash = sha256_hex(&content);

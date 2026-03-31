@@ -66,7 +66,11 @@ impl Pulse {
     }
 
     async fn sleep_until_next(&self) {
-        let next = self.store.next_fire_time().await.ok().flatten();
+        // 10s timeout on DB query — prevents Pulse from hanging on slow I/O
+        let next = tokio::time::timeout(Duration::from_secs(10), self.store.next_fire_time())
+            .await
+            .unwrap_or(Ok(None))
+            .unwrap_or(None);
 
         match next {
             Some(fire_at) => {

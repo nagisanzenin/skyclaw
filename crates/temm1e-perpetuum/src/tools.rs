@@ -505,8 +505,8 @@ fn parse_time_of_day(expr: &str) -> Option<NaiveTime> {
     // "14:00", "6:30"
     let parts: Vec<&str> = expr.split(':').collect();
     if parts.len() == 2 {
-        let hour: u32 = parts[0].trim().parse().ok()?;
-        let minute: u32 = parts[1].trim().parse().ok()?;
+        let hour: u32 = parts.first()?.trim().parse().ok()?;
+        let minute: u32 = parts.get(1)?.trim().parse().ok()?;
         return NaiveTime::from_hms_opt(hour, minute, 0);
     }
 

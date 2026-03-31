@@ -106,7 +106,10 @@ impl Store {
         )
         .execute(&self.pool)
         .await
-        .ok();
+        .unwrap_or_else(|e| {
+            tracing::warn!(target: "perpetuum", error = %e, "Non-critical DB operation failed");
+            Default::default()
+        });
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_concerns_next_fire
@@ -114,7 +117,10 @@ impl Store {
         )
         .execute(&self.pool)
         .await
-        .ok();
+        .unwrap_or_else(|e| {
+            tracing::warn!(target: "perpetuum", error = %e, "Non-critical DB operation failed");
+            Default::default()
+        });
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS perpetuum_monitor_history (
@@ -138,7 +144,10 @@ impl Store {
         )
         .execute(&self.pool)
         .await
-        .ok();
+        .unwrap_or_else(|e| {
+            tracing::warn!(target: "perpetuum", error = %e, "Non-critical DB operation failed");
+            Default::default()
+        });
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS perpetuum_state (
@@ -264,7 +273,10 @@ impl Store {
             .bind(id)
             .execute(&self.pool)
             .await
-            .ok();
+            .unwrap_or_else(|e| {
+                tracing::warn!(target: "perpetuum", error = %e, "Non-critical DB operation failed");
+                Default::default()
+            });
 
         Ok(())
     }
@@ -314,7 +326,10 @@ impl Store {
             .bind(id)
             .execute(&self.pool)
             .await
-            .ok(); // If already firing (race), silently skip
+            .unwrap_or_else(|e| {
+                tracing::warn!(target: "perpetuum", error = %e, "Non-critical DB operation failed");
+                Default::default()
+            }); // If already firing (race), silently skip
         }
 
         Ok(ids)

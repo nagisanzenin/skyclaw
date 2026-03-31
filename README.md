@@ -361,6 +361,28 @@ User message → CONSCIOUSNESS THINKS (pre-LLM call) → Agent responds → CONS
 
 [Research paper →](tems_lab/consciousness/RESEARCH_PAPER.md) · [Experiment report →](tems_lab/consciousness/EXPERIMENT_REPORT.md) · [Blog →](tems_lab/consciousness/BLOG.md) · [Full lab →](tems_lab/consciousness/)
 
+### Perpetuum — Perpetual Time-Aware Entity
+
+Tem is no longer a request-response agent. Perpetuum makes Tem a **persistent, time-aware entity** — always on, aware of time, capable of scheduling and monitoring, and proactively investing idle time in self-improvement.
+
+**Core architecture:**
+- **Chronos** — internal clock + temporal cognition injected into every LLM call. Tem reasons WITH time.
+- **Pulse** — timer engine (cron + intervals, timezone-aware). Concerns fire at exact scheduled times.
+- **Cortex** — concern dispatcher. Each concern runs in its own tokio task with `catch_unwind` isolation.
+- **Cognitive** — LLM-powered monitor interpretation + adaptive schedule review. No formulas — pure LLM judgment.
+- **Conscience** — entity state machine: Active / Idle / Sleep / Dream. States are proactive choices, not energy constraints.
+- **Volition** — initiative loop: Tem thinks about what to do proactively. Creates monitors, cancels stale concerns, notifies users — without being asked.
+
+**6 agent tools:** `create_alarm`, `create_monitor`, `create_recurring`, `list_concerns`, `cancel_concern`, `adjust_schedule`
+
+**Design principle — The Enabling Framework:** Infrastructure is code, intelligence is LLM. No hardcoded heuristics. As models get smarter, Perpetuum gets smarter — without code changes. Timeproof by design.
+
+**Resilience (24/7/365):** Pulse auto-restarts on panic. 60s LLM timeout. Atomic concern claiming. Per-concern error budgets. Process crash recovers from SQLite.
+
+**ON by default.** Disable: `[perpetuum] enabled = false`.
+
+[Research paper →](tems_lab/perpetuum/RESEARCH_PAPER.md) · [Vision →](tems_lab/perpetuum/VISION.md) · [Implementation →](tems_lab/perpetuum/IMPLEMENTATION_PLAN.md) · [Full lab →](tems_lab/perpetuum/)
+
 ---
 
 ## Interactive TUI

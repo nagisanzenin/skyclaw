@@ -40,15 +40,15 @@ impl LlmCaller for ProviderCaller {
             system: system.map(String::from),
         };
 
-        // Timeout: 60s for LLM calls. Prevents Perpetuum from hanging indefinitely
-        // if the provider is unresponsive. The agent loop has its own timeout via
-        // max_task_duration; Perpetuum needs its own since it runs independently.
+        // Timeout: 300s (5 min) for LLM calls. Reasoning models (o1, o3, DeepSeek R1)
+        // can take several minutes for complex tasks. Short timeouts would cut them off
+        // mid-reasoning, producing incomplete/broken output.
         let response = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(300),
             self.provider.complete(request),
         )
         .await
-        .map_err(|_| Temm1eError::Provider("Perpetuum LLM call timed out (60s)".to_string()))??;
+        .map_err(|_| Temm1eError::Provider("Perpetuum LLM call timed out (300s)".to_string()))??;
         let text = response
             .content
             .iter()

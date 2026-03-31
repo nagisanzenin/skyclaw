@@ -164,6 +164,11 @@ impl Perpetuum {
         channel_map: Arc<HashMap<String, Arc<dyn temm1e_core::traits::Channel>>>,
         db_path: &str,
     ) -> Result<Self, temm1e_core::types::error::Temm1eError> {
+        // Config validation — catch bad values before they cause runtime issues
+        let max_concerns = config.max_concerns.max(1);
+        let idle_secs = config.conscience.idle_threshold_secs.max(60);
+        let dream_secs = config.conscience.dream_threshold_secs.max(60);
+
         let store = Arc::new(Store::new(db_path).await?);
 
         let tz: chrono_tz::Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
@@ -171,8 +176,8 @@ impl Perpetuum {
         let chronos = Arc::new(Chronos::new(tz, store.clone()));
 
         let conscience = Arc::new(Conscience::new(
-            Duration::from_secs(config.conscience.idle_threshold_secs),
-            Duration::from_secs(config.conscience.dream_threshold_secs),
+            Duration::from_secs(idle_secs),
+            Duration::from_secs(dream_secs),
             store.clone(),
         ));
 
@@ -190,7 +195,7 @@ impl Perpetuum {
             conscience.clone(),
             caller,
             channel_map,
-            config.max_concerns,
+            max_concerns,
             config.cognitive.review_every_n_checks,
             volition_config,
         ));
@@ -239,6 +244,8 @@ impl Perpetuum {
                 });
 
                 // Concern dispatch loop with panic recovery
+                // Bounded: max 20 concurrent dispatches to prevent resource exhaustion
+                let dispatch_semaphore = Arc::new(tokio::sync::Semaphore::new(20));
                 let dispatch_result = std::panic::AssertUnwindSafe(async {
                     loop {
                         tokio::select! {
@@ -247,7 +254,9 @@ impl Perpetuum {
                                 match event {
                                     Some(PulseEvent::ConcernDue(id)) => {
                                         let cortex = cortex.clone();
+                                        let sem = dispatch_semaphore.clone();
                                         tokio::spawn(async move {
+                                            let _permit = sem.acquire().await;
                                             cortex.dispatch(id).await;
                                         });
                                     }
