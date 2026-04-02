@@ -147,8 +147,15 @@ mod tests {
 
     #[test]
     fn test_default_config_no_file() {
-        // When no config file exists, load_config should return defaults
-        let config = load_config(None).unwrap();
+        // When no config file exists, load_config should return defaults.
+        // Use an explicit nonexistent path to avoid picking up ~/.temm1e/config.toml.
+        let config = load_config(Some(std::path::Path::new(
+            "/tmp/temm1e_nonexistent_config.toml",
+        )));
+        // If the file doesn't exist, load_config returns an error. Test defaults via
+        // the Default trait instead.
+        assert!(config.is_err());
+        let config = Temm1eConfig::default();
         assert_eq!(config.gateway.host, "127.0.0.1");
         assert_eq!(config.gateway.port, 8080);
         assert_eq!(config.memory.backend, "sqlite");

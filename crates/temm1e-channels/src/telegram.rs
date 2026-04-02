@@ -22,6 +22,9 @@ use teloxide::types::{InputFile, MediaKind, MessageKind};
 /// Maximum file size the Telegram Bot API supports for uploads (50 MB).
 const TELEGRAM_UPLOAD_LIMIT: usize = 50 * 1024 * 1024;
 
+/// Telegram message character limit.
+const TELEGRAM_MESSAGE_LIMIT: usize = 4096;
+
 // ── Persistent allowlist ──────────────────────────────────────────
 
 /// On-disk representation of the allowlist stored at `~/.temm1e/allowlist.toml`.
@@ -260,19 +263,26 @@ impl Channel for TelegramChannel {
             .map(ChatId)
             .map_err(|_| Temm1eError::Channel(format!("Invalid chat_id: {}", msg.chat_id)))?;
 
-        let mut request = bot.send_message(chat_id, &msg.text);
+        // Split messages that exceed Telegram's 4096 character limit.
+        let chunks = split_message(&msg.text, TELEGRAM_MESSAGE_LIMIT);
 
-        if let Some(ref mode) = msg.parse_mode {
-            request = match mode {
-                ParseMode::Markdown => request.parse_mode(teloxide::types::ParseMode::MarkdownV2),
-                ParseMode::Html => request.parse_mode(teloxide::types::ParseMode::Html),
-                ParseMode::Plain => request,
-            };
+        for chunk in &chunks {
+            let mut request = bot.send_message(chat_id, chunk);
+
+            if let Some(ref mode) = msg.parse_mode {
+                request = match mode {
+                    ParseMode::Markdown => {
+                        request.parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                    }
+                    ParseMode::Html => request.parse_mode(teloxide::types::ParseMode::Html),
+                    ParseMode::Plain => request,
+                };
+            }
+
+            request.await.map_err(|e| {
+                Temm1eError::Channel(format!("Failed to send Telegram message: {e}"))
+            })?;
         }
-
-        request
-            .await
-            .map_err(|e| Temm1eError::Channel(format!("Failed to send Telegram message: {e}")))?;
 
         Ok(())
     }
@@ -776,6 +786,34 @@ fn extract_attachments(msg: &teloxide::types::Message) -> Vec<AttachmentRef> {
     attachments
 }
 
+/// Split a message into chunks that fit within a character limit.
+/// Tries to split at newline boundaries first, then spaces, then hard limit.
+fn split_message(text: &str, max_len: usize) -> Vec<String> {
+    if text.len() <= max_len {
+        return vec![text.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut remaining = text;
+
+    while !remaining.is_empty() {
+        if remaining.len() <= max_len {
+            chunks.push(remaining.to_string());
+            break;
+        }
+
+        let split_at = remaining[..max_len]
+            .rfind('\n')
+            .unwrap_or_else(|| remaining[..max_len].rfind(' ').unwrap_or(max_len));
+
+        let (chunk, rest) = remaining.split_at(split_at);
+        chunks.push(chunk.to_string());
+        remaining = rest.trim_start_matches('\n');
+    }
+
+    chunks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -902,5 +940,44 @@ mod tests {
             err.contains("not started"),
             "Should fail with 'not started', got: {err}"
         );
+    }
+
+    // ── Message splitting tests ────────────────────────────────────
+
+    #[test]
+    fn split_message_short() {
+        let chunks = split_message("hello", TELEGRAM_MESSAGE_LIMIT);
+        assert_eq!(chunks, vec!["hello"]);
+    }
+
+    #[test]
+    fn split_message_at_limit() {
+        let text = "a".repeat(TELEGRAM_MESSAGE_LIMIT);
+        let chunks = split_message(&text, TELEGRAM_MESSAGE_LIMIT);
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn split_message_over_limit() {
+        let text = "a".repeat(5000);
+        let chunks = split_message(&text, TELEGRAM_MESSAGE_LIMIT);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), TELEGRAM_MESSAGE_LIMIT);
+    }
+
+    #[test]
+    fn split_message_prefers_newline() {
+        let mut text = "a".repeat(3900);
+        text.push('\n');
+        text.push_str(&"b".repeat(500));
+        let chunks = split_message(&text, TELEGRAM_MESSAGE_LIMIT);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 3900);
+    }
+
+    #[test]
+    fn split_message_empty() {
+        let chunks = split_message("", TELEGRAM_MESSAGE_LIMIT);
+        assert_eq!(chunks, vec![""]);
     }
 }

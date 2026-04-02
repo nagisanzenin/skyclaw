@@ -933,6 +933,7 @@ async fn decrypt_otk_blob(
 // Only /stop remains as a hardcoded instant-kill command.
 
 /// Retry `send_message` up to 3 times with exponential backoff.
+/// Does not retry deterministic (permanent) failures.
 async fn send_with_retry(
     sender: &dyn temm1e_core::Channel,
     reply: temm1e_core::types::message::OutboundMessage,
@@ -944,6 +945,20 @@ async fn send_with_retry(
         match sender.send_message(msg.clone()).await {
             Ok(_) => return,
             Err(e) => {
+                let err_str = e.to_string();
+                // Don't retry permanent failures — they'll fail identically every time.
+                if err_str.contains("message is too long")
+                    || err_str.contains("can't parse")
+                    || err_str.contains("chat not found")
+                    || err_str.contains("bot was blocked")
+                    || err_str.contains("CHAT_WRITE_FORBIDDEN")
+                {
+                    tracing::error!(
+                        error = %e,
+                        "Non-retryable send failure — message lost"
+                    );
+                    return;
+                }
                 if attempt >= 3 {
                     tracing::error!(error = %e, attempt, "Failed to send reply after 3 attempts — message lost");
                     return;

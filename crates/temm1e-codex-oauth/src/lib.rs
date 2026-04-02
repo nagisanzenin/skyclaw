@@ -296,8 +296,11 @@ fn open_browser(url: &str) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
+        // Windows cmd.exe interprets & as a command separator.
+        // "start" treats the first quoted arg as a window title, so we pass
+        // an empty title ("") then the quoted URL to prevent splitting.
         std::process::Command::new("cmd")
-            .args(["/c", "start", url])
+            .args(["/c", "start", "", url])
             .spawn()
             .map_err(|e| e.to_string())?;
     }

@@ -273,6 +273,30 @@ fn build_tool_name_map(messages: &[ChatMessage]) -> HashMap<String, String> {
 /// Sanitize tool message ordering for providers like Gemini that require strict
 /// tool_call → tool_result adjacency.
 ///
+/// Sanitize non-streaming response body from OpenAI-compatible providers.
+/// Some providers (OpenRouter, proxied Claude) append SSE markers like
+/// `data: [DONE]` to non-streaming responses, causing JSON parse failures.
+fn sanitize_nonstream_body(body: &str) -> String {
+    let mut s = body.trim();
+    // Remove BOM
+    s = s.trim_start_matches('\u{feff}');
+    // Strip trailing SSE marker
+    if let Some(idx) = s.rfind("data: [DONE]") {
+        // Only strip if it's AFTER the JSON body (after a closing brace)
+        if let Some(brace) = s[..idx].rfind('}') {
+            s = s[..=brace].trim();
+        }
+    }
+    // Handle accidental `data: {json}` wrapping
+    if s.starts_with("data:") && !s.starts_with("data: [") {
+        let rest = s.trim_start_matches("data:").trim();
+        if rest.starts_with('{') {
+            s = rest;
+        }
+    }
+    s.to_string()
+}
+
 /// Removes tool result messages (`"role": "tool"`) that don't immediately follow
 /// an assistant message with matching `tool_calls`, and strips `tool_calls` from
 /// assistant messages whose results were removed.
@@ -598,44 +622,86 @@ impl Provider for OpenAICompatProvider {
 
         debug!(provider = "openai-compat", model = %request.model, base_url = %self.base_url, "Sending completion request");
 
-        let mut req = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.current_key()))
-            .header("Content-Type", "application/json");
-        for (k, v) in &self.extra_headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        let response = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Temm1eError::Provider(format!("OpenAI-compat request failed: {e}")))?;
+        // Retry loop: handles transient body-read failures (connection drop after 200 OK).
+        // Non-success status codes (401, 429, etc.) return immediately — no retry.
+        const MAX_BODY_RETRIES: u32 = 2;
+        let mut last_body_err: Option<Temm1eError> = None;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".into());
-            error!(provider = "openai-compat", %status, "API error: {}", error_body);
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                self.rotate_key();
-                return Err(Temm1eError::RateLimited(error_body));
-            }
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                self.rotate_key();
-                return Err(Temm1eError::Auth(error_body));
-            }
-            return Err(Temm1eError::Provider(format!(
-                "OpenAI-compat API error ({status}): {error_body}"
-            )));
-        }
+        let body_text = 'retry: {
+            for attempt in 0..=MAX_BODY_RETRIES {
+                if attempt > 0 {
+                    tracing::warn!(attempt, "Retrying after response body read failure");
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * (1 << attempt)))
+                        .await;
+                }
 
-        // Read the body first so we can log it on parse failure
-        let body_text = response.text().await.map_err(|e| {
-            Temm1eError::Provider(format!("Failed to read OpenAI-compat response body: {e}"))
-        })?;
+                let mut req = self
+                    .client
+                    .post(format!("{}/chat/completions", self.base_url))
+                    .header("Authorization", format!("Bearer {}", self.current_key()))
+                    .header("Content-Type", "application/json");
+                for (k, v) in &self.extra_headers {
+                    req = req.header(k.as_str(), v.as_str());
+                }
+                let response = match req.json(&body).send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        last_body_err = Some(Temm1eError::Provider(format!(
+                            "OpenAI-compat request failed: {e}"
+                        )));
+                        continue;
+                    }
+                };
+
+                let status = response.status();
+                // Non-success errors are NOT retryable — return immediately.
+                if !status.is_success() {
+                    let error_body = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "unknown error".into());
+                    error!(provider = "openai-compat", %status, "API error: {}", error_body);
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                        self.rotate_key();
+                        return Err(Temm1eError::RateLimited(error_body));
+                    }
+                    if status == reqwest::StatusCode::UNAUTHORIZED {
+                        self.rotate_key();
+                        return Err(Temm1eError::Auth(error_body));
+                    }
+                    return Err(Temm1eError::Provider(format!(
+                        "OpenAI-compat API error ({status}): {error_body}"
+                    )));
+                }
+
+                // Capture headers before .text() consumes the response.
+                let content_len = response.content_length();
+
+                match response.text().await {
+                    Ok(text) => break 'retry text,
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = "openai-compat",
+                            %status,
+                            content_length = ?content_len,
+                            attempt,
+                            "Response body read failed: {e}"
+                        );
+                        last_body_err = Some(Temm1eError::Provider(format!(
+                            "Failed to read response body (status={status}, len={content_len:?}): {e}"
+                        )));
+                        continue;
+                    }
+                }
+            }
+            // All retries exhausted
+            return Err(last_body_err
+                .unwrap_or_else(|| Temm1eError::Provider("Request failed after retries".into())));
+        };
+
+        // Sanitize: some OpenAI-compatible providers (OpenRouter, proxied Claude)
+        // append SSE trailers like "data: [DONE]" to non-streaming responses.
+        let body_text = sanitize_nonstream_body(&body_text);
 
         let api_response: OpenAIResponse = serde_json::from_str(&body_text).map_err(|e| {
             error!(
@@ -1171,6 +1237,41 @@ mod tests {
         assert!(result.is_some());
         let chunk = result.unwrap().unwrap();
         assert_eq!(chunk.delta.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn sanitize_clean_body() {
+        let body = r#"{"id":"123","choices":[{"message":{"content":"hi"}}]}"#;
+        assert_eq!(sanitize_nonstream_body(body), body);
+    }
+
+    #[test]
+    fn sanitize_trailing_sse_done() {
+        let body = r#"{"id":"123","choices":[{"message":{"content":"hi"}}]}data: [DONE]"#;
+        let cleaned = sanitize_nonstream_body(body);
+        assert!(cleaned.ends_with('}'));
+        assert!(!cleaned.contains("[DONE]"));
+    }
+
+    #[test]
+    fn sanitize_trailing_sse_done_with_newlines() {
+        let body = "{\"id\":\"123\"}\n\ndata: [DONE]\n\n";
+        let cleaned = sanitize_nonstream_body(body);
+        assert!(cleaned.ends_with('}'));
+    }
+
+    #[test]
+    fn sanitize_bom_prefix() {
+        let body = "\u{feff}{\"id\":\"123\"}";
+        let cleaned = sanitize_nonstream_body(body);
+        assert!(cleaned.starts_with('{'));
+    }
+
+    #[test]
+    fn sanitize_data_wrapped() {
+        let body = "data: {\"id\":\"123\"}";
+        let cleaned = sanitize_nonstream_body(body);
+        assert_eq!(cleaned, "{\"id\":\"123\"}");
     }
 
     #[test]
