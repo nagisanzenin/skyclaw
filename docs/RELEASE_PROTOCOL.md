@@ -94,6 +94,26 @@ git commit -m "vX.Y.Z: <one-line summary>"
 git push origin main
 ```
 
+### 9. Tag and Release
+
+**CRITICAL — this triggers the GitHub release pipeline.**
+Without the tag, no binaries are built and no GitHub release is created.
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+After pushing the tag:
+1. GitHub Actions `release.yml` triggers automatically
+2. CI runs checks (cargo check, test, clippy, fmt)
+3. Builds 4 binaries (linux-musl, linux-desktop, macos-x86, macos-arm)
+4. Creates GitHub Release with binaries + checksums + auto release notes
+5. **Verify the release**: `gh run list --limit 1` and check the Actions tab
+
+Do NOT declare the release done until the workflow completes successfully
+and the GitHub Release page shows all 4 binaries.
+
 ## Files That Do NOT Need Updating
 
 - **`docs/benchmarks/BENCHMARK_REPORT.md`** — Version in title reflects when benchmark was taken. Only update if benchmarks are re-run.
@@ -113,3 +133,5 @@ git push origin main
 | Forget CLAUDE.md crate count | Claude starts sessions with wrong context |
 | Forget `default_model()` for new provider | Omitting model in config crashes with wrong default |
 | Push without running tests | Broken code on main |
+| Push without tagging | **No GitHub release created, no binaries built, users stuck on old version** |
+| Tag before pushing commit | Tag points to wrong commit |
