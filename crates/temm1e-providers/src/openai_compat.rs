@@ -118,6 +118,14 @@ impl OpenAICompatProvider {
         // Strip any orphaned tool messages that violate this constraint.
         sanitize_tool_ordering(&mut messages);
 
+        // MiniMax: strict tool call pairing — drop malformed tool calls with
+        // empty IDs/names and remove the `name` field from tool result messages
+        // (MiniMax rejects it). Also drop orphaned tool results whose IDs don't
+        // correspond to any tool_call in the history.
+        if self.base_url.contains("minimax") {
+            sanitize_minimax_tools(&mut messages);
+        }
+
         // Gemini 3 models require a `thought_signature` on the first tool_call
         // in each assistant message. Inject the documented bypass value for
         // tool_calls that don't carry a real signature (old history, other
@@ -355,6 +363,103 @@ fn sanitize_tool_ordering(messages: &mut Vec<serde_json::Value>) {
             }
         }
     }
+}
+
+/// Sanitize tool messages for MiniMax API compatibility.
+///
+/// MiniMax rejects resolved tool_call → tool_result pairs in conversation
+/// history with error 2013 ("invalid chat setting"). Unlike OpenAI/Anthropic,
+/// MiniMax does not accept historical tool interactions as structured messages.
+///
+/// Instead of stripping tool history (which loses context), this function
+/// flattens tool interactions into plain text within assistant messages so
+/// the LLM retains full context of what happened:
+/// - Tool calls become `[Used tool: name(args)]`
+/// - Tool results become `[Result: content]`
+/// - The `role: "tool"` messages are removed after merging
+fn sanitize_minimax_tools(messages: &mut Vec<serde_json::Value>) {
+    // Build a map of tool_call_id → result content from tool messages
+    let mut result_map: HashMap<String, String> = HashMap::new();
+    for msg in messages.iter() {
+        if msg.get("role").and_then(|r| r.as_str()) == Some("tool") {
+            let id = msg
+                .get("tool_call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let content = msg
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !id.is_empty() {
+                result_map.insert(id, content);
+            }
+        }
+    }
+
+    // Convert tool_calls on assistant messages into text content
+    for msg in messages.iter_mut() {
+        if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+        let tool_calls = match msg.get("tool_calls").and_then(|tc| tc.as_array()).cloned() {
+            Some(tc) if !tc.is_empty() => tc,
+            _ => continue,
+        };
+
+        // Build text description of each tool call + its result
+        let mut tool_text = String::new();
+        for tc in &tool_calls {
+            let name = tc
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("unknown");
+            let args = tc
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(|a| a.as_str())
+                .unwrap_or("{}");
+            let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+
+            tool_text.push_str(&format!("[Used tool: {}({})]\n", name, args));
+            if let Some(result) = result_map.get(id) {
+                // Truncate long results to avoid blowing up context
+                let truncated = if result.len() > 500 {
+                    format!("{}...", &result[..500])
+                } else {
+                    result.clone()
+                };
+                tool_text.push_str(&format!("[Result: {}]\n", truncated));
+            }
+        }
+
+        // Merge with existing text content
+        let existing = msg
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+        let merged = if existing.is_empty() {
+            tool_text.trim().to_string()
+        } else {
+            format!("{}\n{}", existing, tool_text.trim())
+        };
+
+        if let Some(obj) = msg.as_object_mut() {
+            obj.insert(
+                "content".to_string(),
+                serde_json::Value::String(merged),
+            );
+            obj.remove("tool_calls");
+        }
+    }
+
+    // Remove all tool result messages (now merged into assistant text)
+    messages.retain(|msg| {
+        msg.get("role").and_then(|r| r.as_str()) != Some("tool")
+    });
 }
 
 /// Inject Gemini 3 thought_signature bypass on assistant messages with tool_calls.
