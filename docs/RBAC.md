@@ -102,17 +102,93 @@ Agent tool access is filtered in two places:
 
 ## User identification
 
-Each channel uses platform-specific numeric IDs:
+Each channel uses platform-specific numeric IDs. Per security rule CA-04: only numeric/stable IDs are matched, never usernames (which can be changed and would allow allowlist bypass).
 
 | Channel | ID format | Example |
 |---------|-----------|---------|
 | Telegram | Numeric user ID | `123456789` |
 | Discord | Snowflake ID | `987654321098765432` |
 | Slack | User ID | `U12345678` |
-| WhatsApp | Phone number | `1234567890` |
+| WhatsApp | Phone number (digits only) | `1234567890` |
 | CLI | Fixed | `local` (always Admin) |
 
-Per security rule CA-04: only numeric IDs are matched, never usernames (which can be changed).
+### How to find user IDs per platform
+
+#### Telegram
+
+**Option A — Use a bot:**
+1. Search for `@userinfobot` or `@getmyid_bot` in Telegram
+2. Start a chat with the bot and send any message
+3. The bot replies with your numeric user ID (e.g. `123456789`)
+
+**Option B — From the TEMM1E logs:**
+1. Have the user send any message to your TEMM1E bot
+2. Check the logs: `grep "user_id" /tmp/skyclaw.log`
+3. The log line shows `user_id=123456789`
+
+**Option C — Telegram API:**
+1. Forward a message from the target user to `@JsonDumpBot`
+2. Look for `"from": { "id": 123456789 }` in the JSON output
+
+> Note: Telegram user IDs are permanent and never change, even if the user changes their username or display name.
+
+#### Discord
+
+**Option A — Enable Developer Mode:**
+1. Open Discord Settings > Advanced > toggle **Developer Mode** on
+2. Right-click on any user's name or avatar
+3. Click **Copy User ID**
+4. The ID is a numeric snowflake (e.g. `987654321098765432`)
+
+**Option B — From the TEMM1E logs:**
+1. Have the user send a message in a channel where TEMM1E is active
+2. Check the logs for `user_id=987654321098765432`
+
+**Option C — Discord slash command:**
+1. Type `\@username` in any Discord chat (backslash + mention)
+2. Discord shows `<@987654321098765432>` — the number is the user ID
+
+> Note: Discord snowflake IDs are permanent. They encode the account creation timestamp.
+
+#### Slack
+
+**Option A — Profile view:**
+1. Click on the user's name in any Slack channel
+2. Click **View full profile**
+3. Click the **more** (...) button
+4. Click **Copy member ID**
+5. The ID looks like `U12345678` or `U0A1B2C3D4`
+
+**Option B — From the TEMM1E logs:**
+1. Have the user send a message in a channel where TEMM1E is listening
+2. Check the logs for `user_id=U12345678`
+
+**Option C — Slack API:**
+1. Go to `https://api.slack.com/methods/users.list/test`
+2. Select your workspace and execute
+3. Find the user in the response — their `id` field is the user ID
+
+> Note: Slack user IDs start with `U` and are permanent per workspace.
+
+#### WhatsApp
+
+WhatsApp uses phone numbers as user identifiers. TEMM1E normalizes them to digits only.
+
+**Finding the phone number:**
+1. Open the contact in WhatsApp
+2. Tap the contact name at the top to view their profile
+3. The phone number is shown with country code (e.g. `+1 234 567 8900`)
+4. Strip all non-digits for the allowlist: `12345678900`
+
+**From the TEMM1E logs:**
+1. Have the user send a message to your TEMM1E WhatsApp number
+2. Check the logs for `user_id=12345678900`
+
+> Note: Use the full international number without `+`, spaces, or dashes. TEMM1E's `normalize_phone()` handles this automatically for incoming messages.
+
+#### CLI
+
+The CLI channel always runs as **Admin** with a fixed user ID of `local`. No configuration needed — if you have terminal access to the machine running TEMM1E, you have full admin access.
 
 ## Code reference
 
