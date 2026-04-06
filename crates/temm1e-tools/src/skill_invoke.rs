@@ -32,9 +32,10 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> &str {
-        "Discover and invoke installed skills. Skills are reusable instruction sets \
-         for common tasks (deploy, test, debug, etc.). Use action 'list' to see \
-         available skills, or 'invoke' with a skill name to get its full instructions."
+        "Discover and invoke installed skills. Three actions: \
+         'list' = skill names + one-line descriptions (lightweight catalog), \
+         'info' = full metadata for a specific skill (version, capabilities), \
+         'invoke' = get the complete skill instructions to follow."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -43,12 +44,12 @@ impl Tool for SkillTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "invoke"],
-                    "description": "Action to perform: 'list' all available skills, or 'invoke' a specific skill by name"
+                    "enum": ["list", "info", "invoke"],
+                    "description": "Action: 'list' = catalog of names + descriptions, 'info' = metadata for a skill, 'invoke' = full instructions"
                 },
                 "name": {
                     "type": "string",
-                    "description": "Skill name to invoke (required when action is 'invoke')"
+                    "description": "Skill name (required for 'info' and 'invoke')"
                 }
             },
             "required": ["action"]
@@ -75,6 +76,8 @@ impl Tool for SkillTool {
             .unwrap_or("list");
 
         match action {
+            // Layer 1: Catalog — names + one-line descriptions only.
+            // Cheap to scan. Agent uses this to decide which skill to look at.
             "list" => {
                 let reg = self.registry.read().await;
                 let skills = reg.list_skills();
@@ -84,24 +87,39 @@ impl Tool for SkillTool {
                         is_error: false,
                     });
                 }
-                let mut out = format!("{} skill(s) available:\n\n", skills.len());
+                let mut out = format!("{} skill(s) available:\n", skills.len());
                 for s in skills {
-                    out.push_str(&format!(
-                        "- **{}** (v{}) — {}\n  capabilities: {}\n",
-                        s.name,
-                        s.version,
-                        s.description,
-                        s.capabilities.join(", ")
-                    ));
+                    out.push_str(&format!("- {} — {}\n", s.name, s.description));
                 }
-                out.push_str(
-                    "\nUse action 'invoke' with a skill name to get its full instructions.",
-                );
                 Ok(ToolOutput {
                     content: out,
                     is_error: false,
                 })
             }
+            // Layer 2: Summary — version, capabilities, description.
+            // Agent uses this to confirm a skill is relevant before loading full content.
+            "info" => {
+                let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+                    Temm1eError::Tool("Missing required parameter 'name' for info action".into())
+                })?;
+
+                let reg = self.registry.read().await;
+                match reg.get_skill(name) {
+                    Some(skill) => Ok(ToolOutput {
+                        content: format!(
+                            "{} (v{})\n{}\ncapabilities: {}",
+                            skill.name,
+                            skill.version,
+                            skill.description,
+                            skill.capabilities.join(", ")
+                        ),
+                        is_error: false,
+                    }),
+                    None => skill_not_found(name, &reg),
+                }
+            }
+            // Layer 3: Full content — complete skill instructions.
+            // Agent invokes this when it has decided to use the skill.
             "invoke" => {
                 let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
                     Temm1eError::Tool("Missing required parameter 'name' for invoke action".into())
@@ -116,33 +134,34 @@ impl Tool for SkillTool {
                         ),
                         is_error: false,
                     }),
-                    None => {
-                        let available: Vec<&str> =
-                            reg.list_skills().iter().map(|s| s.name.as_str()).collect();
-                        Ok(ToolOutput {
-                            content: format!(
-                                "Skill '{}' not found. Available skills: {}",
-                                name,
-                                if available.is_empty() {
-                                    "(none)".to_string()
-                                } else {
-                                    available.join(", ")
-                                }
-                            ),
-                            is_error: true,
-                        })
-                    }
+                    None => skill_not_found(name, &reg),
                 }
             }
             other => Ok(ToolOutput {
                 content: format!(
-                    "Unknown action '{}'. Valid actions: 'list', 'invoke'",
+                    "Unknown action '{}'. Valid actions: 'list', 'info', 'invoke'",
                     other
                 ),
                 is_error: true,
             }),
         }
     }
+}
+
+fn skill_not_found(name: &str, reg: &SkillRegistry) -> Result<ToolOutput, Temm1eError> {
+    let available: Vec<&str> = reg.list_skills().iter().map(|s| s.name.as_str()).collect();
+    Ok(ToolOutput {
+        content: format!(
+            "Skill '{}' not found. Available: {}",
+            name,
+            if available.is_empty() {
+                "(none)".to_string()
+            } else {
+                available.join(", ")
+            }
+        ),
+        is_error: true,
+    })
 }
 
 #[cfg(test)]
@@ -224,6 +243,45 @@ mod tests {
         assert!(out.content.contains("deploy"));
         assert!(out.content.contains("Deploy to cloud"));
         assert!(out.content.contains("1 skill(s) available"));
+        // Layer 1: catalog should NOT contain capabilities or version (lightweight)
+        assert!(!out.content.contains("capabilities"));
+        assert!(!out.content.contains("v1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn info_shows_metadata_not_instructions() {
+        let tmp = tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        std_fs::create_dir_all(&skills_dir).unwrap();
+        write_skill(
+            &skills_dir,
+            "deploy.md",
+            "deploy",
+            "Deploy to cloud",
+            "Step 1: build\nStep 2: ship",
+        );
+
+        let reg = make_registry(tmp.path()).await;
+        let tool = SkillTool::new(reg);
+
+        let out = tool
+            .execute(
+                ToolInput {
+                    name: "use_skill".into(),
+                    arguments: serde_json::json!({"action": "info", "name": "deploy"}),
+                },
+                &ctx(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!out.is_error);
+        // Layer 2: has version and capabilities
+        assert!(out.content.contains("v1.0.0"));
+        assert!(out.content.contains("capabilities"));
+        assert!(out.content.contains("Deploy to cloud"));
+        // Layer 2: does NOT contain full instructions
+        assert!(!out.content.contains("Step 1: build"));
     }
 
     #[tokio::test]
