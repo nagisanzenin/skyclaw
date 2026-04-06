@@ -86,6 +86,7 @@ pub async fn build_context(
     prompt_tier: Option<PromptTier>,
     matched_blueprints: &[crate::blueprint::Blueprint],
     lambda_enabled: bool,
+    personality: Option<&temm1e_anima::personality::PersonalityConfig>,
 ) -> CompletionRequest {
     let budget = max_context_tokens;
 
@@ -101,9 +102,10 @@ pub async fn build_context(
                 &session.workspace_path,
                 false, // done_criteria handled separately
                 tier,
+                personality,
             ))
         }
-        _ => build_system_prompt(system_prompt, tools, session),
+        _ => build_system_prompt(system_prompt, tools, session, personality),
     };
     let system_tokens = system.as_ref().map_or(0, |s| estimate_tokens(s));
 
@@ -819,11 +821,17 @@ fn build_system_prompt(
     custom: Option<&str>,
     tools: &[Arc<dyn Tool>],
     session: &SessionContext,
+    personality: Option<&temm1e_anima::personality::PersonalityConfig>,
 ) -> Option<String> {
     custom.map(|s| s.to_string()).or_else(|| {
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        let identity = if let Some(p) = personality {
+            format!("{}\nYou are a cloud-native AI agent runtime. You control a computer through messaging apps.", p.generate_identity_section())
+        } else {
+            "You are TEMM1E, a cloud-native AI agent runtime. You control a computer through messaging apps.".to_string()
+        };
         Some(format!(
-            "You are TEMM1E, a cloud-native AI agent runtime. You control a computer through messaging apps.\n\
+            "{identity}\n\
              \n\
              You have access to these tools: {}\n\
              \n\
@@ -892,6 +900,7 @@ mod tests {
             None,
             &[],
             true, // lambda_enabled
+            None, // personality
         )
         .await;
         // System prompt now includes the budget dashboard appended
@@ -916,6 +925,7 @@ mod tests {
             None,
             &[],
             true, // lambda_enabled
+            None, // personality
         )
         .await;
         assert!(req.system.is_some());
@@ -942,6 +952,7 @@ mod tests {
             None,
             &[],
             true, // lambda_enabled
+            None, // personality
         )
         .await;
         assert_eq!(req.tools.len(), 2);
@@ -974,6 +985,7 @@ mod tests {
             None,
             &[],
             true, // lambda_enabled
+            None, // personality
         )
         .await;
         // Messages should include the history
@@ -1010,6 +1022,7 @@ mod tests {
             None,
             &[],
             true, // lambda_enabled
+            None, // personality
         )
         .await;
 
@@ -1053,6 +1066,7 @@ mod tests {
             None,
             &[],
             true, // lambda_enabled
+            None, // personality
         )
         .await;
 
@@ -1281,6 +1295,7 @@ mod tests {
             None,
             &[],
             true, // lambda_enabled
+            None, // personality
         )
         .await;
 

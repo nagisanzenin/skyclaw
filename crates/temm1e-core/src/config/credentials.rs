@@ -111,6 +111,7 @@ pub fn normalize_provider_name(name: &str) -> Option<&'static str> {
         "grok" | "xai" => Some("grok"),
         "openrouter" => Some("openrouter"),
         "minimax" => Some("minimax"),
+        "stepfun" | "step" => Some("stepfun"),
         "zai" | "zhipu" | "glm" => Some("zai"),
         "ollama" => Some("ollama"),
         _ => None,
@@ -145,7 +146,7 @@ pub fn detect_api_key(text: &str) -> Option<DetectedCredential> {
         if p != "http" && p != "https" {
             match p.as_str() {
                 "anthropic" | "openai" | "gemini" | "grok" | "xai" | "openrouter" | "minimax"
-                | "zai" | "zhipu" | "ollama" | "github" | "gh" => {
+                | "stepfun" | "step" | "zai" | "zhipu" | "ollama" | "github" | "gh" => {
                     if key.len() >= 8 && !is_placeholder_key(key) {
                         return Some(DetectedCredential {
                             provider: match p.as_str() {
@@ -155,6 +156,7 @@ pub fn detect_api_key(text: &str) -> Option<DetectedCredential> {
                                 "grok" | "xai" => "grok",
                                 "openrouter" => "openrouter",
                                 "minimax" => "minimax",
+                                "stepfun" | "step" => "stepfun",
                                 "zai" | "zhipu" => "zai",
                                 "ollama" => "ollama",
                                 "github" | "gh" => "github",

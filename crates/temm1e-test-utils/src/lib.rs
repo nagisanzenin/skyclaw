@@ -475,6 +475,7 @@ pub fn make_session() -> SessionContext {
         channel: "test".to_string(),
         chat_id: "test-chat".to_string(),
         user_id: "test-user".to_string(),
+        role: temm1e_core::types::rbac::Role::Admin,
         history: Vec::new(),
         workspace_path: std::env::temp_dir().join("temm1e-test"),
     }

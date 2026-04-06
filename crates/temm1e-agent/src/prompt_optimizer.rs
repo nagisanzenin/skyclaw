@@ -456,13 +456,17 @@ pub fn build_system_prompt(
     tools: &[&dyn Tool],
     workspace: &Path,
     has_done_criteria: bool,
+    personality: Option<&temm1e_anima::personality::PersonalityConfig>,
 ) -> String {
-    SystemPromptBuilder::new()
+    let mut builder = SystemPromptBuilder::new()
         .config(config)
         .tools(tools)
         .workspace(workspace)
-        .done_criteria(has_done_criteria)
-        .build()
+        .done_criteria(has_done_criteria);
+    if let Some(p) = personality {
+        builder = builder.personality(p);
+    }
+    builder.build()
 }
 
 /// Build a tier-aware system prompt. Uses prompt stratification to minimize
@@ -473,14 +477,18 @@ pub fn build_tiered_system_prompt(
     workspace: &Path,
     has_done_criteria: bool,
     tier: PromptTier,
+    personality: Option<&temm1e_anima::personality::PersonalityConfig>,
 ) -> String {
-    SystemPromptBuilder::new()
+    let mut builder = SystemPromptBuilder::new()
         .config(config)
         .tools(tools)
         .workspace(workspace)
         .done_criteria(has_done_criteria)
-        .prompt_tier(tier)
-        .build()
+        .prompt_tier(tier);
+    if let Some(p) = personality {
+        builder = builder.personality(p);
+    }
+    builder.build()
 }
 
 // ---------------------------------------------------------------------------
@@ -708,7 +716,7 @@ mod tests {
         let shell = MockTool::new("shell");
         let tools: Vec<&dyn Tool> = vec![&shell];
 
-        let prompt = build_system_prompt(&config, &tools, &workspace(), false);
+        let prompt = build_system_prompt(&config, &tools, &workspace(), false, None);
 
         assert!(prompt.contains("TEMM1E"));
         assert!(prompt.contains("Available tools: shell"));
@@ -720,7 +728,7 @@ mod tests {
         let config = AgentConfig::default();
         let tools: Vec<&dyn Tool> = vec![];
 
-        let prompt = build_system_prompt(&config, &tools, &workspace(), true);
+        let prompt = build_system_prompt(&config, &tools, &workspace(), true, None);
 
         assert!(prompt.contains("DONE criteria"));
     }
@@ -786,7 +794,7 @@ mod tests {
         let tools: Vec<&dyn Tool> = vec![&shell];
         let config = AgentConfig::default();
 
-        let prompt = build_system_prompt(&config, &tools, &workspace(), true);
+        let prompt = build_system_prompt(&config, &tools, &workspace(), true, None);
 
         assert!(prompt.contains("Never expose secrets"));
     }
@@ -931,5 +939,104 @@ mod tests {
         assert!(minimal_tokens < basic_tokens, "Minimal < Basic");
         assert!(basic_tokens < standard_tokens, "Basic < Standard");
         assert!(standard_tokens < full_tokens, "Standard < Full");
+    }
+
+    // -- Personality wiring (issue #31) ----------------------------------------
+
+    #[test]
+    fn custom_personality_overrides_identity() {
+        use temm1e_anima::personality::{IdentityConfig, PersonalityConfig, ValuesConfig};
+
+        let custom = PersonalityConfig {
+            identity: IdentityConfig {
+                name: "Tinker".to_string(),
+                full_name: "TinkerBot".to_string(),
+                tagline: "a maker at heart".to_string(),
+                soul_content: None,
+            },
+            values: ValuesConfig {
+                hierarchy: vec!["Curiosity".to_string()],
+            },
+            modes: PersonalityConfig::stock_tem().modes,
+        };
+
+        // Convenience function path
+        let config = AgentConfig::default();
+        let tools: Vec<&dyn Tool> = vec![];
+        let prompt = build_system_prompt(&config, &tools, &workspace(), false, Some(&custom));
+        assert!(
+            prompt.contains("TinkerBot"),
+            "identity should use custom name"
+        );
+        assert!(
+            prompt.contains("Tinker"),
+            "identity should use custom nickname"
+        );
+        assert!(
+            !prompt.contains("You are TEMM1E"),
+            "hardcoded identity should be replaced"
+        );
+
+        // Tiered function path
+        let tiered = build_tiered_system_prompt(
+            &config,
+            &tools,
+            &workspace(),
+            false,
+            PromptTier::Minimal,
+            Some(&custom),
+        );
+        assert!(
+            tiered.contains("TinkerBot"),
+            "tiered identity should use custom name"
+        );
+        assert!(
+            !tiered.contains("You are TEMM1E"),
+            "tiered hardcoded identity should be replaced"
+        );
+    }
+
+    #[test]
+    fn builder_personality_overrides_identity_section() {
+        use temm1e_anima::personality::{IdentityConfig, PersonalityConfig, ValuesConfig};
+
+        let custom = PersonalityConfig {
+            identity: IdentityConfig {
+                name: "Bee".to_string(),
+                full_name: "BeeBot".to_string(),
+                tagline: "buzz buzz".to_string(),
+                soul_content: None,
+            },
+            values: ValuesConfig {
+                hierarchy: vec!["Pollination".to_string()],
+            },
+            modes: PersonalityConfig::stock_tem().modes,
+        };
+
+        let prompt = SystemPromptBuilder::new()
+            .workspace(&workspace())
+            .personality(&custom)
+            .build();
+
+        assert!(prompt.contains("BeeBot"));
+        assert!(prompt.contains("Pollination"));
+        assert!(!prompt.contains("You are TEMM1E"));
+    }
+
+    #[test]
+    fn stock_tem_personality_still_works() {
+        let stock = temm1e_anima::personality::PersonalityConfig::stock_tem();
+        let config = AgentConfig::default();
+        let tools: Vec<&dyn Tool> = vec![];
+
+        let prompt = build_system_prompt(&config, &tools, &workspace(), false, Some(&stock));
+        assert!(
+            prompt.contains("TEMM1E"),
+            "stock Tem identity should mention TEMM1E"
+        );
+        assert!(
+            prompt.contains("Tem"),
+            "stock Tem identity should mention Tem"
+        );
     }
 }

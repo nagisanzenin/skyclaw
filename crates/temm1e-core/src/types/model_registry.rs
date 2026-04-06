@@ -171,6 +171,20 @@ fn lookup(model: &str) -> Option<ModelLimits> {
             max_output_tokens: 196_608,
         },
 
+        // ── StepFun (阶跃星辰) ───────────────────────────────────────
+        "step-3.5-flash" => ModelLimits {
+            context_window: 262_144,
+            max_output_tokens: 65_536,
+        },
+        "step-3" => ModelLimits {
+            context_window: 262_144,
+            max_output_tokens: 65_536,
+        },
+        "step-2-16k" => ModelLimits {
+            context_window: 16_384,
+            max_output_tokens: 4_096,
+        },
+
         // ── Meta Llama ────────────────────────────────────────────────
         "llama-4-maverick" | "meta-llama/llama-4-maverick" => ModelLimits {
             context_window: 1_048_576,
@@ -277,6 +291,7 @@ pub fn default_model(provider_name: &str) -> &'static str {
         "grok" | "xai" => "grok-4-1-fast-non-reasoning",
         "openrouter" => "anthropic/claude-sonnet-4-6",
         "minimax" => "MiniMax-M2.5",
+        "stepfun" => "step-3.5-flash",
         "zai" => "glm-4.7-flash",
         "ollama" => "llama3.3",
         _ => "claude-sonnet-4-6",
@@ -319,6 +334,7 @@ pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
             "glm-4.6v-flash",
         ],
         "minimax" => vec!["MiniMax-M2.5", "MiniMax-M2.5-highspeed"],
+        "stepfun" => vec!["step-3.5-flash", "step-3", "step-2-16k"],
         _ => vec![],
     }
 }
@@ -331,6 +347,9 @@ pub fn is_vision_model(model: &str) -> bool {
     }
     if m.starts_with("minimax") {
         return false;
+    }
+    if m.starts_with("step-") {
+        return m == "step-3"; // only step-3 supports vision
     }
     if m.starts_with("gpt-3") {
         return false;

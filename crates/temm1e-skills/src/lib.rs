@@ -171,22 +171,40 @@ async fn parse_skill_file(path: &Path) -> Result<Skill, Temm1eError> {
     parse_skill_content(&content, path)
 }
 
-/// Parse skill content (frontmatter + body) from a string.
+/// Parse skill content from a string.
+///
+/// Supports two formats:
+/// 1. **TEMM1E native** — YAML frontmatter (`---` delimited) with name, description,
+///    capabilities, version. Body after closing `---` is the instructions.
+/// 2. **Claude Code compatible** — plain Markdown starting with `# Skill: <title>`
+///    or `# <title>`. First paragraph after the heading is the description.
+///    Entire file content is the instructions. Name derived from filename.
+///
+/// This dual-format support allows cross-use of Claude Code skills and vice versa.
 fn parse_skill_content(content: &str, source_path: &Path) -> Result<Skill, Temm1eError> {
     let trimmed = content.trim_start();
 
-    if !trimmed.starts_with("---") {
-        return Err(Temm1eError::Skill(format!(
-            "Skill file {} does not start with YAML frontmatter delimiter '---'",
-            source_path.display()
-        )));
+    // Format 1: YAML frontmatter (TEMM1E native)
+    if trimmed.starts_with("---") {
+        return parse_frontmatter_skill(trimmed, source_path);
     }
 
-    // Skip the opening "---" and any immediately following newline characters.
+    // Format 2: Plain Markdown (Claude Code compatible)
+    if trimmed.starts_with("# ") {
+        return parse_markdown_skill(trimmed, source_path);
+    }
+
+    Err(Temm1eError::Skill(format!(
+        "Skill file {} must start with YAML frontmatter (---) or a Markdown heading (#)",
+        source_path.display()
+    )))
+}
+
+/// Parse a skill with YAML frontmatter (TEMM1E native format).
+fn parse_frontmatter_skill(trimmed: &str, source_path: &Path) -> Result<Skill, Temm1eError> {
     let after_opening = &trimmed[3..];
     let after_opening = after_opening.trim_start_matches(['\r', '\n']);
 
-    // Locate the closing "---" delimiter (must be on its own line).
     let closing_pos = after_opening.find("\n---").ok_or_else(|| {
         Temm1eError::Skill(format!(
             "Skill file {} has no closing YAML frontmatter delimiter '---'",
@@ -196,7 +214,6 @@ fn parse_skill_content(content: &str, source_path: &Path) -> Result<Skill, Temm1
 
     let yaml_str = &after_opening[..closing_pos];
 
-    // Body starts after the closing "\n---" (4 bytes).
     let body_start = closing_pos + 4;
     let instructions = if body_start < after_opening.len() {
         after_opening[body_start..].trim().to_string()
@@ -218,6 +235,41 @@ fn parse_skill_content(content: &str, source_path: &Path) -> Result<Skill, Temm1
         capabilities: frontmatter.capabilities,
         version: frontmatter.version,
         instructions,
+        source_path: source_path.to_path_buf(),
+    })
+}
+
+/// Parse a plain Markdown skill (Claude Code compatible format).
+///
+/// Extracts:
+/// - `name`: from filename (stem, without extension)
+/// - `description`: the `# ` heading text (strips "Skill: " prefix if present)
+/// - `instructions`: the entire file content (heading included)
+/// - `capabilities`: empty (not specified in this format)
+/// - `version`: "1.0.0" (default)
+fn parse_markdown_skill(content: &str, source_path: &Path) -> Result<Skill, Temm1eError> {
+    // Extract name from filename
+    let name = source_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unnamed")
+        .to_string();
+
+    // Extract description from the first `# ` heading
+    let first_line = content.lines().next().unwrap_or("");
+    let heading = first_line.trim_start_matches("# ").trim();
+    let description = heading
+        .strip_prefix("Skill: ")
+        .or_else(|| heading.strip_prefix("Skill — "))
+        .unwrap_or(heading)
+        .to_string();
+
+    Ok(Skill {
+        name,
+        description,
+        capabilities: vec![],
+        version: "1.0.0".to_string(),
+        instructions: content.to_string(),
         source_path: source_path.to_path_buf(),
     })
 }
@@ -353,14 +405,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_skills_skips_no_frontmatter() {
+    async fn test_load_claude_code_format_skill() {
         let tmp = tempdir().unwrap();
         let skills_dir = tmp.path().join("skills");
         std_fs::create_dir_all(&skills_dir).unwrap();
 
         std_fs::write(
+            skills_dir.join("deploy-app.md"),
+            "# Skill: Deploy application to production\n\n## When to use\nWhen deploying.\n\n## Steps\n1. Build\n2. Ship",
+        )
+        .unwrap();
+
+        let mut registry = SkillRegistry::new(tmp.path().to_path_buf());
+        registry.load_skills().await.unwrap();
+
+        assert_eq!(registry.list_skills().len(), 1);
+        let skill = &registry.list_skills()[0];
+        assert_eq!(skill.name, "deploy-app");
+        assert_eq!(skill.description, "Deploy application to production");
+        assert!(skill.capabilities.is_empty());
+        assert!(skill.instructions.contains("## Steps"));
+    }
+
+    #[tokio::test]
+    async fn test_load_rejects_no_heading_no_frontmatter() {
+        let tmp = tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        std_fs::create_dir_all(&skills_dir).unwrap();
+
+        // Plain text with no heading and no frontmatter — not a valid skill
+        std_fs::write(
             skills_dir.join("plain.md"),
-            "# Just a markdown file\nNo frontmatter here.",
+            "Just some random text without a heading.",
         )
         .unwrap();
 
@@ -525,6 +601,69 @@ Body.";
 
         assert_eq!(skill.name, "spaced");
         assert_eq!(skill.instructions, "Body with leading newline.");
+    }
+
+    // ---------------------------------------------------------------
+    // Claude Code compatible format tests
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_parse_claude_code_skill_with_prefix() {
+        let content = "# Skill: Deploy to production\n\n## When to use\nDeploy.\n\n## Steps\n1. Build\n2. Ship";
+        let skill = parse_skill_content(content, Path::new("deploy.md")).unwrap();
+
+        assert_eq!(skill.name, "deploy");
+        assert_eq!(skill.description, "Deploy to production");
+        assert!(skill.capabilities.is_empty());
+        assert_eq!(skill.version, "1.0.0");
+        assert!(skill.instructions.contains("## Steps"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_claude_code_skill_without_prefix() {
+        let content = "# Add a new provider\n\nInstructions for adding providers.";
+        let skill = parse_skill_content(content, Path::new("add-provider.md")).unwrap();
+
+        assert_eq!(skill.name, "add-provider");
+        assert_eq!(skill.description, "Add a new provider");
+    }
+
+    #[tokio::test]
+    async fn test_both_formats_coexist() {
+        let tmp = tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        std_fs::create_dir_all(&skills_dir).unwrap();
+
+        // TEMM1E native format
+        write_skill_file(
+            &skills_dir,
+            "native.md",
+            "native",
+            "Native skill",
+            &["test"],
+            "2.0.0",
+            "Native instructions.",
+        );
+
+        // Claude Code format
+        std_fs::write(
+            skills_dir.join("claude-style.md"),
+            "# Skill: Claude style skill\n\n## When to use\nAlways.\n\n## Steps\nDo things.",
+        )
+        .unwrap();
+
+        let mut registry = SkillRegistry::new(tmp.path().to_path_buf());
+        registry.load_skills().await.unwrap();
+
+        assert_eq!(registry.list_skills().len(), 2);
+
+        let native = registry.get_skill("native").unwrap();
+        assert_eq!(native.version, "2.0.0");
+        assert_eq!(native.capabilities, vec!["test"]);
+
+        let claude = registry.get_skill("claude-style").unwrap();
+        assert_eq!(claude.description, "Claude style skill");
+        assert!(claude.capabilities.is_empty());
     }
 
     // ---------------------------------------------------------------

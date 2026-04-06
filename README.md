@@ -6,7 +6,7 @@
   <a href="https://github.com/nagisanzenin/temm1e/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/temm1e?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.com/invite/temm1e"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-4.4.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-4.5.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.82+-orange.svg" alt="Rust 1.82+">
 </p>
 
@@ -15,7 +15,7 @@
 <h3 align="center"><s>Autonomous AI agent</s> literally a SENTIENT and IMMORTAL being runtime in Rust.<br>Deploy once. Stays up forever.</h3>
 
 <p align="center">
-  <code>112K lines</code> · <code>2,067 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>22 crates</code> · <code>full computer use</code>
+  <code>113K lines</code> · <code>2,098 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>22 crates</code> · <code>full computer use</code>
 </p>
 
 ---
@@ -569,6 +569,54 @@ Most AI agents are generalists — they do everything themselves, polluting thei
 
 ---
 
+## Role-Based Access Control
+
+TEMM1E enforces **two roles** across all messaging channels — so you can safely share your bot with others without giving away the keys to the kingdom.
+
+| Role | What they can do | What they can't do |
+|:-----|:-----------------|:-------------------|
+| **Admin** | Everything — all commands, all tools, user management | Nothing restricted |
+| **User** | Full agent chat, file ops, browser, git, web, skills | `shell`, credential management, system commands |
+
+**How it works:**
+- The **first person** to message your bot becomes **Admin** automatically (the owner)
+- Add users: `/allow <user_id>` — they get **User** role (safe defaults)
+- Promote: `/add_admin <user_id>` — elevate a user to admin
+- Demote: `/remove_admin <user_id>` — the original owner can never be demoted
+
+**Three enforcement layers** (defense in depth):
+1. **Channel gate** — unknown users are silently rejected
+2. **Command gate** — admin-only slash commands blocked before dispatch
+3. **Tool gate** — dangerous tools hidden from the LLM entirely (it can't even see them)
+
+Finding user IDs: Telegram (`@userinfobot`), Discord (Developer Mode → Copy User ID), Slack (Profile → Copy member ID), WhatsApp (phone number as digits).
+
+> Full docs: [`docs/RBAC.md`](docs/RBAC.md)
+
+---
+
+## Skills
+
+Tem can discover and invoke **skills** — reusable instruction sets for common tasks. Skills are Markdown files placed in `~/.temm1e/skills/` (global) or `<workspace>/skills/` (per-project).
+
+```bash
+temm1e skill list                    # See installed skills
+temm1e skill info code-review        # View skill details
+temm1e skill install path/to/skill.md  # Install a skill
+```
+
+The agent discovers skills via the `use_skill` tool with **three progressive layers** (minimal context overhead):
+
+| Layer | Action | What the agent sees |
+|:------|:-------|:-------------------|
+| Catalog | `list` | Name + one-line description only |
+| Summary | `info` | Version, capabilities, description |
+| Full | `invoke` | Complete skill instructions |
+
+**Cross-compatible** with Claude Code — both YAML-frontmatter (TEMM1E native) and plain Markdown (`# Skill: Title`) formats are supported. Skills from either system work in both.
+
+---
+
 ## Supported Providers
 
 Paste any API key in Telegram — I detect the provider automatically:
@@ -580,6 +628,7 @@ Paste any API key in Telegram — I detect the provider automatically:
 | `AIzaSy*` | Google Gemini | gemini-3-flash-preview |
 | `xai-*` | xAI Grok | grok-4-1-fast-non-reasoning |
 | `sk-or-*` | OpenRouter | anthropic/claude-sonnet-4-6 |
+| `stepfun:KEY` | StepFun | step-3.5-flash |
 | ChatGPT login | **Codex OAuth** | gpt-5.4 |
 
 > **Codex OAuth**: No API key needed. Just `temm1e auth login` → log into ChatGPT Plus/Pro → done.
@@ -677,8 +726,8 @@ temm1e (binary)
 <td align="center"><strong>15 MB</strong><br><sub>Idle RAM</sub></td>
 <td align="center"><strong>31 ms</strong><br><sub>Cold start</sub></td>
 <td align="center"><strong>9.6 MB</strong><br><sub>Binary size</sub></td>
-<td align="center"><strong>2,067</strong><br><sub>Tests</sub></td>
-<td align="center"><strong>8</strong><br><sub>AI Providers</sub></td>
+<td align="center"><strong>2,098</strong><br><sub>Tests</sub></td>
+<td align="center"><strong>9</strong><br><sub>AI Providers</sub></td>
 <td align="center"><strong>15</strong><br><sub>Built-in tools</sub></td>
 <td align="center"><strong>7</strong><br><sub>Channels</sub></td>
 </tr>
@@ -791,7 +840,7 @@ temm1e reset --confirm       Factory reset with backup
 
 ```bash
 cargo check --workspace                                              # Quick check
-cargo test --workspace                                               # 2,067 tests
+cargo test --workspace                                               # 2,098 tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings # 0 warnings
 cargo fmt --all                                                      # Format
 cargo build --release                                                # Release binary
@@ -805,6 +854,8 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
 <summary><strong>Release Timeline</strong> — every version from first breath to now</summary>
 
 ```
+2026-04-06  v4.5.0  ●━━━ RBAC + Skills + StepFun — Role-based access control (Admin/User roles, 3-layer enforcement: channel gate, command gate, tool gate). User role gets full agent chat with safe tools, blocked from shell/credentials/system commands. Skill system wired end-to-end (use_skill tool with 3-layer progressive disclosure, Claude Code cross-compatible format, CLI skill commands). StepFun provider (step-3.5-flash 256K context, $0.10/1M input). Personality config wired into all system prompt paths (#31). 22 crates, 2098 tests.
+                    │
 2026-04-05  v4.4.1  ●━━━ TemDOS VERIFY — cores inherit Tem's Mind self-correction. FailureTracker tracks consecutive tool failures per-tool, injects strategy rotation prompts after 2 failures. Zero overhead on healthy runs. Execution cycle: ORDER → THINK → ACTION → VERIFY → DONE. 22 crates, 2067 tests.
                     │
 2026-04-05  v4.4.0  ●━━━ TemDOS — Tem Delegated Operating Subsystem. Specialist sub-agent cores inspired by GLaDOS's personality core architecture from Portal. 8 foundational cores (architecture, code-review, test, debug, web, desktop, research, creative). Cores run as tools in the main agent loop with full tool access, shared budget (Arc<BudgetTracker>), and structural recursion prevention (invoke_core filtered from core tool set). Context isolation: core research stays in core's session, main agent receives only distilled answers. Parallel invocation via existing execute_tools_parallel. Core definitions in .md files (YAML frontmatter + system prompt). Autonomous invocation verified with Gemini 3.1 Pro. A/B tested: 0/3 task completion without cores vs 3/3 with cores, 77% main agent context reduction. 22 crates, 2065 tests.

@@ -95,6 +95,11 @@ pub fn provider_select_items() -> Vec<SelectItem<String>> {
             description: "MiniMax models".to_string(),
         },
         SelectItem {
+            value: "stepfun".to_string(),
+            label: "StepFun".to_string(),
+            description: "Step 3.5 Flash, Step 3 (256K context, ultra-cheap)".to_string(),
+        },
+        SelectItem {
             value: "ollama".to_string(),
             label: "Ollama".to_string(),
             description: "Local models via Ollama".to_string(),

@@ -24,6 +24,7 @@ dirs.workspace = true
 zeroize.workspace = true
 regex.workspace = true
 temm1e-anima.workspace = true
+temm1e-skills.workspace = true
 
 # Optional: Browser automation
 chromiumoxide = { workspace = true, optional = true }

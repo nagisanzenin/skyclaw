@@ -134,6 +134,7 @@ pub async fn spawn_agent(
         None, // No usage store for tools
         Some(shared_mode.clone()),
         None, // No vault for TUI mode
+        None, // No skill registry for TUI mode (TODO: wire in)
     );
 
     // 5. Build system prompt
@@ -179,6 +180,7 @@ pub async fn spawn_agent(
                 user_id: msg.user_id.clone(),
                 channel: msg.channel.clone(),
                 chat_id: msg.chat_id.clone(),
+                role: temm1e_core::types::rbac::Role::Admin,
                 history: current_history.clone(),
                 workspace_path: workspace.clone(),
             };

@@ -249,25 +249,19 @@ fn format_capture_age(captured_at: &str) -> String {
     }
 }
 
-fn is_admin_user(user_id: &str) -> bool {
-    let path = dirs::home_dir().map(|h| h.join(".temm1e").join("allowlist.toml"));
-    let path = match path {
-        Some(p) => p,
-        None => return false,
-    };
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    // Parse just the admin field — keep it minimal to avoid coupling with channel types
-    #[derive(serde::Deserialize)]
-    struct AllowlistCheck {
-        admin: String,
-    }
-    match toml::from_str::<AllowlistCheck>(&content) {
-        Ok(al) => al.admin == user_id,
-        Err(_) => false,
-    }
+/// Get the user's role from the role file for a specific channel.
+/// Returns Admin if no file, user not found, or on error (safe default).
+fn get_user_role(channel: &str, user_id: &str) -> temm1e_core::types::rbac::Role {
+    temm1e_core::types::rbac::load_role_file(channel)
+        .and_then(|rf| rf.role_of(user_id))
+        .unwrap_or(temm1e_core::types::rbac::Role::Admin)
+}
+
+/// Check if a slash command is allowed for the user's role.
+/// Returns true if allowed, false if blocked.
+fn is_command_allowed_for_user(channel: &str, user_id: &str, command: &str) -> bool {
+    let role = get_user_role(channel, user_id);
+    role.is_command_allowed(command)
 }
 
 // ── Daemon helpers ───────────────────────────────────────────────────────
@@ -337,6 +331,7 @@ sk-or-...      \u{2192} OpenRouter\n\n\
 2\u{fe0f}\u{20e3} Explicit (for keys without unique prefix):\n\
 zai:YOUR_KEY\n\
 minimax:YOUR_KEY\n\
+stepfun:YOUR_KEY\n\
 openrouter:YOUR_KEY\n\
 ollama:YOUR_KEY\n\n\
 3\u{fe0f}\u{20e3} Proxy / custom endpoint:\n\
@@ -346,10 +341,7 @@ proxy openai https://my-proxy.com/v1 sk-xxx\n\
 proxy anthropic https://gateway.ai/v1/anthropic sk-ant-xxx\n\
 proxy ollama https://ollama.com/v1 your-ollama-key";
 
-const SYSTEM_PROMPT_BASE: &str = "\
-You are TEMM1E, a cloud-native AI agent running on a remote server. \
-Your personal nickname is Tem. Your official name is TEMM1E. \
-Always refer to yourself as Tem.\n\n\
+const SYSTEM_PROMPT_BODY: &str = "\
 You have full access to these tools:\n\
 - shell: run any command\n\
 - file_read / file_write / file_list: filesystem operations\n\
@@ -408,8 +400,10 @@ Never silently save or delete memories.";
 
 /// Build the full system prompt with dynamic provider/model context.
 /// This ensures the bot always knows what's actually configured.
-fn build_system_prompt() -> String {
-    let mut prompt = SYSTEM_PROMPT_BASE.to_string();
+/// Uses `personality` for the identity section instead of hardcoded Tem identity.
+fn build_system_prompt(personality: &temm1e_anima::personality::PersonalityConfig) -> String {
+    let identity = personality.generate_identity_section();
+    let mut prompt = format!("{identity}\n\n{SYSTEM_PROMPT_BODY}");
 
     // ── Provider/model context ────────────────────────────────
     prompt.push_str("\n\nSUPPORTED PROVIDERS & DEFAULT MODELS:\n");
@@ -422,15 +416,16 @@ fn build_system_prompt() -> String {
     );
     prompt.push_str("- zai (zhipu): glm-4.7-flash, glm-4.7, glm-5, glm-5-code, glm-4.6v\n");
     prompt.push_str("- minimax: MiniMax-M2.5\n");
+    prompt.push_str("- stepfun: step-3.5-flash, step-3\n");
     prompt.push_str("- openai-codex: gpt-5.4 (recommended), gpt-5.3-codex, gpt-5.2-codex (OAuth subscription)\n");
 
     // ── Vision capability ──────────────────────────────────────
     prompt.push_str(
         "\nVISION (IMAGE) SUPPORT:\n\
          Models that can see images: all claude-*, all gpt-4o/gpt-4.1/gpt-5.*, all gemini-*, \
-         grok-3/grok-4, glm-*v* (V-suffix only, e.g. glm-4.6v-flash).\n\
+         grok-3/grok-4, glm-*v* (V-suffix only, e.g. glm-4.6v-flash), step-3.\n\
          Text-only (NO vision): gpt-3.5-turbo, glm-4.7-flash, glm-4.7, glm-5, glm-5-code, \
-         glm-4.5-flash, all MiniMax models.\n\
+         glm-4.5-flash, all MiniMax models, step-3.5-flash.\n\
          If the user sends an image on a text-only model, images are auto-stripped and \
          the user is notified. Suggest switching to a vision model.\n",
     );
@@ -1838,6 +1833,21 @@ async fn main() -> Result<()> {
             // Pre-capture social config for use in inner closures where `config` may be shadowed
             let social_config_captured = config.social.clone();
 
+            // ── Skills: load registry from global + workspace dirs ─────
+            let skill_registry = {
+                let workspace =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let mut reg = temm1e_skills::SkillRegistry::new(workspace);
+                if let Err(e) = reg.load_skills().await {
+                    tracing::warn!(error = %e, "Failed to load skills");
+                }
+                let count = reg.list_skills().len();
+                if count > 0 {
+                    tracing::info!(count, "Skills loaded");
+                }
+                std::sync::Arc::new(tokio::sync::RwLock::new(reg))
+            };
+
             // Use create_tools_with_browser to get a separate BrowserTool reference
             // for /browser command handling.
             #[cfg(feature = "browser")]
@@ -1854,6 +1864,7 @@ async fn main() -> Result<()> {
                     Some(shared_mode.clone())
                 },
                 vault.clone(),
+                Some(skill_registry.clone()),
             );
             #[cfg(not(feature = "browser"))]
             let mut tools = temm1e_tools::create_tools(
@@ -1869,6 +1880,7 @@ async fn main() -> Result<()> {
                     Some(shared_mode.clone())
                 },
                 vault.clone(),
+                Some(skill_registry.clone()),
             );
             tracing::info!(count = tools.len(), "Tools initialized");
 
@@ -1927,7 +1939,7 @@ async fn main() -> Result<()> {
             let perpetuum_temporal: Arc<tokio::sync::RwLock<String>> =
                 Arc::new(tokio::sync::RwLock::new(String::new()));
 
-            let system_prompt = Some(build_system_prompt());
+            let system_prompt = Some(build_system_prompt(&personality));
 
             // Quick check: is [hive] enabled in config? (just the boolean, full init later)
             let hive_enabled_early = {
@@ -2425,6 +2437,7 @@ async fn main() -> Result<()> {
                                     let icpt_cancel = slot.cancel_token.clone();
                                     let icpt_task = slot.current_task.clone();
                                     let icpt_agent_state = agent_state_clone.clone();
+                                    let icpt_personality = personality.clone();
                                     tokio::spawn(async move {
                                         let task_desc = icpt_task.lock()
                                             .map(|t| t.clone())
@@ -2437,7 +2450,7 @@ async fn main() -> Result<()> {
                                         let model = agent.model().to_string();
                                         drop(agent_guard);
 
-                                        let soul = build_system_prompt();
+                                        let soul = build_system_prompt(&icpt_personality);
                                         let request = temm1e_core::types::message::CompletionRequest {
                                             model,
                                             system: Some(format!(
@@ -2649,6 +2662,29 @@ async fn main() -> Result<()> {
                                     let msg_text_cmd = msg.text.as_deref().unwrap_or("");
                                     let cmd_lower = msg_text_cmd.trim().to_lowercase();
 
+                                    // ── RBAC: centralized command gate ────────────
+                                    // Block admin-only slash commands for User role.
+                                    if cmd_lower.starts_with('/')
+                                        && !is_command_allowed_for_user(
+                                            &msg.channel,
+                                            &msg.user_id,
+                                            &cmd_lower,
+                                        )
+                                    {
+                                        let reply = temm1e_core::types::message::OutboundMessage {
+                                            chat_id: msg.chat_id.clone(),
+                                            text: "You don't have permission to use this command."
+                                                .to_string(),
+                                            reply_to: Some(msg.id.clone()),
+                                            parse_mode: None,
+                                        };
+                                        if let Err(e) = sender.send_message(reply).await {
+                                            tracing::error!(error = %e, "Failed to send permission denied reply");
+                                        }
+                                        is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                        return;
+                                    }
+
                                     // /addkey — secure OTK flow
                                     if cmd_lower == "/addkey" {
                                         let otk = setup_tokens_worker.generate(&msg.chat_id).await;
@@ -2830,7 +2866,7 @@ async fn main() -> Result<()> {
                                                                 memory.clone(),
                                                                 tools_template.clone(),
                                                                 new_model.clone(),
-                                                                Some(build_system_prompt()),
+                                                                Some(build_system_prompt(&personality)),
                                                                 max_turns,
                                                                 max_ctx,
                                                                 max_rounds,
@@ -2874,7 +2910,7 @@ async fn main() -> Result<()> {
                                                                 memory.clone(),
                                                                 tools_template.clone(),
                                                                 prov.model.clone(),
-                                                                Some(build_system_prompt()),
+                                                                Some(build_system_prompt(&personality)),
                                                                 max_turns,
                                                                 max_ctx,
                                                                 max_rounds,
@@ -3191,7 +3227,7 @@ Just type a message to chat with the AI agent.",
                                                                     memory.clone(),
                                                                     new_tools,
                                                                     agent.model().to_string(),
-                                                                    Some(build_system_prompt()),
+                                                                    Some(build_system_prompt(&personality)),
                                                                     max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
                                                                 ).with_v2_optimizations(v2_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())));
                                                                 *agent_state.write().await = Some(new_agent);
@@ -3220,7 +3256,7 @@ Just type a message to chat with the AI agent.",
                                                             memory.clone(),
                                                             new_tools,
                                                             agent.model().to_string(),
-                                                            Some(build_system_prompt()),
+                                                            Some(build_system_prompt(&personality)),
                                                             max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
                                                         ).with_v2_optimizations(v2_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())));
                                                         *agent_state.write().await = Some(new_agent);
@@ -3247,7 +3283,7 @@ Just type a message to chat with the AI agent.",
                                                             memory.clone(),
                                                             new_tools,
                                                             agent.model().to_string(),
-                                                            Some(build_system_prompt()),
+                                                            Some(build_system_prompt(&personality)),
                                                             max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
                                                         ).with_v2_optimizations(v2_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())));
                                                         *agent_state.write().await = Some(new_agent);
@@ -3281,10 +3317,10 @@ Just type a message to chat with the AI agent.",
 
                                     // /reload — hot-reload config and rebuild agent (admin only)
                                     if cmd_lower == "/reload" {
-                                        if !is_admin_user(&msg.user_id) {
+                                        if !is_command_allowed_for_user(&msg.channel, &msg.user_id, &cmd_lower) {
                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                 chat_id: msg.chat_id.clone(),
-                                                text: "Only the admin can use /reload.".to_string(),
+                                                text: "You don't have permission to use this command.".to_string(),
                                                 reply_to: Some(msg.id.clone()),
                                                 parse_mode: None,
                                             };
@@ -3320,7 +3356,7 @@ Just type a message to chat with the AI agent.",
                                                                 memory.clone(),
                                                                 tools_template.clone(),
                                                                 prov.model.clone(),
-                                                                Some(build_system_prompt()),
+                                                                Some(build_system_prompt(&personality)),
                                                                 max_turns,
                                                                 max_ctx,
                                                                 max_rounds,
@@ -3637,10 +3673,10 @@ Just type a message to chat with the AI agent.",
 
                                     // /reset — factory reset from messaging (admin only)
                                     if cmd_lower == "/reset" {
-                                        if !is_admin_user(&msg.user_id) {
+                                        if !is_command_allowed_for_user(&msg.channel, &msg.user_id, &cmd_lower) {
                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                 chat_id: msg.chat_id.clone(),
-                                                text: "Only the admin can use /reset.".to_string(),
+                                                text: "You don't have permission to use this command.".to_string(),
                                                 reply_to: Some(msg.id.clone()),
                                                 parse_mode: None,
                                             };
@@ -3710,10 +3746,10 @@ Just type a message to chat with the AI agent.",
 
                                     // /restart — restart the TEMM1E process, server mode (admin only)
                                     if cmd_lower == "/restart" {
-                                        if !is_admin_user(&msg.user_id) {
+                                        if !is_command_allowed_for_user(&msg.channel, &msg.user_id, &cmd_lower) {
                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                 chat_id: msg.chat_id.clone(),
-                                                text: "Only the admin can use /restart.".to_string(),
+                                                text: "You don't have permission to use this command.".to_string(),
                                                 reply_to: Some(msg.id.clone()),
                                                 parse_mode: None,
                                             };
@@ -3836,7 +3872,7 @@ Just type a message to chat with the AI agent.",
                                                                 memory.clone(),
                                                                 tools_template.clone(),
                                                                 model.clone(),
-                                                                Some(build_system_prompt()),
+                                                                Some(build_system_prompt(&personality)),
                                                                 max_turns,
                                                                 max_ctx,
                                                                 max_rounds,
@@ -3986,7 +4022,7 @@ Just type a message to chat with the AI agent.",
                                                                 memory.clone(),
                                                                 tools_template.clone(),
                                                                 mdl.clone(),
-                                                                Some(build_system_prompt()),
+                                                                Some(build_system_prompt(&personality)),
                                                                 max_turns,
                                                                 max_ctx,
                                                                 max_rounds,
@@ -4077,11 +4113,17 @@ Just type a message to chat with the AI agent.",
                                             }
                                         }
 
+                                        // Resolve user role from channel's role file
+                                        let user_role = temm1e_core::types::rbac::load_role_file(&msg.channel)
+                                            .and_then(|rf| rf.role_of(&msg.user_id))
+                                            .unwrap_or(temm1e_core::types::rbac::Role::Admin);
+
                                         let mut session = temm1e_core::types::session::SessionContext {
                                             session_id: format!("{}-{}", msg.channel, msg.chat_id),
                                             user_id: msg.user_id.clone(),
                                             channel: msg.channel.clone(),
                                             chat_id: msg.chat_id.clone(),
+                                            role: user_role,
                                             history: persistent_history.clone(),
                                             workspace_path: workspace_path.clone(),
                                         };
@@ -4244,7 +4286,9 @@ Just type a message to chat with the AI agent.",
                                                                         let mut s = temm1e_core::types::session::SessionContext {
                                                                             session_id: format!("hive-{}", task.id),
                                                                             user_id: "hive".into(), channel: "hive".into(),
-                                                                            chat_id: "hive".into(), history: vec![],
+                                                                            chat_id: "hive".into(),
+                                                                            role: temm1e_core::types::rbac::Role::Admin,
+                                                                            history: vec![],
                                                                             workspace_path: std::path::PathBuf::from("."),
                                                                         };
                                                                         match mini.process_message(&mini_msg, &mut s, None, None, None, None, None).await {
@@ -4330,7 +4374,7 @@ Just type a message to chat with the AI agent.",
                                                                 memory.clone(),
                                                                 tools_template.clone(),
                                                                 agent.model().to_string(),
-                                                                Some(build_system_prompt()),
+                                                                Some(build_system_prompt(&personality)),
                                                                 max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
                                                             ).with_v2_optimizations(v2_opt).with_parallel_phases(pp_opt).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())));
                                                             let fallback_cancel = cancel_token_clone.clone();
@@ -4461,7 +4505,7 @@ Just type a message to chat with the AI agent.",
                                                                 memory.clone(),
                                                                 tools_template.clone(),
                                                                 new_model.clone(),
-                                                                Some(build_system_prompt()),
+                                                                Some(build_system_prompt(&personality)),
                                                                 max_turns,
                                                                 max_ctx,
                                                                 max_rounds,
@@ -4514,7 +4558,7 @@ Just type a message to chat with the AI agent.",
                                                 memory.clone(),
                                                 new_tools,
                                                 agent.model().to_string(),
-                                                Some(build_system_prompt()),
+                                                Some(build_system_prompt(&personality)),
                                                 max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
                                             ).with_v2_optimizations(v2_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())));
                                             *agent_state.write().await = Some(new_agent);
@@ -4545,7 +4589,7 @@ Just type a message to chat with the AI agent.",
                                                 memory.clone(),
                                                 new_tools,
                                                 agent.model().to_string(),
-                                                Some(build_system_prompt()),
+                                                Some(build_system_prompt(&personality)),
                                                 max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
                                             ).with_v2_optimizations(v2_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())));
                                             *agent_state.write().await = Some(new_agent);
@@ -4592,7 +4636,7 @@ Just type a message to chat with the AI agent.",
                                                                 memory.clone(),
                                                                 tools_template.clone(),
                                                                 model.clone(),
-                                                                Some(build_system_prompt()),
+                                                                Some(build_system_prompt(&personality)),
                                                                 max_turns,
                                                                 max_ctx,
                                                                 max_rounds,
@@ -4987,6 +5031,21 @@ Just type a message to chat with the AI agent.",
             // Pre-capture social config for use in inner closures where `config` may be shadowed
             let social_config_captured = config.social.clone();
 
+            // ── Skills: load registry (CLI) ─────
+            let skill_registry = {
+                let workspace =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let mut reg = temm1e_skills::SkillRegistry::new(workspace);
+                if let Err(e) = reg.load_skills().await {
+                    tracing::warn!(error = %e, "Failed to load skills (CLI)");
+                }
+                let count = reg.list_skills().len();
+                if count > 0 {
+                    tracing::info!(count, "Skills loaded (CLI)");
+                }
+                std::sync::Arc::new(tokio::sync::RwLock::new(reg))
+            };
+
             #[cfg(feature = "browser")]
             let (mut tools_template, cli_browser_ref) = temm1e_tools::create_tools_with_browser(
                 &config.tools,
@@ -4997,6 +5056,7 @@ Just type a message to chat with the AI agent.",
                 Some(usage_store.clone()),
                 Some(shared_mode.clone()),
                 vault.clone(),
+                Some(skill_registry.clone()),
             );
             #[cfg(not(feature = "browser"))]
             let mut tools_template = temm1e_tools::create_tools(
@@ -5008,6 +5068,7 @@ Just type a message to chat with the AI agent.",
                 Some(usage_store.clone()),
                 Some(shared_mode.clone()),
                 vault.clone(),
+                Some(skill_registry.clone()),
             );
 
             // ── Custom script tools (user/agent-authored) ──────
@@ -5145,7 +5206,7 @@ Just type a message to chat with the AI agent.",
                                 tracing::info!("TemDOS invoke_core tool registered (CLI)");
                             }
 
-                            let system_prompt = Some(build_system_prompt());
+                            let system_prompt = Some(build_system_prompt(&personality));
                             let consciousness_provider = provider.clone();
                             let mut rt = temm1e_agent::AgentRuntime::with_limits(
                                 provider,
@@ -5265,7 +5326,7 @@ Just type a message to chat with the AI agent.",
                                             memory.clone(),
                                             tools_template.clone(),
                                             model.clone(),
-                                            Some(build_system_prompt()),
+                                            Some(build_system_prompt(&personality)),
                                             max_turns,
                                             max_ctx,
                                             max_rounds,
@@ -5338,7 +5399,7 @@ Just type a message to chat with the AI agent.",
                                         model.clone(),
                                         token_store,
                                     ));
-                                let system_prompt = Some(build_system_prompt());
+                                let system_prompt = Some(build_system_prompt(&personality));
                                 agent_opt = Some(
                                     temm1e_agent::AgentRuntime::with_limits(
                                         provider,
@@ -5700,7 +5761,7 @@ Just type a message to chat with the AI agent.",
                                                     memory.clone(),
                                                     new_tools,
                                                     agent.model().to_string(),
-                                                    Some(build_system_prompt()),
+                                                    Some(build_system_prompt(&personality)),
                                                     max_turns,
                                                     max_ctx,
                                                     max_rounds,
@@ -5755,7 +5816,7 @@ Just type a message to chat with the AI agent.",
                                             memory.clone(),
                                             new_tools,
                                             agent.model().to_string(),
-                                            Some(build_system_prompt()),
+                                            Some(build_system_prompt(&personality)),
                                             max_turns,
                                             max_ctx,
                                             max_rounds,
@@ -5803,7 +5864,7 @@ Just type a message to chat with the AI agent.",
                                             memory.clone(),
                                             new_tools,
                                             agent.model().to_string(),
-                                            Some(build_system_prompt()),
+                                            Some(build_system_prompt(&personality)),
                                             max_turns,
                                             max_ctx,
                                             max_rounds,
@@ -6019,7 +6080,7 @@ Just type a message to chat with the AI agent.",
                                         {
                                             eprintln!("Failed to save credentials: {}", e);
                                         }
-                                        let system_prompt = Some(build_system_prompt());
+                                        let system_prompt = Some(build_system_prompt(&personality));
                                         agent_opt = Some(
                                             temm1e_agent::AgentRuntime::with_limits(
                                                 validated_provider,
@@ -6096,7 +6157,7 @@ Just type a message to chat with the AI agent.",
                             {
                                 eprintln!("Failed to save credentials: {}", e);
                             }
-                            let system_prompt = Some(build_system_prompt());
+                            let system_prompt = Some(build_system_prompt(&personality));
                             agent_opt = Some(
                                 temm1e_agent::AgentRuntime::with_limits(
                                     validated_provider,
@@ -6145,6 +6206,7 @@ Just type a message to chat with the AI agent.",
                         user_id: msg.user_id.clone(),
                         channel: msg.channel.clone(),
                         chat_id: msg.chat_id.clone(),
+                        role: temm1e_core::types::rbac::Role::Admin,
                         history: history.clone(),
                         workspace_path: workspace.clone(),
                     };
@@ -6321,17 +6383,77 @@ Just type a message to chat with the AI agent.",
             println!("  Memory: {}", config.memory.backend);
             println!("  Vault: {}", config.vault.backend);
         }
-        Commands::Skill { command } => match command {
-            SkillCommands::List => {
-                println!("Installed skills:");
+        Commands::Skill { command } => {
+            let workspace =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let mut registry = temm1e_skills::SkillRegistry::new(workspace);
+            if let Err(e) = registry.load_skills().await {
+                eprintln!("Failed to load skills: {}", e);
             }
-            SkillCommands::Info { name } => {
-                println!("Skill info: {}", name);
+
+            match command {
+                SkillCommands::List => {
+                    let skills = registry.list_skills();
+                    if skills.is_empty() {
+                        println!("No skills installed.");
+                        println!(
+                            "\nPlace .md skill files in ~/.temm1e/skills/ or <workspace>/skills/"
+                        );
+                    } else {
+                        println!("{} skill(s) installed:\n", skills.len());
+                        for s in skills {
+                            println!("  {} (v{}) — {}", s.name, s.version, s.description);
+                            println!("    capabilities: {}", s.capabilities.join(", "));
+                            println!("    source: {}", s.source_path.display());
+                        }
+                    }
+                }
+                SkillCommands::Info { name } => match registry.get_skill(&name) {
+                    Some(skill) => {
+                        println!("Skill: {} (v{})", skill.name, skill.version);
+                        println!("Description: {}", skill.description);
+                        println!("Capabilities: {}", skill.capabilities.join(", "));
+                        println!("Source: {}", skill.source_path.display());
+                        println!("\n--- Instructions ---\n{}", skill.instructions);
+                    }
+                    None => {
+                        eprintln!("Skill '{}' not found.", name);
+                        let skills = registry.list_skills();
+                        if !skills.is_empty() {
+                            let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+                            eprintln!("Available: {}", names.join(", "));
+                        }
+                        std::process::exit(1);
+                    }
+                },
+                SkillCommands::Install { path } => {
+                    let src = std::path::Path::new(&path);
+                    if !src.exists() {
+                        eprintln!("File not found: {}", path);
+                        std::process::exit(1);
+                    }
+                    let dest_dir = dirs::home_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join(".temm1e")
+                        .join("skills");
+                    if let Err(e) = std::fs::create_dir_all(&dest_dir) {
+                        eprintln!("Failed to create skills directory: {}", e);
+                        std::process::exit(1);
+                    }
+                    let filename = src
+                        .file_name()
+                        .unwrap_or_else(|| std::ffi::OsStr::new("skill.md"));
+                    let dest = dest_dir.join(filename);
+                    match std::fs::copy(src, &dest) {
+                        Ok(_) => println!("Installed skill to {}", dest.display()),
+                        Err(e) => {
+                            eprintln!("Failed to install skill: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
             }
-            SkillCommands::Install { path } => {
-                println!("Installing skill from: {}", path);
-            }
-        },
+        }
         Commands::Config { command } => match command {
             ConfigCommands::Validate => {
                 println!("Configuration valid.");

@@ -153,6 +153,20 @@ pub fn get_pricing(model: &str) -> ModelPricing {
             output_per_million: 1.20,
         },
 
+        // ── StepFun ─────────────────────────────────────────────
+        "step-3.5-flash" => ModelPricing {
+            input_per_million: 0.10,
+            output_per_million: 0.30,
+        },
+        "step-3" => ModelPricing {
+            input_per_million: 0.57,
+            output_per_million: 1.42,
+        },
+        _ if m.starts_with("step-") => ModelPricing {
+            input_per_million: 0.10,
+            output_per_million: 0.30,
+        },
+
         // ── Ollama (subscription-based, no per-token cost) ───────
         _ if m.contains("llama")
             || m.contains("mistral")

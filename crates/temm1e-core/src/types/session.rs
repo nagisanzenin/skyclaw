@@ -1,4 +1,5 @@
 use crate::types::message::ChatMessage;
+use crate::types::rbac::Role;
 use serde::{Deserialize, Serialize};
 
 /// An active session context
@@ -8,6 +9,7 @@ pub struct SessionContext {
     pub channel: String,
     pub chat_id: String,
     pub user_id: String,
+    pub role: Role,
     pub history: Vec<ChatMessage>,
     pub workspace_path: std::path::PathBuf,
 }

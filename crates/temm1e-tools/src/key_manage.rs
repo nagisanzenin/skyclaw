@@ -82,7 +82,8 @@ impl Tool for KeyManageTool {
                          Alternatively, the user can paste a raw API key directly in chat \
                          and it will be auto-detected.\n\n\
                          Supported: Anthropic (sk-ant-...), OpenAI (sk-...), Gemini (AIzaSy...), \
-                         Grok/xAI (xai-...), OpenRouter (sk-or-...), MiniMax (minimax:KEY).\n\n\
+                         Grok/xAI (xai-...), OpenRouter (sk-or-...), MiniMax (minimax:KEY), \
+                         StepFun (stepfun:KEY).\n\n\
                          Send this link to the user and explain both options.",
                         link
                     )
@@ -116,7 +117,7 @@ impl Tool for KeyManageTool {
                  /keys           — List configured providers\n\
                  /removekey <p>  — Remove a provider (e.g. /removekey openai)\n\n\
                  The user can also paste a raw API key directly.\n\n\
-                 Supported: Anthropic, OpenAI, Gemini, Grok/xAI, OpenRouter, MiniMax."
+                 Supported: Anthropic, OpenAI, Gemini, Grok/xAI, OpenRouter, MiniMax, StepFun."
                 .to_string(),
         };
 
