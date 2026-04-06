@@ -571,6 +571,10 @@ Most AI agents are generalists — they do everything themselves, polluting thei
 
 ## Role-Based Access Control
 
+<p align="center">
+  <img src="assets/rbac.png" alt="TEMM1E RBAC Overview" width="100%">
+</p>
+
 TEMM1E enforces **two roles** across all messaging channels — so you can safely share your bot with others without giving away the keys to the kingdom.
 
 | Role | What they can do | What they can't do |
