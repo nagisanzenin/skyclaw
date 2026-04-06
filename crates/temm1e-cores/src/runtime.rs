@@ -94,6 +94,7 @@ impl CoreRuntime {
             channel: "core".to_string(),
             chat_id: session_id.clone(),
             user_id: "core".to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path,
         };

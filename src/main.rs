@@ -249,25 +249,18 @@ fn format_capture_age(captured_at: &str) -> String {
     }
 }
 
-fn is_admin_user(user_id: &str) -> bool {
-    let path = dirs::home_dir().map(|h| h.join(".temm1e").join("allowlist.toml"));
-    let path = match path {
-        Some(p) => p,
-        None => return false,
-    };
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    // Parse just the admin field — keep it minimal to avoid coupling with channel types
-    #[derive(serde::Deserialize)]
-    struct AllowlistCheck {
-        admin: String,
-    }
-    match toml::from_str::<AllowlistCheck>(&content) {
-        Ok(al) => al.admin == user_id,
-        Err(_) => false,
-    }
+/// Get the user's role from the role file. Returns Admin if no file or on error.
+fn get_user_role(user_id: &str) -> temm1e_core::types::rbac::Role {
+    temm1e_core::types::rbac::load_role_file("telegram")
+        .and_then(|rf| rf.role_of(user_id))
+        .unwrap_or(temm1e_core::types::rbac::Role::Admin)
+}
+
+/// Check if a slash command is allowed for the user's role.
+/// Returns true if allowed, false if blocked.
+fn is_command_allowed_for_user(user_id: &str, command: &str) -> bool {
+    let role = get_user_role(user_id);
+    role.is_command_allowed(command)
 }
 
 // ── Daemon helpers ───────────────────────────────────────────────────────
@@ -3300,10 +3293,10 @@ Just type a message to chat with the AI agent.",
 
                                     // /reload — hot-reload config and rebuild agent (admin only)
                                     if cmd_lower == "/reload" {
-                                        if !is_admin_user(&msg.user_id) {
+                                        if !is_command_allowed_for_user(&msg.user_id, &cmd_lower) {
                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                 chat_id: msg.chat_id.clone(),
-                                                text: "Only the admin can use /reload.".to_string(),
+                                                text: "You don't have permission to use this command.".to_string(),
                                                 reply_to: Some(msg.id.clone()),
                                                 parse_mode: None,
                                             };
@@ -3656,10 +3649,10 @@ Just type a message to chat with the AI agent.",
 
                                     // /reset — factory reset from messaging (admin only)
                                     if cmd_lower == "/reset" {
-                                        if !is_admin_user(&msg.user_id) {
+                                        if !is_command_allowed_for_user(&msg.user_id, &cmd_lower) {
                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                 chat_id: msg.chat_id.clone(),
-                                                text: "Only the admin can use /reset.".to_string(),
+                                                text: "You don't have permission to use this command.".to_string(),
                                                 reply_to: Some(msg.id.clone()),
                                                 parse_mode: None,
                                             };
@@ -3729,10 +3722,10 @@ Just type a message to chat with the AI agent.",
 
                                     // /restart — restart the TEMM1E process, server mode (admin only)
                                     if cmd_lower == "/restart" {
-                                        if !is_admin_user(&msg.user_id) {
+                                        if !is_command_allowed_for_user(&msg.user_id, &cmd_lower) {
                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                 chat_id: msg.chat_id.clone(),
-                                                text: "Only the admin can use /restart.".to_string(),
+                                                text: "You don't have permission to use this command.".to_string(),
                                                 reply_to: Some(msg.id.clone()),
                                                 parse_mode: None,
                                             };
@@ -4101,6 +4094,7 @@ Just type a message to chat with the AI agent.",
                                             user_id: msg.user_id.clone(),
                                             channel: msg.channel.clone(),
                                             chat_id: msg.chat_id.clone(),
+                                            role: temm1e_core::types::rbac::Role::Admin,
                                             history: persistent_history.clone(),
                                             workspace_path: workspace_path.clone(),
                                         };
@@ -4263,7 +4257,9 @@ Just type a message to chat with the AI agent.",
                                                                         let mut s = temm1e_core::types::session::SessionContext {
                                                                             session_id: format!("hive-{}", task.id),
                                                                             user_id: "hive".into(), channel: "hive".into(),
-                                                                            chat_id: "hive".into(), history: vec![],
+                                                                            chat_id: "hive".into(),
+                                                                            role: temm1e_core::types::rbac::Role::Admin,
+                                                                            history: vec![],
                                                                             workspace_path: std::path::PathBuf::from("."),
                                                                         };
                                                                         match mini.process_message(&mini_msg, &mut s, None, None, None, None, None).await {
@@ -6181,6 +6177,7 @@ Just type a message to chat with the AI agent.",
                         user_id: msg.user_id.clone(),
                         channel: msg.channel.clone(),
                         chat_id: msg.chat_id.clone(),
+                        role: temm1e_core::types::rbac::Role::Admin,
                         history: history.clone(),
                         workspace_path: workspace.clone(),
                     };

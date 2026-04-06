@@ -967,10 +967,22 @@ impl AgentRuntime {
                 }
                 None => false, // default: Echo Memory (user opts into λ-Memory via /memory lambda)
             };
+
+            // Role-based tool filtering — remove blocked tools so the LLM never sees them
+            let effective_tools: Vec<Arc<dyn Tool>> = if session.role.has_all_tools() {
+                self.tools.clone()
+            } else {
+                self.tools
+                    .iter()
+                    .filter(|t| session.role.is_tool_allowed(t.name()))
+                    .cloned()
+                    .collect()
+            };
+
             let mut request = build_context(
                 session,
                 self.memory.as_ref(),
-                &self.tools,
+                &effective_tools,
                 &self.model,
                 self.system_prompt.as_deref(),
                 self.max_turns,

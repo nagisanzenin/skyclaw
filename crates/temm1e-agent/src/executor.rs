@@ -356,6 +356,14 @@ pub async fn execute_tool(
         .find(|t| t.name() == tool_name)
         .ok_or_else(|| Temm1eError::Tool(format!("Unknown tool: {}", tool_name)))?;
 
+    // Role-based tool gate — block dangerous tools for non-admin users
+    if !session.role.is_tool_allowed(tool_name) {
+        return Err(Temm1eError::PermissionDenied(format!(
+            "Tool '{}' is not available for {} role",
+            tool_name, session.role
+        )));
+    }
+
     // Validate sandbox declarations against workspace scope
     validate_sandbox(tool.as_ref(), session)?;
 
@@ -775,6 +783,7 @@ mod tests {
             channel: "cli".to_string(),
             chat_id: "c".to_string(),
             user_id: "u".to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
         };
@@ -800,6 +809,7 @@ mod tests {
             channel: "cli".to_string(),
             chat_id: "c".to_string(),
             user_id: "u".to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
         };
@@ -829,6 +839,7 @@ mod tests {
             channel: "cli".to_string(),
             chat_id: "c".to_string(),
             user_id: "u".to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
         };
@@ -847,6 +858,7 @@ mod tests {
             channel: "cli".to_string(),
             chat_id: "c".to_string(),
             user_id: "u".to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: tmp.path().to_path_buf(),
         };
@@ -875,6 +887,7 @@ mod tests {
             channel: "cli".to_string(),
             chat_id: "c".to_string(),
             user_id: "u".to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
         };
@@ -900,6 +913,7 @@ mod tests {
             channel: "cli".to_string(),
             chat_id: "c".to_string(),
             user_id: "u".to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
         };
@@ -926,6 +940,7 @@ mod tests {
             channel: "cli".to_string(),
             chat_id: "c".to_string(),
             user_id: "u".to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
         };
@@ -955,6 +970,7 @@ mod tests {
             channel: "cli".to_string(),
             chat_id: "c".to_string(),
             user_id: "u".to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
         };
@@ -983,6 +999,7 @@ mod tests {
             channel: "cli".to_string(),
             chat_id: "c".to_string(),
             user_id: "u".to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
         };

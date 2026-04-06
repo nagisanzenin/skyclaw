@@ -102,6 +102,7 @@ impl SessionManager {
             channel: channel.to_string(),
             chat_id: chat_id.to_string(),
             user_id: user_id.to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: std::env::current_dir().unwrap_or_else(|_| "/tmp".into()),
         }
@@ -295,6 +296,7 @@ mod tests {
             channel: "cli".to_string(),
             chat_id: "c1".to_string(),
             user_id: "u1".to_string(),
+            role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: std::path::PathBuf::from("/tmp"),
         };

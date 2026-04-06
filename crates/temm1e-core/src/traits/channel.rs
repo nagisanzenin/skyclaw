@@ -26,6 +26,31 @@ pub trait Channel: Send + Sync {
     /// Check if a user is allowed to use this channel
     fn is_allowed(&self, user_id: &str) -> bool;
 
+    /// Get the role of a user in this channel.
+    /// Returns None if the user is not on the allowlist.
+    /// Default: returns Admin if allowed (backward compat for channels not yet upgraded).
+    fn get_role(&self, user_id: &str) -> Option<crate::types::rbac::Role> {
+        if self.is_allowed(user_id) {
+            Some(crate::types::rbac::Role::Admin)
+        } else {
+            None
+        }
+    }
+
+    /// Promote a user to admin role. User must already be on the allowlist.
+    fn promote_to_admin(&self, _user_id: &str) -> Result<(), Temm1eError> {
+        Err(Temm1eError::Channel(
+            "Role management not supported on this channel".into(),
+        ))
+    }
+
+    /// Demote an admin to regular user. Cannot demote the original owner.
+    fn demote_from_admin(&self, _user_id: &str) -> Result<(), Temm1eError> {
+        Err(Temm1eError::Channel(
+            "Role management not supported on this channel".into(),
+        ))
+    }
+
     /// Delete a message from a chat by its ID.
     ///
     /// Used to remove sensitive content (API keys, credentials) from chat
