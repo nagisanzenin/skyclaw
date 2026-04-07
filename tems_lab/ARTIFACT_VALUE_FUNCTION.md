@@ -180,16 +180,111 @@ When the skull is under pressure:
 
 The value function doesn't just score — it creates a **priority queue for cognitive resources**. The skull has room for N tokens of injected artifacts. The value function ensures those N tokens are the N most valuable artifacts the system has ever learned.
 
-## Implementation Status (v4.5.1)
+## All 13 Layers (v4.6.0)
 
-| Subsystem | V(a,t) Scored | Drain Active | Feedback Loop |
-|-----------|:------------:|:------------:|:-------------:|
-| Lambda Memory | decay_score() | GC + recall_boost weakening | recall_boost on touch |
-| Learnings | learning_value() | GC threshold + supersession | Beta priors (feedback loop TBD) |
-| Blueprints | compute_fitness() | Startup GC + forced retirement | Success rate tracking |
-| Eigen-Tune | quality_score | Reservoir eviction | User behavior signals |
-| Tem Anima | confidence (implicit) | 5%/eval confidence decay + buffer caps | Weighted merge from LLM evaluation |
-| Skills | -- | -- (static, filesystem) | -- |
-| Cores | -- | -- (static, filesystem) | -- |
+### Recall Reinforcement
 
-Skills and Cores are currently static registries (not learning systems). When they become dynamic (runtime authoring, refinement), they will need their own V(a,t) instantiation and drain mechanism.
+Each time a lambda memory is recalled via the `lambda_recall` tool, `recall_boost` increases by +0.3 (capped at 2.0). During GC, entries with existing boost but no recent access lose 0.1. The effective importance fed into the decay function becomes `(importance + recall_boost).clamp(0.1, 5.0)`.
+
+A memory recalled 7 times reaches maximum effective importance (5.0) regardless of its initial LLM-assigned score. A memory with a single recall (boost 0.3) loses its boost after 3 GC cycles without access. This is the feedback signal that lambda memory's original design was missing — importance updates from actual usage.
+
+**Drain:** Boost decays via GC penalty (-0.1/sweep). Bounded at [0.0, 2.0].
+
+### Memory Dedup
+
+At startup, `dedup_candidates()` scans all lambda memories and identifies near-duplicates using a dual threshold: Jaccard tag similarity > 0.6 AND essence word overlap > 0.5. Both must match. Matched entries are merged — the more recently accessed entry absorbs the other's evidence (higher importance, higher boost, combined access counts, union of tags). The absorbed entry is deleted.
+
+**Explicit saves are NEVER merged** — if the user said "remember this," the hash survives intact.
+
+**Drain:** Merging IS the drain. Duplicate entries are eliminated, freeing skull space.
+
+### Core Stats
+
+Every `invoke_core` call loads the core's historical `CoreStats` from memory before execution, records success/failure + rounds + cost after execution, and persists the updated stats. The output includes lifetime performance: `[TemDOS:research | 5 rounds | $0.04 | lifetime: 75% success (N=8)]`.
+
+The main agent sees this and naturally avoids unreliable cores. A core with 0% success rate (like `research` on Gemini in our CLI test) becomes self-documenting — the data speaks.
+
+**Drain:** Fixed-size records, updated in place (UPSERT). No growth.
+
+### Tool Reliability
+
+After every tool execution, the runtime records `(tool_name, task_type, success/failure)` to the `tool_reliability` table. Task type is the classifier's `category:difficulty` label. On context building, a compact 30-day rolling summary is injected (~50-100 tokens):
+
+```
+Tool reliability (last 30 days):
+  shell: Order:Standard 68% (N=19)
+  browser: Order:Standard 100% (N=5)
+  file_read: Order:Standard 50% (N=2)
+```
+
+The LLM reads this and routes tool choices accordingly. Records with fewer than 3 observations are filtered out (insufficient sample size).
+
+**Drain:** 30-day rolling window on retrieval. Old data naturally excluded.
+
+### Classification Feedback
+
+After every task completes, the runtime persists the classification prediction alongside the actual outcome: `(category, difficulty, rounds, tools_used, cost_usd, success, prompt_tier, had_whisper)`. Aggregated into empirical priors:
+
+```
+Order/Simple: avg 2.0 rounds, 1.0 tools, $0.003 (N=12)
+Order/Standard: avg 9.5 rounds, 8.5 tools, $0.024 (N=45)
+```
+
+These priors can be injected into the classifier prompt so it learns what each category actually costs. If "Simple" tasks consistently use 8+ rounds, the classifier recalibrates.
+
+**Drain:** Retention cap at 500 rows. Oldest deleted beyond limit.
+
+### Skill Tracking
+
+When a skill is invoked (action = "invoke" in the `use_skill` tool), the `skill_usage` table records the skill name with an upsert: `invocations += 1, last_invoked_at = now`. This enables adoption tracking — which skills are actually used vs which sit idle.
+
+Future use: boost high-adoption skills in matching, auto-archive skills unused for 90+ days.
+
+**Drain:** Fixed-size records per skill (UPSERT). No growth beyond the skill count.
+
+### Prompt Tier Tracking
+
+The `prompt_tier` field (Minimal, Basic, Standard, Full) is recorded alongside every classification outcome. Aggregating by tier reveals cost-effectiveness:
+
+```
+Basic: avg 2.0 rounds, $0.003 (N=10)
+Standard: avg 5.8 rounds, $0.015 (N=38)
+Full: avg 8.2 rounds, $0.022 (N=7)
+```
+
+If Basic tier achieves similar success rates at 5x lower cost, the system should use it more. If Minimal tier causes 3x more rounds (higher total cost), the "savings" from a shorter prompt are illusory.
+
+**Drain:** Shares the classification_outcomes retention cap (500 rows).
+
+### Consciousness Efficacy
+
+The `had_whisper` boolean in classification outcomes tracks whether the consciousness observer injected a whisper into the agent's system prompt for that turn. Aggregating:
+
+```
+WITH whisper: avg 4.2 rounds, $0.07, 92% success (N=120)
+WITHOUT: avg 5.8 rounds, $0.11, 85% success (N=280)
+```
+
+This is **continuous production A/B testing**. If consciousness consistently reduces rounds and cost, it's earning its ~$0.001-0.005 per-turn LLM call. If the numbers are flat, consciousness is overhead.
+
+**Drain:** Shares the classification_outcomes retention cap (500 rows).
+
+---
+
+## Implementation Status (v4.6.0)
+
+| # | Layer | V(a,t) Scored | Drain Active | Feedback Loop |
+|---|-------|:------------:|:------------:|:-------------:|
+| 1 | Lambda Memory | decay_score() | GC + dedup | recall_boost on touch |
+| 2 | Cross-Task Learnings | learning_value() | GC threshold + supersession | Beta priors from LLM confidence |
+| 3 | Blueprints | compute_fitness() | Startup GC + forced retirement | Wilson lower bound success rate |
+| 4 | Eigen-Tune | quality_score | Reservoir eviction (5K/tier) | User behavior signals |
+| 5 | Tem Anima | confidence (implicit) | 5%/eval confidence decay + buffer caps | Weighted merge from LLM evaluation |
+| 6 | Recall Reinforcement | effective_importance() | GC penalty (-0.1/sweep) | +0.3/recall |
+| 7 | Memory Dedup | Jaccard + essence similarity | Merge absorbs duplicates | Startup pass |
+| 8 | Core Stats | success_rate() | Fixed-size (UPSERT) | Record per invocation |
+| 9 | Tool Reliability | success/failure counts | 30-day rolling window | Record per tool execution |
+| 10 | Classification Feedback | empirical priors | 500-row retention cap | Record per task completion |
+| 11 | Skill Tracking | invocation count | Fixed-size (UPSERT) | Record per skill invoke |
+| 12 | Prompt Tier Tracking | tier + outcome correlation | 500-row retention cap | Record per task completion |
+| 13 | Consciousness Efficacy | whisper vs no-whisper comparison | 500-row retention cap | Boolean flag per turn |
