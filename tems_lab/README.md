@@ -191,12 +191,24 @@ The architectural choice that makes Cambium timeproof: a **pluggable LLM-backed 
 
 ### Verified end-to-end with real LLMs
 
+**Skill-layer proof** (markdown skill files):
+
 | Tier | Model | Result | Time | Files written |
 |------|-------|--------|------|---------------|
 | Cheap | [gemini-3-flash-preview](cambium/CAMBIUM_RESEARCH_PAPER.md) | OK | 5.8s | 1 skill |
 | Medium | [claude-sonnet-4-6](cambium/CAMBIUM_RESEARCH_PAPER.md) | OK | 12.8s | 2 skills |
 
-Both successfully analysed 7 synthetic Docker/k8s activity notes, identified the capability gap, generated structured JSON skill suggestions, and produced loadable YAML-frontmatter skill files registered in `SkillRegistry`. **Total cost: < $0.02**.
+Both analysed 7 synthetic Docker/k8s activity notes and produced loadable YAML-frontmatter skill files registered in `SkillRegistry`. **Total cost: < $0.02**.
+
+**Code-level proof** (real Rust that compiles, lints clean, passes tests):
+
+| Tier | Model | Result | Time | cargo check | cargo clippy | cargo test |
+|------|-------|--------|------|---|---|---|
+| Cheap | gemini-3-flash-preview | OK | 40.8s | OK | OK | OK (6 tests passed) |
+
+Gemini Flash autonomously generated a complete `format_bytes(bytes: u64) -> String` function with 5 unit tests covering the zero / small-bytes / kilobytes / megabytes / large cases, preserved the existing `marker()` function exactly, included a doc comment, used a loop-based unit progression. The deterministic verification harness ran all three gates against the generated code in an isolated tempdir crate. **Cost: ~$0.001**.
+
+This is the proof that matters: skill authoring is trivial markdown, but code-level growth required the LLM to write valid Rust that survives the compiler, the linter (warnings-as-errors), and the test runner. It does. See `crates/temm1e-cambium/tests/real_code_grow_test.rs` for the test, run with `TEMM1E_CAMBIUM_REAL_CODE_TEST=1 cargo test -p temm1e-cambium --test real_code_grow_test -- --nocapture`.
 
 ### Five phases shipped
 

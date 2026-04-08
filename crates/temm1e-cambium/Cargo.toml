@@ -19,5 +19,6 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+temm1e-providers = { path = "../temm1e-providers" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = "3"

@@ -19,6 +19,7 @@
 pub mod budget;
 pub mod deploy;
 pub mod history;
+pub mod llm_generator;
 pub mod pipeline;
 pub mod sandbox;
 pub mod trust;

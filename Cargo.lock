@@ -6975,6 +6975,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "temm1e-core",
+ "temm1e-providers",
  "tempfile",
  "tokio",
  "tracing",
