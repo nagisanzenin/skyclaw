@@ -181,6 +181,49 @@ See [TEM_PROWL_PAPER.md](TEM_PROWL_PAPER.md) and [prowl/](prowl/) for the full r
 
 ---
 
+## Tem Cambium (Gap-Driven Self-Grow)
+
+**Tem writes its own code.**
+
+Cambium is the layer where Tem extends its own runtime. It observes a gap between what a user needed and what the system could deliver, writes new Rust code to close the gap, verifies the code through a 13-stage deterministic harness, and deploys via blue-green binary swap supervised by an immutable watchdog. Named after the biological cambium — the thin layer of growth tissue under tree bark where new wood is added each year. The heartwood (immutable kernel: vault, traits, security, the pipeline itself) never changes; the cambium adds rings at the edge.
+
+The architectural choice that makes Cambium timeproof: a **pluggable LLM-backed code generator** is separated from a **fixed mechanical verification harness**. The model's code quality improves with each generation; the safety guarantees stay constant because they are mechanical, not probabilistic.
+
+### Verified end-to-end with real LLMs
+
+| Tier | Model | Result | Time | Files written |
+|------|-------|--------|------|---------------|
+| Cheap | [gemini-3-flash-preview](cambium/CAMBIUM_RESEARCH_PAPER.md) | OK | 5.8s | 1 skill |
+| Medium | [claude-sonnet-4-6](cambium/CAMBIUM_RESEARCH_PAPER.md) | OK | 12.8s | 2 skills |
+
+Both successfully analysed 7 synthetic Docker/k8s activity notes, identified the capability gap, generated structured JSON skill suggestions, and produced loadable YAML-frontmatter skill files registered in `SkillRegistry`. **Total cost: < $0.02**.
+
+### Five phases shipped
+
+| Phase | Component | Status |
+|-------|-----------|--------|
+| 0 | Theory + codebase self-model ([THEORY.md](../docs/lab/cambium/THEORY.md), [PROTECTED_ZONES.md](../docs/lab/cambium/PROTECTED_ZONES.md)) | DONE |
+| 1 | `CambiumConfig` + 8 core types (`GrowthTrigger`, `GrowthKind`, `TrustLevel`, `PipelineStage`, `StageResult`, `GrowthOutcome`, `GrowthSession`, `TrustState`) | DONE |
+| 2 | `temm1e-cambium` library: `zone_checker`, `trust`, `budget`, `history`, `sandbox`, `pipeline`, `deploy` (107 unit tests) | DONE |
+| 3 | Skill-layer growth via `SelfWorkKind::CambiumSkills` + `grow_skills()` handler with 24h rate limit, path traversal sanitization, JSON-from-prose extractor | DONE |
+| 4 | Code pipeline with dedicated git-clone sandbox isolation at `~/.temm1e/cambium/sandbox/` + `cambium-reviewer` and `cambium-auditor` TemDOS cores | DONE |
+| 5 | Blue-green binary swap with `try_wait` crash detection, macOS code-signing safe inode replacement, zombie-aware `is_process_alive` + `temm1e-watchdog` immutable supervisor | DONE |
+
+### Documents
+
+| | |
+|---|---|
+| [Research Paper](cambium/CAMBIUM_RESEARCH_PAPER.md) | The complete story — abstract, 10 first principles, architecture, timeproof design, empirical validation, prior art, conclusion, references including botanical citation |
+| [Theory](../docs/lab/cambium/THEORY.md) | The 10 principles, the trust hierarchy, the 13-stage pipeline, the heartwood/cambium/bark/rings metaphor |
+| [Implementation Plan](../docs/lab/cambium/IMPLEMENTATION_PLAN.md) | Phase-by-phase plan with success metrics and confidence gates |
+| [Protected Zones](../docs/lab/cambium/PROTECTED_ZONES.md) | SHA-256 catalogue of every Level 0 file in the immutable kernel |
+| [Architecture](../docs/lab/cambium/ARCHITECTURE.md) | Crate map, dependency graph, message flow, trust level per crate |
+| [Coding Standards](../docs/lab/cambium/CODING_STANDARDS.md) | Rules self-grown code must follow |
+
+**Status:** All 5 phases shipped. Real-LLM verified. Enabled by default (toggle with `/cambium on` / `/cambium off`). 2275 tests passing, 0 failures.
+
+---
+
 ## Research Philosophy
 
 Every system in Tem's Lab follows the same process:

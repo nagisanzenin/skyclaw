@@ -18,11 +18,18 @@
   <code>117K lines</code> · <code>2,274 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>24 crates</code> · <code>full computer use</code> · <code>cambium self-grow</code>
 </p>
 
-<p align="center"><strong>Powered by 13 layers of self-learning mechanism</strong></p>
+<p align="center"><strong>Powered by 13 layers of self-learning mechanism + 1 self-growing mechanism</strong></p>
 <p align="center">
   <a href="tems_lab/LAMBDA_MEMORY.md">Lambda Memory</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#cross-task-learnings">Cross-Task Learnings</a> · <a href="docs/design/BLUEPRINT_SYSTEM.md">Blueprints</a> · <a href="tems_lab/eigen/DESIGN.md">Eigen-Tune</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tem-anima--user-profile-learning">Tem Anima</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#recall-reinforcement">Recall Reinforcement</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#memory-dedup">Memory Dedup</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#core-stats">Core Stats</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tool-reliability">Tool Reliability</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#classification-feedback">Classification Feedback</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#skill-tracking">Skill Tracking</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#prompt-tier-tracking">Prompt Tier Tracking</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#consciousness-efficacy">Consciousness Efficacy</a>
   <br>
-  <sub>Every self-learning loop scored by <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md"><code>V(a,t) = Q &times; R &times; U</code></a> — the unified artifact value function</sub>
+  <sub>13 self-learning loops scored by <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md"><code>V(a,t) = Q &times; R &times; U</code></a> — the unified artifact value function</sub>
+</p>
+
+<p align="center"><strong>Tem Cambium</strong> &mdash; the 1 self-<em>growing</em> mechanism: Tem writes its own code</p>
+<p align="center">
+  <a href="tems_lab/cambium/CAMBIUM_RESEARCH_PAPER.md">Research Paper</a> · <a href="docs/lab/cambium/THEORY.md">Theory (10 first principles)</a> · <a href="docs/lab/cambium/IMPLEMENTATION_PLAN.md">Implementation Plan</a> · <a href="docs/lab/cambium/PROTECTED_ZONES.md">Protected Zones</a> · <a href="docs/lab/cambium/ARCHITECTURE.md">Architecture</a> · <a href="docs/lab/cambium/CODING_STANDARDS.md">Coding Standards</a>
+  <br>
+  <sub>Heartwood (immutable kernel) · Cambium (growth layer: tools, skills, cores) · Bark (runtime surface) · Rings (GrowthSession history). Verified end-to-end with Gemini 3 Flash + Sonnet 4.6 at &lt; $0.02 / session. Toggle with <code>/cambium on</code> · <code>/cambium off</code></sub>
 </p>
 
 ---
