@@ -2,8 +2,20 @@
 //!
 //! Pressing `Ctrl+Y` opens this picker showing the most recent 9 code
 //! blocks from the message history. User presses 1-9 to copy that
-//! block to the clipboard via `arboard` (with an OSC 52 fallback for
-//! headless / SSH terminals).
+//! block to the clipboard.
+//!
+//! # Clipboard backends
+//!
+//! - **Non-musl targets** (macOS, Windows, Linux/glibc): primary
+//!   is `arboard` with native OS clipboard APIs. Falls back to
+//!   OSC 52 if arboard fails (e.g., headless Linux without
+//!   `$DISPLAY`).
+//! - **musl targets** (static Linux binaries in containers, SSH,
+//!   minimal base images): OSC 52 only. `arboard`'s X11 + Wayland
+//!   backends pull in ~1 MB of transitive deps (x11rb,
+//!   wl-clipboard-rs) which pushes the static binary over the
+//!   30 MB CI size gate. OSC 52 works in every modern terminal
+//!   that musl users actually target.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
@@ -73,13 +85,26 @@ pub fn render_copy_picker(state: &AppState, area: Rect, buf: &mut Buffer) {
     para.render(inner, buf);
 }
 
-/// Attempt to copy text to the system clipboard. Falls back to OSC 52
-/// escape sequence for headless / remote terminals where arboard fails.
+/// Copy text to the system clipboard. On non-musl targets uses
+/// `arboard` first (native OS clipboard) and falls back to OSC 52.
+/// On musl targets uses OSC 52 directly — `arboard`'s Linux
+/// backends are excluded to keep the static binary under the
+/// 30 MB size gate.
+#[cfg(not(target_env = "musl"))]
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
     match arboard::Clipboard::new() {
         Ok(mut cb) => cb.set_text(text.to_string()).map_err(|e| e.to_string()),
         Err(_) => write_osc52(text).map_err(|e| e.to_string()),
     }
+}
+
+/// Copy text to the terminal via the OSC 52 escape sequence.
+/// Works in every modern terminal emulator (kitty, alacritty,
+/// iTerm2, WezTerm, Windows Terminal, tmux with allow-passthrough).
+/// This is the only clipboard path on musl builds.
+#[cfg(target_env = "musl")]
+pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    write_osc52(text).map_err(|e| e.to_string())
 }
 
 fn write_osc52(text: &str) -> std::io::Result<()> {
