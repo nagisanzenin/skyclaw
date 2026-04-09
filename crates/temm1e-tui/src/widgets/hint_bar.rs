@@ -43,11 +43,11 @@ fn hint_for_state(state: &AppState) -> &'static str {
         return "Esc cancel · ^O activity · ^C cancel (×2 quit)";
     }
 
-    // Scroll-wheel mode (mouse capture ON) — unusual; surface the toggle
-    if state.mouse_capture_enabled {
-        return "SCROLL MODE · Alt+S select · Enter submit · ^C cancel";
+    // Raw select mode (mouse capture disabled via Alt+S)
+    if !state.mouse_capture_enabled {
+        return "SELECT MODE · drag to copy · Alt+S re-enable · ^O activity";
     }
 
-    // Idle default (select mode — mouse capture OFF)
-    "Enter submit · ^C cancel · ^Y yank · drag to select · ^O activity · ? help"
+    // Idle default (mouse capture ON, exclusive TUI)
+    "Enter submit · ^C cancel · ^Y yank · Shift+drag copy · ^O activity · ? help"
 }

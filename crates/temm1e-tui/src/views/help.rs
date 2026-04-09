@@ -79,9 +79,9 @@ pub fn render_help(registry: &CommandRegistry, theme: &Theme, area: Rect, buf: &
     for (key, desc) in &[
         ("Esc", "Cancel Tem mid-task · close overlay"),
         ("Ctrl+C", "Cancel Tem · press twice to quit"),
-        ("Ctrl+Y", "Yank a code block to clipboard"),
-        ("Drag (mouse)", "Select text natively (default mode)"),
-        ("Alt+S", "Toggle scroll-mode (mouse wheel / blocks drag)"),
+        ("Ctrl+Y", "Yank a code block to clipboard (numbered picker)"),
+        ("Shift+Drag", "Select text natively (macOS: Option+Drag)"),
+        ("Alt+S", "Toggle mouse capture off (full native select)"),
     ] {
         lines.push(shortcut(theme, key, desc));
     }

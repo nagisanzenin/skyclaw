@@ -162,10 +162,14 @@ impl AppState {
             api_keys_cache: Vec::new(),
             git_info: None,
             code_blocks: std::collections::VecDeque::with_capacity(9),
-            // Default: mouse capture OFF → native terminal text selection
-            // works out of the box. Users opt in to TUI-mode mouse (scroll
-            // wheel, click handlers) via Alt+S.
-            mouse_capture_enabled: false,
+            // Default: mouse capture ON so the TUI owns the whole
+            // terminal buffer (exclusive alt-screen, scroll wheel
+            // works in the TUI, no scrollback bleed-through). Users
+            // select text natively by holding the terminal's modifier
+            // override: Shift on Linux/Windows, Option on macOS.
+            // Alt+S toggles capture off for terminals that don't
+            // support modifier-override.
+            mouse_capture_enabled: true,
             needs_mouse_toggle: false,
             tool_call_history: Vec::new(),
             current_turn: 0,
@@ -496,9 +500,9 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) {
             state.mouse_capture_enabled = !state.mouse_capture_enabled;
             state.needs_mouse_toggle = true;
             let msg = if state.mouse_capture_enabled {
-                "Scroll mode — TUI owns the mouse (wheel scroll works, drag-select disabled)"
+                "Mouse capture ON — TUI exclusive mode. Shift+drag (macOS: Option+drag) to select text."
             } else {
-                "Select mode — drag to select text natively (default)"
+                "Mouse capture OFF — full native text selection, but scroll wheel and TUI mouse disabled."
             };
             push_system_line(state, msg.to_string());
         }

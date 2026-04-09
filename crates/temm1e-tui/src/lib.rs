@@ -107,10 +107,23 @@ pub async fn launch_tui(config: Temm1eConfig) -> anyhow::Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    // Mouse capture is OFF by default so native terminal text selection
-    // works out of the box. Users can toggle it on with Alt+S to get
-    // TUI scroll-wheel support.
-    execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+    // Mouse capture is ON so the TUI owns the whole terminal buffer
+    // (exclusive alt-screen, scroll wheel scrolls the message list,
+    // no scrollback bleed-through). Users select text natively by
+    // holding the terminal's modifier override while dragging:
+    //
+    //   - macOS (iTerm2, Terminal.app): Option+drag
+    //   - Linux (alacritty, kitty, GNOME): Shift+drag
+    //   - Windows Terminal: Shift+drag
+    //
+    // For terminals that don't support the override, Alt+S toggles
+    // capture entirely (disables scroll wheel, enables native drag).
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        cursor::Hide,
+        crossterm::event::EnableMouseCapture
+    )?;
     let _guard = TerminalGuard;
 
     let backend = CrosstermBackend::new(stdout);
