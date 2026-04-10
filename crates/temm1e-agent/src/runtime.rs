@@ -1341,6 +1341,22 @@ impl AgentRuntime {
             // Track whether the original request had tools (for fallback detection)
             let request_had_tools = !self.tools.is_empty();
 
+            // Pre-extract Eigen-Tune collection data so `request` can be
+            // moved (not cloned) into the routing match below.
+            let eigentune_collection = if self.eigen_tune.is_some() {
+                Some((
+                    serde_json::to_string(&request.messages).unwrap_or_default(),
+                    request.system.clone(),
+                    if request.tools.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::to_string(&request.tools).unwrap_or_default())
+                    },
+                ))
+            } else {
+                None
+            };
+
             // ── Eigen-Tune routing decision (Phase 13) ───────────────
             // Triple gate before local routing fires:
             //   1. Engine must be set (Some(et))
@@ -1362,7 +1378,9 @@ impl AgentRuntime {
                 temm1e_distill::types::RouteDecision::Cloud => {
                     // Default unchanged path — preserves the existing
                     // prompted-tool-calling fallback logic verbatim.
-                    match self.provider.complete(request.clone()).await {
+                    // `request` is moved (not cloned) — collection data was
+                    // pre-extracted above.
+                    match self.provider.complete(request).await {
                         Ok(resp) => {
                             self.circuit_breaker.record_success();
                             resp
@@ -1406,7 +1424,7 @@ impl AgentRuntime {
                     // ── Gate 5: 30s timeout + automatic cloud fallback ────
                     let local_provider = temm1e_providers::OpenAICompatProvider::new(String::new())
                         .with_base_url(endpoint.base_url.clone());
-                    let mut local_req = request.clone();
+                    let mut local_req = request.clone(); // 1 clone — need modified copy for local model
                     local_req.model = endpoint.model_name.clone();
                     let local_result = tokio::time::timeout(
                         std::time::Duration::from_secs(30),
@@ -1421,6 +1439,7 @@ impl AgentRuntime {
                                 "Eigen-Tune: served from local model"
                             );
                             self.circuit_breaker.record_success();
+                            drop(request); // success — no fallback needed
                             resp
                         }
                         Ok(Err(e)) => {
@@ -1429,7 +1448,8 @@ impl AgentRuntime {
                                 error = %e,
                                 "Eigen-Tune: local call failed, falling back to cloud"
                             );
-                            match self.provider.complete(request.clone()).await {
+                            match self.provider.complete(request).await {
+                                // move, not clone
                                 Ok(resp) => {
                                     self.circuit_breaker.record_success();
                                     resp
@@ -1445,7 +1465,8 @@ impl AgentRuntime {
                                 model = %endpoint.model_name,
                                 "Eigen-Tune: local call timed out (30s), falling back to cloud"
                             );
-                            match self.provider.complete(request.clone()).await {
+                            match self.provider.complete(request).await {
+                                // move, not clone
                                 Ok(resp) => {
                                     self.circuit_breaker.record_success();
                                     resp
@@ -1463,7 +1484,7 @@ impl AgentRuntime {
                     // Local serves; cloud sampled in parallel for CUSUM drift detection (Gate 4).
                     let local_provider = temm1e_providers::OpenAICompatProvider::new(String::new())
                         .with_base_url(endpoint.base_url.clone());
-                    let mut local_req = request.clone();
+                    let mut local_req = request.clone(); // 1 clone — need modified copy for local model
                     local_req.model = endpoint.model_name.clone();
                     let local_result = tokio::time::timeout(
                         std::time::Duration::from_secs(30),
@@ -1472,10 +1493,10 @@ impl AgentRuntime {
                     .await;
                     match local_result {
                         Ok(Ok(local_resp)) => {
-                            // Fire-and-forget cloud comparison for CUSUM
+                            // Fire-and-forget cloud comparison for CUSUM —
+                            // move `request` into spawn instead of cloning
                             if let Some(et) = self.eigen_tune.clone() {
                                 let cloud_provider = self.provider.clone();
-                                let req_clone = request.clone();
                                 let tier = temm1e_distill::types::EigenTier::from_str(
                                     &eigentune_complexity,
                                 );
@@ -1483,7 +1504,7 @@ impl AgentRuntime {
                                 tokio::spawn(async move {
                                     if let Ok(Ok(cloud_resp)) = tokio::time::timeout(
                                         std::time::Duration::from_secs(30),
-                                        cloud_provider.complete(req_clone),
+                                        cloud_provider.complete(request),
                                     )
                                     .await
                                     {
@@ -1503,7 +1524,8 @@ impl AgentRuntime {
                             tracing::warn!(
                                 "Eigen-Tune: monitor-mode local call failed, falling back to cloud"
                             );
-                            match self.provider.complete(request.clone()).await {
+                            match self.provider.complete(request).await {
+                                // move, not clone
                                 Ok(resp) => {
                                     self.circuit_breaker.record_success();
                                     resp
@@ -1519,7 +1541,10 @@ impl AgentRuntime {
 
                 temm1e_distill::types::RouteDecision::Shadow(endpoint) => {
                     // Cloud serves the user; local runs in parallel for SPRT evidence.
-                    let cloud_resp = match self.provider.complete(request.clone()).await {
+                    // Clone request for the spawn; move original into cloud call.
+                    let spawn_req = request.clone(); // 1 clone — needed for async spawn
+                    let cloud_resp = match self.provider.complete(request).await {
+                        // move
                         Ok(resp) => {
                             self.circuit_breaker.record_success();
                             resp
@@ -1532,7 +1557,6 @@ impl AgentRuntime {
 
                     if let Some(et) = self.eigen_tune.clone() {
                         let endpoint_clone = endpoint.clone();
-                        let req_clone = request.clone();
                         let tier =
                             temm1e_distill::types::EigenTier::from_str(&eigentune_complexity);
                         let cloud_text = response_to_text(&cloud_resp);
@@ -1540,7 +1564,7 @@ impl AgentRuntime {
                             let local_provider =
                                 temm1e_providers::OpenAICompatProvider::new(String::new())
                                     .with_base_url(endpoint_clone.base_url.clone());
-                            let mut local_req = req_clone;
+                            let mut local_req = spawn_req;
                             local_req.model = endpoint_clone.model_name.clone();
                             if let Ok(Ok(local_resp)) = tokio::time::timeout(
                                 std::time::Duration::from_secs(30),
@@ -1564,16 +1588,13 @@ impl AgentRuntime {
             };
 
             // ── Eigen-Tune: collection hook (fire-and-forget, Phase 11) ──
-            if let Some(et) = &self.eigen_tune {
-                let engine = et.clone();
+            // Uses pre-extracted data — `request` was moved into the route above.
+            if let Some((messages_json, system_prompt, tools_json)) = eigentune_collection {
+                let engine = self.eigen_tune.as_ref().unwrap().clone();
                 let pair_data = temm1e_distill::collector::EigenTunePairData {
-                    messages_json: serde_json::to_string(&request.messages).unwrap_or_default(),
-                    system_prompt: request.system.clone(),
-                    tools_json: if request.tools.is_empty() {
-                        None
-                    } else {
-                        Some(serde_json::to_string(&request.tools).unwrap_or_default())
-                    },
+                    messages_json,
+                    system_prompt,
+                    tools_json,
                     response_json: serde_json::to_string(&response).unwrap_or_default(),
                     model: self.model.clone(),
                     provider: self.provider.name().to_string(),

@@ -82,18 +82,30 @@ pub async fn resolve_python(required_module: &str) -> Option<String> {
     ];
     let import_check = format!("import {required_module}");
     for candidate in &candidates {
-        let result = tokio::process::Command::new(candidate)
+        let child = tokio::process::Command::new(candidate)
             .args(["-c", &import_check])
-            .output()
-            .await;
-        if let Ok(output) = result {
-            if output.status.success() {
+            .output();
+        // 5-second timeout per candidate: a broken venv or circular symlink
+        // can cause the subprocess to hang indefinitely.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), child).await;
+        match result {
+            Ok(Ok(output)) if output.status.success() => {
                 tracing::info!(
                     python = candidate,
                     module = required_module,
                     "Eigen-Tune: resolved Python binary"
                 );
                 return Some(candidate.to_string());
+            }
+            Ok(Ok(_)) => {} // non-zero exit — module not found, try next
+            Ok(Err(e)) => {
+                tracing::debug!(python = candidate, error = %e, "probe spawn failed");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    python = candidate,
+                    "probe timed out (5 s) — skipping broken install"
+                );
             }
         }
     }

@@ -157,16 +157,21 @@ async fn run_proof(label: &str, provider: Arc<dyn Provider>, model: String) -> P
 
     let trigger = GrowthTrigger::Manual {
         description:
-            "Modify src/lib.rs to add a public function `format_bytes(bytes: u64) -> String` \
-             that converts a byte count into a human-readable string. The function must:\n\
-             - Return values like \"512 B\", \"1.5 KB\", \"2.3 MB\", \"4.7 GB\", \"1.0 TB\".\n\
-             - Use 1024 as the unit base (KB = 1024 B, MB = 1024 KB, etc.).\n\
-             - Round to 1 decimal place for non-byte values, no decimal for plain bytes.\n\
-             - Handle edge cases: 0 bytes returns \"0 B\".\n\
+            "Modify src/lib.rs to add a public function `slugify(input: &str) -> String` that \
+             converts a title to a URL-safe slug. The function must:\n\
+             - Lowercase everything.\n\
+             - Strip all characters except ASCII alphanumerics, spaces, and hyphens.\n\
+             - Collapse consecutive whitespace and hyphens into a single hyphen.\n\
+             - Trim leading and trailing hyphens.\n\
+             - Example: \"Hello, World! 2026\" becomes \"hello-world-2026\".\n\
+             - Example: \"  Multiple   Spaces  \" becomes \"multiple-spaces\".\n\
+             - Example: \"\" becomes \"\".\n\
              \n\
              You must keep the existing `marker()` function and its test exactly as they are. \
-             Add the new function and at least 4 #[cfg(test)] tests for it (zero, small bytes, kilobytes, megabytes). \
-             The complete content of src/lib.rs must contain BOTH the existing marker function AND the new format_bytes function plus tests."
+             Add the new function and at least 5 #[cfg(test)] tests for it (basic title, \
+             leading/trailing whitespace, multiple spaces, special characters, empty string). \
+             The complete content of src/lib.rs must contain BOTH the existing marker function \
+             AND the new slugify function plus tests."
                 .to_string(),
     };
 
