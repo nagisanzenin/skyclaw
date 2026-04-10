@@ -89,14 +89,17 @@ jobs:
             --no-default-features \
             --features telegram,discord,browser,mcp,codex-oauth,tui,openssl-vendored
 
-      - name: Check binary size (<30 MB)
+      - name: Check binary size (<35 MB)
         run: |
           BINARY="target/x86_64-unknown-linux-musl/release/temm1e"
           SIZE=$(stat -c%s "$BINARY")
           SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
           echo "Binary size: ${SIZE_MB} MB ($SIZE bytes)"
-          if [ "$SIZE" -gt 31457280 ]; then
-            echo "::error::Binary size ${SIZE_MB} MB exceeds 30 MB limit"
+          # 35 MB threshold — bumped from 30 MB in v4.9.0 to accommodate
+          # Eigen-Tune (temm1e-distill ~9.4K LOC of statistical machinery,
+          # state machine, store, trainer, evaluator, backends).
+          if [ "$SIZE" -gt 36700160 ]; then
+            echo "::error::Binary size ${SIZE_MB} MB exceeds 35 MB limit"
             exit 1
           fi
           echo "Binary size OK: ${SIZE_MB} MB"
@@ -147,7 +150,7 @@ jobs:
       - name: Build release binary (all default features including desktop-control)
         run: cargo build --release --bin temm1e
 
-      - name: Check binary size (<30 MB)
+      - name: Check binary size (<35 MB)
         run: |
           BINARY="target/release/temm1e"
           SIZE=$(stat -c%s "$BINARY")
