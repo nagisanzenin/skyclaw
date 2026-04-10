@@ -62,6 +62,44 @@ pub trait TrainingBackend: Send + Sync {
     async fn train(&self, job: &TrainJob) -> Result<TrainArtifacts, Temm1eError>;
 }
 
+/// Probe for a Python 3.10+ binary that can import a given module.
+///
+/// On macOS with Homebrew, `python3` is often the system 3.9.6 which
+/// is too old for MLX (requires 3.10+). This probes versioned names
+/// first (`python3.13`, `python3.12`, `python3.11`, `python3.10`) then
+/// falls back to the generic `python3`. Returns the binary name that
+/// succeeds, or None if none can import the module.
+///
+/// The result is cached for the lifetime of the process — the probe
+/// is expensive (subprocess per candidate) so we only do it once.
+pub async fn resolve_python(required_module: &str) -> Option<String> {
+    let candidates = [
+        "python3.13",
+        "python3.12",
+        "python3.11",
+        "python3.10",
+        "python3",
+    ];
+    let import_check = format!("import {required_module}");
+    for candidate in &candidates {
+        let result = tokio::process::Command::new(candidate)
+            .args(["-c", &import_check])
+            .output()
+            .await;
+        if let Ok(output) = result {
+            if output.status.success() {
+                tracing::info!(
+                    python = candidate,
+                    module = required_module,
+                    "Eigen-Tune: resolved Python binary"
+                );
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Pick the first available backend matching `config.backend`.
 ///
 /// Backend selection logic:

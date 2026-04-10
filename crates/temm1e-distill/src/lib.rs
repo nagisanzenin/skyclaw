@@ -269,14 +269,12 @@ impl EigenTuneEngine {
     pub async fn check_prerequisites(&self) -> PrerequisiteStatus {
         let ollama = backends::ollama::is_available().await;
 
+        // Use the same versioned-python probe as the backends so
+        // the prerequisite check matches what actually runs at training time.
         let mlx = {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                std::process::Command::new("python3")
-                    .args(["-c", "import mlx_lm"])
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false)
+                backends::resolve_python("mlx_lm").await.is_some()
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
             {
@@ -284,17 +282,20 @@ impl EigenTuneEngine {
             }
         };
 
-        let unsloth = std::process::Command::new("python3")
-            .args(["-c", "import unsloth"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+        let unsloth = backends::resolve_python("unsloth").await.is_some();
 
-        let python_version = std::process::Command::new("python3")
-            .arg("--version")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        // Report the python version that the probe found (or the default python3)
+        let python_version = {
+            let py = backends::resolve_python("sys")
+                .await
+                .unwrap_or_else(|| "python3".to_string());
+            tokio::process::Command::new(&py)
+                .arg("--version")
+                .output()
+                .await
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        };
 
         let has_training_backend = mlx || unsloth;
 

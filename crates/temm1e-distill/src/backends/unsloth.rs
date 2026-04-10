@@ -21,12 +21,8 @@ impl TrainingBackend for UnslothBackend {
     }
 
     async fn is_available(&self) -> bool {
-        Command::new("python3")
-            .args(["-c", "import unsloth, trl, datasets"])
-            .output()
-            .await
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        // Probe for a Python that has all three required packages
+        super::resolve_python("unsloth").await.is_some()
     }
 
     async fn train(&self, job: &TrainJob) -> Result<TrainArtifacts, Temm1eError> {
@@ -38,6 +34,11 @@ impl TrainingBackend for UnslothBackend {
             )));
         }
 
+        let python = super::resolve_python("unsloth").await.ok_or_else(|| {
+            Temm1eError::Tool(
+                "unsloth: no Python 3.10+ with unsloth found (tried python3.13 → python3)".into(),
+            )
+        })?;
         let script = locate_script("eigentune_unsloth.py")?;
 
         tokio::fs::create_dir_all(&job.output_dir)
@@ -49,12 +50,13 @@ impl TrainingBackend for UnslothBackend {
                 ))
             })?;
 
-        let mut cmd = build_train_command(&script, job);
+        let mut cmd = build_train_command(&python, &script, job);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
 
         tracing::info!(
+            python = %python,
             base_model = %job.base_model,
             dataset = %job.dataset_dir.display(),
             output = %job.output_dir.display(),
@@ -64,7 +66,7 @@ impl TrainingBackend for UnslothBackend {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| Temm1eError::Tool(format!("unsloth: spawn python3: {e}")))?;
+            .map_err(|e| Temm1eError::Tool(format!("unsloth: spawn {python}: {e}")))?;
 
         // Capture stdout to parse the EIGENTUNE_RESULT line; stream stderr to tracing.
         let stdout_handle = child.stdout.take().map(|stdout| {
@@ -212,8 +214,8 @@ pub(crate) fn locate_script(name: &str) -> Result<PathBuf, Temm1eError> {
 
 /// Build the `python3 <script> --model ... --data ...` command for a job.
 /// Extracted as a helper so unit tests can inspect args without spawning.
-fn build_train_command(script: &PathBuf, job: &TrainJob) -> Command {
-    let mut cmd = Command::new("python3");
+fn build_train_command(python: &str, script: &PathBuf, job: &TrainJob) -> Command {
+    let mut cmd = Command::new(python);
     cmd.arg(script)
         .arg("--model")
         .arg(&job.base_model)
@@ -267,7 +269,7 @@ mod tests {
     fn train_command_construction() {
         let job = make_job();
         let script = PathBuf::from("/tmp/script.py");
-        let cmd = build_train_command(&script, &job);
+        let cmd = build_train_command("python3.12", &script, &job);
         let std_cmd = cmd.as_std();
         let args: Vec<&str> = std_cmd
             .get_args()

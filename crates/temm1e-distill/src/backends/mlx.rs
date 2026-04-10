@@ -22,12 +22,7 @@ impl TrainingBackend for MlxBackend {
         if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             return false;
         }
-        Command::new("python3")
-            .args(["-c", "import mlx_lm"])
-            .output()
-            .await
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        super::resolve_python("mlx_lm").await.is_some()
     }
 
     async fn train(&self, job: &TrainJob) -> Result<TrainArtifacts, Temm1eError> {
@@ -51,12 +46,19 @@ impl TrainingBackend for MlxBackend {
 
         let iters = compute_iters(job);
 
-        let mut cmd = build_train_command(job, iters);
+        let python = super::resolve_python("mlx_lm").await.ok_or_else(|| {
+            Temm1eError::Tool(
+                "mlx: no Python 3.10+ with mlx_lm found (tried python3.13 → python3)".into(),
+            )
+        })?;
+
+        let mut cmd = build_train_command(&python, job, iters);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
 
         tracing::info!(
+            python = %python,
             base_model = %job.base_model,
             dataset = %job.dataset_dir.display(),
             output = %job.output_dir.display(),
@@ -66,7 +68,7 @@ impl TrainingBackend for MlxBackend {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| Temm1eError::Tool(format!("mlx: spawn python3: {e}")))?;
+            .map_err(|e| Temm1eError::Tool(format!("mlx: spawn {python}: {e}")))?;
 
         // Stream stdout/stderr to tracing concurrently
         if let Some(stdout) = child.stdout.take() {
@@ -133,10 +135,10 @@ impl TrainingBackend for MlxBackend {
     }
 }
 
-/// Build the `python3 -m mlx_lm.lora --train ...` command for a given job.
+/// Build the `python3.XX -m mlx_lm.lora --train ...` command for a given job.
 /// Extracted as a helper so unit tests can inspect the args without spawning.
-fn build_train_command(job: &TrainJob, iters: u32) -> Command {
-    let mut cmd = Command::new("python3");
+fn build_train_command(python: &str, job: &TrainJob, iters: u32) -> Command {
+    let mut cmd = Command::new(python);
     cmd.arg("-m")
         .arg("mlx_lm.lora")
         .arg("--train")
@@ -206,7 +208,7 @@ mod tests {
         // For epochs=3 with default per_epoch=200, iters = 600
         assert_eq!(iters, 600);
 
-        let cmd = build_train_command(&job, iters);
+        let cmd = build_train_command("python3.12", &job, iters);
         let std_cmd = cmd.as_std();
         let args: Vec<&str> = std_cmd
             .get_args()
