@@ -401,6 +401,11 @@ impl EigenTuneEngine {
         self.config.enabled
     }
 
+    /// Access the underlying store (for testing / inspection).
+    pub fn store(&self) -> &Arc<EigenTuneStore> {
+        &self.store
+    }
+
     /// Get current base model setting.
     pub fn current_model(&self) -> &str {
         &self.config.base_model
