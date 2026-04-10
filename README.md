@@ -15,28 +15,44 @@
 <h3 align="center"><s>Autonomous AI agent</s> literally a SENTIENT and IMMORTAL being runtime in Rust.<br>Deploy once. Stays up forever. <strong>Now grows itself.</strong></h3>
 
 <p align="center">
-  <code>129K lines</code> · <code>2,337 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>24 crates</code> · <code>full computer use</code> · <code>cambium self-grow</code>
+  <code>130K lines</code> · <code>2,346 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>24 crates</code> · <code>full computer use</code> · <code>cambium self-grow</code>
 </p>
 
-<p align="center"><strong>Powered by 13 layers of self-learning + 1 self-distillation layer + 1 self-growing mechanism</strong></p>
+<p align="center"><strong>13 Layers of Self-Learning</strong></p>
 <p align="center">
-  <a href="tems_lab/LAMBDA_MEMORY.md">Lambda Memory</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#cross-task-learnings">Cross-Task Learnings</a> · <a href="docs/design/BLUEPRINT_SYSTEM.md">Blueprints</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tem-anima--user-profile-learning">Tem Anima</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#recall-reinforcement">Recall Reinforcement</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#memory-dedup">Memory Dedup</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#core-stats">Core Stats</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tool-reliability">Tool Reliability</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#classification-feedback">Classification Feedback</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#skill-tracking">Skill Tracking</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#prompt-tier-tracking">Prompt Tier Tracking</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#consciousness-efficacy">Consciousness Efficacy</a>
+  <strong><a href="tems_lab/LAMBDA_MEMORY.md">Lambda Memory</a></strong> &mdash; episodic facts that fade, not disappear<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#cross-task-learnings">Cross-Task Learnings</a></strong> &mdash; strategic lessons that persist across tasks<br>
+  <strong><a href="docs/design/BLUEPRINT_SYSTEM.md">Blueprints</a></strong> &mdash; proven multi-step procedures with fitness scores<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tem-anima--user-profile-learning">Tem Anima</a></strong> &mdash; user personality and communication style profiling<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#recall-reinforcement">Recall Reinforcement</a></strong> &mdash; memories used more often become harder to forget<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#memory-dedup">Memory Dedup</a></strong> &mdash; near-duplicate memories merge automatically<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#core-stats">Core Stats</a></strong> &mdash; sub-agent reliability tracked per specialist core<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tool-reliability">Tool Reliability</a></strong> &mdash; tool success rates by task type over 30-day windows<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#classification-feedback">Classification Feedback</a></strong> &mdash; empirical cost and round priors per category<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#skill-tracking">Skill Tracking</a></strong> &mdash; which skills are actually used vs sitting idle<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#prompt-tier-tracking">Prompt Tier Tracking</a></strong> &mdash; cost-effectiveness per prompt complexity tier<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#consciousness-efficacy">Consciousness Efficacy</a></strong> &mdash; continuous A/B test of the consciousness observer<br>
+  <strong><a href="tems_lab/eigen/DESIGN.md">Eigen-Tune Collection</a></strong> &mdash; training pairs captured from every LLM call<br>
   <br>
-  <sub>13 self-learning loops scored by <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md"><code>V(a,t) = Q &times; R &times; U</code></a> — the unified artifact value function</sub>
+  <sub>All 13 loops scored by <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md"><code>V(a,t) = Q &times; R &times; U</code></a> &mdash; the unified artifact value function</sub>
 </p>
 
-<p align="center"><strong>Eigen-Tune</strong> &mdash; the 1 self-<em>distillation &amp; self-finetune</em> layer: Tem trains its own local model from conversations, graduates it through statistical gates (Wilson 99% CI + SPRT + CUSUM), and serves locally — zero added LLM cost</p>
+<p align="center"><strong>1 Self-Distillation &amp; Self-Finetune Layer</strong></p>
 <p align="center">
-  <a href="tems_lab/eigen/DESIGN.md">Design</a> · <a href="tems_lab/eigen/SETUP.md">Setup</a> · <a href="tems_lab/eigen/LOCAL_ROUTING_SAFETY.md">Safety Chain</a>
+  <strong><a href="tems_lab/eigen/SETUP.md">Eigen-Tune</a></strong> &mdash; trains a local model from conversations, graduates through statistical gates (Wilson 99% CI + SPRT + CUSUM), serves locally &mdash; zero added LLM cost
+  <br>
+  <a href="tems_lab/eigen/DESIGN.md">Design</a> &middot; <a href="tems_lab/eigen/SETUP.md">Setup</a> &middot; <a href="tems_lab/eigen/LOCAL_ROUTING_SAFETY.md">Safety Chain</a>
   <br>
   <sub>Collect &rarr; Score &rarr; Curate &rarr; Train &rarr; Evaluate &rarr; Shadow &rarr; Monitor. Double opt-in: <code>[eigentune] enabled = true</code> + <code>enable_local_routing = true</code></sub>
 </p>
 
-<p align="center"><strong>Tem Cambium</strong> &mdash; the 1 self-<em>growing</em> mechanism: Tem writes its own Rust code that compiles, lints clean, and passes tests</p>
+<p align="center"><strong>1 Self-Growing Mechanism</strong></p>
 <p align="center">
-  <a href="tems_lab/cambium/CAMBIUM_RESEARCH_PAPER.md">Research Paper</a> · <a href="docs/lab/cambium/THEORY.md">Theory</a>
+  <strong><a href="tems_lab/cambium/CAMBIUM_RESEARCH_PAPER.md">Tem Cambium</a></strong> &mdash; Tem writes its own Rust code that compiles, lints clean, and passes tests
   <br>
-  <sub>Heartwood (immutable kernel) · Cambium (growth layer) · Bark (runtime surface) · Rings (history). Toggle with <code>/cambium on</code> · <code>/cambium off</code></sub>
+  <a href="tems_lab/cambium/CAMBIUM_RESEARCH_PAPER.md">Research Paper</a> &middot; <a href="docs/lab/cambium/THEORY.md">Theory</a>
+  <br>
+  <sub>Heartwood (immutable kernel) &middot; Cambium (growth layer) &middot; Bark (runtime surface) &middot; Rings (history). Toggle with <code>/cambium on</code> &middot; <code>/cambium off</code></sub>
 </p>
 
 ---
@@ -306,17 +322,71 @@ enabled = true                # collect + train + evaluate + shadow (no user-fac
 
 The first switch turns on data collection and the entire training/evaluation pipeline without ever changing what the user sees. Only after you've watched a tier reach `Graduated` state through `temm1e eigentune status` do you flip the second switch and let the local model serve you.
 
-**Proven on Apple M2 with real fine-tuning (v3.1.0 research):**
+**End-to-end proven on Apple M2 (Llama 3.2 1B, v4.9.0):**
 
-| Metric | Result |
-|--------|:------:|
-| Base model (SmolLM2-135M) | 72°F = "150°C" (wrong) |
-| **Fine-tuned on 10 conversations** | **72°F = "21.2°C" (close to 22.2°C)** |
-| Training | 100 iters, 0.509 GB peak, ~28 it/sec |
-| Inference | ~200 tok/sec, 0.303 GB peak |
+| Stage | Result |
+|-------|:------:|
+| Base model | `mlx-community/Llama-3.2-1B-Instruct-4bit` |
+| Training data | 20 ChatML pairs (Rust Q&A) |
+| MLX LoRA fine-tune | 20 iters, 1.59 GB peak, ~2 it/sec |
+| Val loss | 5.394 → **1.387** (73% reduction) |
+| Trainable params | 5.6M / 1.2B (0.46% LoRA) |
+| GGUF conversion | Fuse → dequantize → llama.cpp GGUF → Q4_K_M (807 MB) |
+| Ollama serving | localhost:11434, ~1589 tokens generated |
+| **Runtime routing** | **AgentRuntime → EigenTune router → local model (cloud never called)** |
 | Pipeline cost | **$0 added LLM cost** |
 
 7-stage pipeline: Collect → Score → Curate → Train → Evaluate → Shadow → Monitor. **Seven-gate safety chain** protects local serving: master kill switch, tool-use guard (tool-bearing requests always go to cloud), Wilson 99% CI evaluation, SPRT shadow gate, CUSUM drift detection with auto-demotion, 30s timeout + automatic cloud fallback, manual emergency demote (`temm1e eigentune demote <tier>`). Per-tier graduation: simple first, complex last. **Cloud always the fallback.**
+
+<details>
+<summary><strong>Eigen-Tune Quick Start (User Manual)</strong></summary>
+
+**Prerequisites:** [Ollama](https://ollama.com) + one training backend (MLX on Apple Silicon, Unsloth on NVIDIA).
+
+```bash
+# 1. Install Ollama and pull the base model
+brew install ollama && ollama serve
+ollama pull llama3.2:1b          # Apple Silicon (1.3 GB)
+
+# 2. Install the training backend
+python3 -m pip install mlx-lm    # Apple Silicon (MLX)
+# OR: pip install unsloth trl datasets   # NVIDIA (Unsloth)
+
+# 3. Enable Eigen-Tune in temm1e.toml
+cat >> ~/.temm1e/temm1e.toml << 'EOF'
+[eigentune]
+enabled = true
+EOF
+
+# 4. Use Tem normally — training pairs are collected automatically
+temm1e tui
+
+# 5. Monitor progress
+temm1e eigentune status          # tier states, pair counts, training runs
+temm1e eigentune prerequisites   # check backend availability
+
+# 6. Once a tier reaches "Graduated", enable local routing
+# Add to [eigentune] section in temm1e.toml:
+#   enable_local_routing = true
+
+# 7. Emergency controls
+temm1e eigentune demote simple   # force a tier back to Collecting
+```
+
+**Tier progression:** Collecting (data) → Training (LoRA fine-tune) → Evaluating (holdout accuracy) → Shadowing (SPRT A/B test) → Graduated (local serving) → Monitor (CUSUM drift detection).
+
+**Hardware requirements:**
+
+| Platform | Backend | Min RAM | Base Model |
+|----------|---------|---------|------------|
+| Apple Silicon (M1+) | MLX | 8 GB | Llama 3.2 1B (4-bit) |
+| Apple Silicon (M2+) | MLX | 16 GB | Llama 3.2 3B (4-bit) |
+| NVIDIA GPU | Unsloth | 8 GB VRAM | Llama 3.2 1B (QLoRA) |
+| CPU only | N/A | N/A | Collection only (no training) |
+
+[Full setup guide →](tems_lab/eigen/SETUP.md) · [Safety chain →](tems_lab/eigen/LOCAL_ROUTING_SAFETY.md) · [Design doc →](tems_lab/eigen/DESIGN.md)
+
+</details>
 
 [Research paper →](tems_lab/eigen/RESEARCH_PAPER.md) · [Design doc →](tems_lab/eigen/DESIGN.md) · [Setup guide →](tems_lab/eigen/SETUP.md) · [Integration plan →](tems_lab/eigen/INTEGRATION_PLAN.md) · [Safety chain →](tems_lab/eigen/LOCAL_ROUTING_SAFETY.md) · [Full lab →](tems_lab/eigen/)
 
