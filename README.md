@@ -18,11 +18,18 @@
   <code>129K lines</code> · <code>2,337 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>24 crates</code> · <code>full computer use</code> · <code>cambium self-grow</code>
 </p>
 
-<p align="center"><strong>Powered by 13 layers of self-learning mechanism + 1 self-growing mechanism</strong></p>
+<p align="center"><strong>Powered by 13 layers of self-learning + 1 self-distillation layer + 1 self-growing mechanism</strong></p>
 <p align="center">
-  <a href="tems_lab/LAMBDA_MEMORY.md">Lambda Memory</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#cross-task-learnings">Cross-Task Learnings</a> · <a href="docs/design/BLUEPRINT_SYSTEM.md">Blueprints</a> · <a href="tems_lab/eigen/DESIGN.md">Eigen-Tune</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tem-anima--user-profile-learning">Tem Anima</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#recall-reinforcement">Recall Reinforcement</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#memory-dedup">Memory Dedup</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#core-stats">Core Stats</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tool-reliability">Tool Reliability</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#classification-feedback">Classification Feedback</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#skill-tracking">Skill Tracking</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#prompt-tier-tracking">Prompt Tier Tracking</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#consciousness-efficacy">Consciousness Efficacy</a>
+  <a href="tems_lab/LAMBDA_MEMORY.md">Lambda Memory</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#cross-task-learnings">Cross-Task Learnings</a> · <a href="docs/design/BLUEPRINT_SYSTEM.md">Blueprints</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tem-anima--user-profile-learning">Tem Anima</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#recall-reinforcement">Recall Reinforcement</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#memory-dedup">Memory Dedup</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#core-stats">Core Stats</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tool-reliability">Tool Reliability</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#classification-feedback">Classification Feedback</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#skill-tracking">Skill Tracking</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#prompt-tier-tracking">Prompt Tier Tracking</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#consciousness-efficacy">Consciousness Efficacy</a>
   <br>
   <sub>13 self-learning loops scored by <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md"><code>V(a,t) = Q &times; R &times; U</code></a> — the unified artifact value function</sub>
+</p>
+
+<p align="center"><strong>Eigen-Tune</strong> &mdash; the 1 self-<em>distillation &amp; self-finetune</em> layer: Tem trains its own local model from conversations, graduates it through statistical gates (Wilson 99% CI + SPRT + CUSUM), and serves locally — zero added LLM cost</p>
+<p align="center">
+  <a href="tems_lab/eigen/DESIGN.md">Design</a> · <a href="tems_lab/eigen/SETUP.md">Setup</a> · <a href="tems_lab/eigen/LOCAL_ROUTING_SAFETY.md">Safety Chain</a>
+  <br>
+  <sub>Collect &rarr; Score &rarr; Curate &rarr; Train &rarr; Evaluate &rarr; Shadow &rarr; Monitor. Double opt-in: <code>[eigentune] enabled = true</code> + <code>enable_local_routing = true</code></sub>
 </p>
 
 <p align="center"><strong>Tem Cambium</strong> &mdash; the 1 self-<em>growing</em> mechanism: Tem writes its own Rust code that compiles, lints clean, and passes tests</p>
