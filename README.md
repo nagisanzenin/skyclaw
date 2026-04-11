@@ -6,7 +6,7 @@
   <a href="https://github.com/nagisanzenin/temm1e/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/temm1e?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.com/invite/temm1e"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-5.0.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-5.1.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.82+-orange.svg" alt="Rust 1.82+">
 </p>
 
@@ -15,7 +15,7 @@
 <h3 align="center"><s>Autonomous AI agent</s> literally a SENTIENT and IMMORTAL being runtime in Rust.<br>Deploy once. Stays up forever. <strong>Now grows itself.</strong></h3>
 
 <p align="center">
-  <code>134K lines</code> · <code>2,406 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>24 crates</code> · <code>full computer use</code> · <code>cambium self-grow</code> · <code>tem-code</code>
+  <code>135K lines</code> · <code>2,406 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>24 crates</code> · <code>full computer use</code> · <code>cambium self-grow</code> · <code>tem-code</code>
 </p>
 
 <p align="center"><strong>13 Layers of Self-Learning</strong></p>
@@ -1153,6 +1153,8 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
 <summary><strong>Release Timeline</strong> — every version from first breath to now</summary>
 
 ```
+2026-04-11  v5.1.0  ●━━━ Full Sweep 1 — Extreme Resilience. 10-phase deep scan across all 24 crates, 47 findings with 15-dimension risk matrices, 35 fixes landed at 100% confidence / 0% regression risk. P0: file tool path traversal containment (resolve_path workspace validation), UTF-8 safe split_message in Telegram/Discord/Slack (floor_char_boundary), SQLite WAL mode + busy_timeout. P1: tool output safe truncation (shell/file/web_fetch), credential scrubber +7 patterns (AWS/Stripe/Slack/GitLab/Grafana), Anthropic max_tokens from model registry, key rotation 2s cooldown, Unicode-aware token estimation (len/2 for >30% non-ASCII), BrowserPool assert to Result. P2-P4: allowlist wildcard unification, WhatsApp empty allowlist DF-16 fix, channel capacity 32 to 128, Gemini/TUI/Config safe slicing, EigenTune/MCP/Anima unwrap elimination, Telegram backoff reset, swallowed error logging, memory provenance annotations, failover search word-split AND matching, lambda store transactions, markdown atomic append, ResilientMemory cache eviction (max 1024), circuit breaker CAS, custom tool schema type normalization, OAuth chmod 600, shell denylist rm variants. Full Sweep Protocol with 9-step execution workflow documented. 24 crates, 2,406 tests.
+                    │
 2026-04-11  v5.0.1  ●━━━ Fix: temm1e update for install.sh users — detects non-git installs, self-updates via GitHub Releases API (download binary, atomic replace, user data untouched). Fix: CLI setup wizard credential format — was writing broken TOML that load_credentials_file() couldn't parse, causing key not to load on next TUI launch. Now uses save_credentials() canonical format. README: overview images for Eigen-Tune, Swarm, Artifact Value Function, Prowl, TUI, and new main banner. 24 crates, 2,406 tests.
                     │
 2026-04-10  v5.0.0  ●━━━ Tem-Code — foundational coding agent layer. 5 new tools (code_edit, code_glob, code_grep, code_patch, code_snapshot), each designed from deep research across 8 production coding agents (Claude Code, Codex, Aider, SWE-agent, Cursor, Windsurf, OpenCode, Antigravity). code_edit: exact string replacement with read-before-write gate + atomic temp-file writes + fuzzy match on failure. code_glob: recursive gitignore-aware file matching with 500-result limit. code_grep: regex content search with 3 output modes (content/files_with_matches/count) + 250-result head_limit. code_patch: multi-file atomic edits with dry-run validation + rollback on any failure. code_snapshot: checkpoint/restore via git write-tree/read-tree (no commit pollution). Enhanced file_read: +offset/limit params, line-numbered output, populates read_tracker for the read-before-write gate. Enhanced git: --no-verify and --amend blocked as self-governing guardrails (AGI-first safety — engineering discipline, not permission prompts). Context engine: replaced hardcoded MIN_RECENT_MESSAGES=30/MAX_RECENT_MESSAGES=60 with skull-aligned RECENT_BUDGET_FRACTION=0.25 — token-budgeted, scales with model context window (200K→50K, 2M→500K). System prompt: section_coding_tools() in Standard+Full tiers guides LLM to prefer code_edit over file_write, code_grep over shell grep. A/B benchmark: "Impossible Refactor" — 10-task multi-file scenario with UTF-8 traps + credential traps + git safety traps: NEW toolset 67.2% token savings, 4.4x efficiency, 100% accuracy, zero safety violations vs OLD 77.8% accuracy + 3 violations. Research paper: docs/TEM_CODE_RESEARCH.md. Harmony audit: zero conflicts across all 24 crates. 24 crates, 2,406 tests.
