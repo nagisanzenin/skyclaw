@@ -63,10 +63,9 @@ impl MarkdownMemory {
             .append(true)
             .open(path)
             .await?;
-        let needs_sep = file.metadata().await.map(|m| m.len() > 0).unwrap_or(false);
-        if needs_sep {
-            file.write_all(b"\n").await?;
-        }
+        // Always prepend \n separator. On fresh files this adds a harmless
+        // leading newline that the entry parser (split on "<!-- entry:") skips.
+        file.write_all(b"\n").await?;
         file.write_all(text.as_bytes()).await?;
         Ok(())
     }
