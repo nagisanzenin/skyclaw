@@ -22,11 +22,25 @@ static AUTH_HEADER: LazyLock<Regex> = LazyLock::new(|| {
         .expect("invalid AUTH_HEADER regex")
 });
 
-/// Matches common API key patterns (OpenAI sk-, GitHub ghp_/gho_, generic key-).
+/// Matches common API key patterns across major providers.
 static API_KEY_PATTERNS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)(sk-[a-zA-Z0-9_-]{20,}|key-[a-zA-Z0-9_-]{20,}|ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36})",
-    )
+    Regex::new(concat!(
+        r"(?i)(",
+        r"sk-ant-[a-zA-Z0-9_-]{20,}", // Anthropic
+        r"|sk-or-[a-zA-Z0-9_-]{20,}", // OpenRouter
+        r"|sk-[a-zA-Z0-9_-]{20,}",    // OpenAI / generic
+        r"|key-[a-zA-Z0-9_-]{20,}",   // Generic key-
+        r"|ghp_[a-zA-Z0-9]{36}",      // GitHub PAT
+        r"|gho_[a-zA-Z0-9]{36}",      // GitHub OAuth
+        r"|AKIA[A-Z0-9]{16}",         // AWS access key
+        r"|sk_live_[a-zA-Z0-9]{20,}", // Stripe live
+        r"|sk_test_[a-zA-Z0-9]{20,}", // Stripe test
+        r"|xoxb-[a-zA-Z0-9-]{20,}",   // Slack bot token
+        r"|xoxp-[a-zA-Z0-9-]{20,}",   // Slack user token
+        r"|glpat-[a-zA-Z0-9_-]{20,}", // GitLab PAT
+        r"|gxp_[a-zA-Z0-9]{20,}",     // Grafana
+        r")",
+    ))
     .expect("invalid API_KEY_PATTERNS regex")
 });
 

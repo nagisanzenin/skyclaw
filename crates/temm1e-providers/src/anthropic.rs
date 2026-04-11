@@ -85,7 +85,10 @@ impl AnthropicProvider {
         let mut body = serde_json::json!({
             "model": request.model,
             "messages": messages,
-            "max_tokens": request.max_tokens.unwrap_or(4096),
+            "max_tokens": request.max_tokens.unwrap_or_else(|| {
+                let (_, max_output) = temm1e_core::types::model_registry::model_limits(&request.model);
+                max_output as u32
+            }),
         });
 
         if let Some(ref system) = request.system {

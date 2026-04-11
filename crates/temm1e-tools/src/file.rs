@@ -109,9 +109,13 @@ impl Tool for FileReadTool {
                     output.push_str(&format!("{}\t{}\n", line_num, line));
                 }
 
-                // Check byte size limit
+                // Check byte size limit (safe UTF-8 boundary)
                 if output.len() > MAX_READ_SIZE {
-                    output.truncate(MAX_READ_SIZE);
+                    let mut end = MAX_READ_SIZE;
+                    while end > 0 && !output.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    output.truncate(end);
                     output.push_str("\n... [output truncated at 32KB]");
                 }
 

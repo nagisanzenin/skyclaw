@@ -110,9 +110,13 @@ impl Tool for ShellTool {
                     );
                 }
 
-                // Truncate if too large
+                // Truncate if too large (safe UTF-8 boundary)
                 if content.len() > MAX_OUTPUT_SIZE {
-                    content.truncate(MAX_OUTPUT_SIZE);
+                    let mut end = MAX_OUTPUT_SIZE;
+                    while end > 0 && !content.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    content.truncate(end);
                     content.push_str("\n... [output truncated]");
                 }
 
