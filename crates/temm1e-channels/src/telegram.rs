@@ -786,8 +786,22 @@ fn extract_attachments(msg: &teloxide::types::Message) -> Vec<AttachmentRef> {
     attachments
 }
 
+/// Find the last byte offset that is on a UTF-8 char boundary at or before `max`.
+fn floor_char_boundary(s: &str, max: usize) -> usize {
+    if max >= s.len() {
+        return s.len();
+    }
+    // Walk backwards from max until we hit a char boundary
+    let mut i = max;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// Split a message into chunks that fit within a character limit.
 /// Tries to split at newline boundaries first, then spaces, then hard limit.
+/// All splits respect UTF-8 char boundaries to prevent panics on multi-byte text.
 fn split_message(text: &str, max_len: usize) -> Vec<String> {
     if text.len() <= max_len {
         return vec![text.to_string()];
@@ -802,9 +816,10 @@ fn split_message(text: &str, max_len: usize) -> Vec<String> {
             break;
         }
 
-        let split_at = remaining[..max_len]
+        let safe_end = floor_char_boundary(remaining, max_len);
+        let split_at = remaining[..safe_end]
             .rfind('\n')
-            .unwrap_or_else(|| remaining[..max_len].rfind(' ').unwrap_or(max_len));
+            .unwrap_or_else(|| remaining[..safe_end].rfind(' ').unwrap_or(safe_end));
 
         let (chunk, rest) = remaining.split_at(split_at);
         chunks.push(chunk.to_string());

@@ -972,7 +972,20 @@ fn extract_attachments(msg: &Message) -> Vec<AttachmentRef> {
         .collect()
 }
 
+/// Find the last byte offset that is on a UTF-8 char boundary at or before `max`.
+fn floor_char_boundary(s: &str, max: usize) -> usize {
+    if max >= s.len() {
+        return s.len();
+    }
+    let mut i = max;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// Split a message into chunks that fit within Discord's character limit.
+/// All splits respect UTF-8 char boundaries to prevent panics on multi-byte text.
 fn split_message(text: &str, max_len: usize) -> Vec<String> {
     if text.len() <= max_len {
         return vec![text.to_string()];
@@ -987,10 +1000,11 @@ fn split_message(text: &str, max_len: usize) -> Vec<String> {
             break;
         }
 
+        let safe_end = floor_char_boundary(remaining, max_len);
         // Try to split at a newline boundary
-        let split_at = remaining[..max_len].rfind('\n').unwrap_or_else(|| {
+        let split_at = remaining[..safe_end].rfind('\n').unwrap_or_else(|| {
             // Fall back to splitting at a space
-            remaining[..max_len].rfind(' ').unwrap_or(max_len)
+            remaining[..safe_end].rfind(' ').unwrap_or(safe_end)
         });
 
         let (chunk, rest) = remaining.split_at(split_at);

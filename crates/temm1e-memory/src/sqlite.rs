@@ -30,9 +30,20 @@ impl SqliteMemory {
             .await
             .map_err(|e| Temm1eError::Memory(format!("Failed to connect to SQLite: {e}")))?;
 
+        // Enable WAL mode for concurrent read/write safety and set busy timeout
+        // to avoid SQLITE_BUSY errors under contention.
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(&pool)
+            .await
+            .map_err(|e| Temm1eError::Memory(format!("Failed to set WAL mode: {e}")))?;
+        sqlx::query("PRAGMA busy_timeout=5000")
+            .execute(&pool)
+            .await
+            .map_err(|e| Temm1eError::Memory(format!("Failed to set busy_timeout: {e}")))?;
+
         let mem = Self { pool };
         mem.init_tables().await?;
-        info!("SQLite memory backend initialised");
+        info!("SQLite memory backend initialised (WAL mode)");
         Ok(mem)
     }
 

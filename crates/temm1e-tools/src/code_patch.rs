@@ -110,7 +110,7 @@ impl Tool for CodePatchTool {
         let mut failures: Vec<String> = Vec::new();
 
         for change in &changes {
-            let path = crate::file::resolve_path(&change.file_path, &ctx.workspace_path);
+            let path = crate::file::resolve_path(&change.file_path, &ctx.workspace_path)?;
 
             let content = match tokio::fs::read_to_string(&path).await {
                 Ok(c) => c,
@@ -167,7 +167,7 @@ impl Tool for CodePatchTool {
         let mut backups: Vec<(std::path::PathBuf, String, String)> = Vec::new();
 
         for change in &changes {
-            let path = crate::file::resolve_path(&change.file_path, &ctx.workspace_path);
+            let path = crate::file::resolve_path(&change.file_path, &ctx.workspace_path)?;
             let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
                 Temm1eError::Tool(format!(
                     "{}: cannot read file for apply: {}",
