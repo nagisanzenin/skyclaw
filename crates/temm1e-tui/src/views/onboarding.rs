@@ -91,11 +91,25 @@ pub fn render_onboarding(step: &OnboardingStep, theme: &Theme, area: Rect, buf: 
             } else if input.len() <= 8 {
                 format!("{}\u{2588}", "*".repeat(input.len()))
             } else {
+                // Safe char-boundary slicing for API key masking
+                let start = input
+                    .char_indices()
+                    .nth(4)
+                    .map(|(i, _)| i)
+                    .unwrap_or(input.len());
+                let end = input
+                    .char_indices()
+                    .rev()
+                    .nth(3)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                let visible_chars = input.chars().count();
+                let masked_count = visible_chars.saturating_sub(8);
                 format!(
                     "{}{}{}\u{2588}",
-                    &input[..4],
-                    "*".repeat(input.len() - 8),
-                    &input[input.len() - 4..]
+                    &input[..start],
+                    "*".repeat(masked_count),
+                    &input[end..]
                 )
             };
             lines.push(Line::from(vec![

@@ -95,32 +95,34 @@ pub fn classifier_profile_summary(profile: &UserProfile) -> String {
     let mut parts = Vec::new();
 
     // Key communication traits only (above tonal threshold)
-    if above_threshold(&profile.communication_style.directness, CONFIDENCE_TONAL) {
-        let d = profile.communication_style.directness.as_ref().unwrap();
-        if d.value > 0.6 {
+    if let Some(d) = profile.communication_style.directness.as_ref() {
+        if above_threshold(&profile.communication_style.directness, CONFIDENCE_TONAL)
+            && d.value > 0.6
+        {
             parts.push("direct");
-        } else if d.value < 0.4 {
+        } else if above_threshold(&profile.communication_style.directness, CONFIDENCE_TONAL)
+            && d.value < 0.4
+        {
             parts.push("indirect");
         }
     }
-    if above_threshold(
-        &profile.communication_style.technical_depth,
-        CONFIDENCE_TONAL,
-    ) {
-        let t = profile
-            .communication_style
-            .technical_depth
-            .as_ref()
-            .unwrap();
-        if t.value > 0.6 {
+    if let Some(t) = profile.communication_style.technical_depth.as_ref() {
+        if above_threshold(
+            &profile.communication_style.technical_depth,
+            CONFIDENCE_TONAL,
+        ) && t.value > 0.6
+        {
             parts.push("technical");
         }
     }
-    if above_threshold(&profile.communication_style.formality, CONFIDENCE_TONAL) {
-        let f = profile.communication_style.formality.as_ref().unwrap();
-        if f.value > 0.6 {
+    if let Some(f) = profile.communication_style.formality.as_ref() {
+        if above_threshold(&profile.communication_style.formality, CONFIDENCE_TONAL)
+            && f.value > 0.6
+        {
             parts.push("formal");
-        } else if f.value < 0.4 {
+        } else if above_threshold(&profile.communication_style.formality, CONFIDENCE_TONAL)
+            && f.value < 0.4
+        {
             parts.push("casual");
         }
     }

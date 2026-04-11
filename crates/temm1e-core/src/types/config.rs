@@ -415,8 +415,11 @@ impl ProviderConfig {
 impl std::fmt::Debug for ProviderConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let redact = |k: &str| -> String {
-            if k.len() > 8 {
-                format!("{}...{}", &k[..4], &k[k.len() - 4..])
+            let chars: Vec<char> = k.chars().collect();
+            if chars.len() > 8 {
+                let prefix: String = chars[..4].iter().collect();
+                let suffix: String = chars[chars.len() - 4..].iter().collect();
+                format!("{prefix}...{suffix}")
             } else {
                 "***".to_string()
             }

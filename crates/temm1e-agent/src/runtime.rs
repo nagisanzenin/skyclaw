@@ -1589,8 +1589,10 @@ impl AgentRuntime {
 
             // ── Eigen-Tune: collection hook (fire-and-forget, Phase 11) ──
             // Uses pre-extracted data — `request` was moved into the route above.
-            if let Some((messages_json, system_prompt, tools_json)) = eigentune_collection {
-                let engine = self.eigen_tune.as_ref().unwrap().clone();
+            if let (Some((messages_json, system_prompt, tools_json)), Some(engine)) =
+                (eigentune_collection, self.eigen_tune.as_ref())
+            {
+                let engine = engine.clone();
                 let pair_data = temm1e_distill::collector::EigenTunePairData {
                     messages_json,
                     system_prompt,

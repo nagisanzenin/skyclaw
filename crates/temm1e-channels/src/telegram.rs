@@ -223,11 +223,17 @@ impl Channel for TelegramChannel {
 
                 let mut dispatcher = Dispatcher::builder(bot.clone(), handler).build();
 
+                let started = std::time::Instant::now();
                 dispatcher.dispatch().await;
 
                 // Dispatcher exited — network error, API throttle, etc.
                 if shutdown.load(Ordering::Relaxed) {
                     break;
+                }
+
+                // Reset backoff if dispatcher ran for >30s (was successfully connected)
+                if started.elapsed() > std::time::Duration::from_secs(30) {
+                    backoff = std::time::Duration::from_secs(1);
                 }
 
                 tracing::warn!(
