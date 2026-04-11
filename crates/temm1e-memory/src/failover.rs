@@ -39,14 +39,37 @@ pub enum MemoryHealthStatus {
 pub struct FailoverConfig {
     /// Number of consecutive failures before a repair attempt is triggered.
     pub max_consecutive_failures: u32,
+    /// Maximum entries in the in-memory fallback cache (prevents unbounded growth).
+    pub max_cache_entries: usize,
 }
 
 impl Default for FailoverConfig {
     fn default() -> Self {
         Self {
             max_consecutive_failures: 3,
+            max_cache_entries: 1024,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Word-split AND matching, consistent with the primary SQLite search
+/// semantics.  Each whitespace-delimited word in `query` must appear
+/// (case-insensitive) in either `content` or `id`.
+fn matches_query(entry: &MemoryEntry, query: &str) -> bool {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    if words.is_empty() {
+        return true;
+    }
+    let content_lower = entry.content.to_lowercase();
+    let id_lower = entry.id.to_lowercase();
+    words.iter().all(|w| {
+        let wl = w.to_lowercase();
+        content_lower.contains(&wl) || id_lower.contains(&wl)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +283,17 @@ impl Memory for ResilientMemory {
         {
             let mut state = self.state.write().await;
             state.cache.insert(entry.id.clone(), entry.clone());
+            // Evict oldest entry if cache exceeds limit (prevents unbounded growth)
+            if state.cache.len() > self.config.max_cache_entries {
+                if let Some(oldest_id) = state
+                    .cache
+                    .values()
+                    .min_by_key(|e| &e.timestamp)
+                    .map(|e| e.id.clone())
+                {
+                    state.cache.remove(&oldest_id);
+                }
+            }
         }
 
         match self.primary.store(entry).await {
@@ -329,7 +363,7 @@ impl Memory for ResilientMemory {
                 // Merge any cached entries that match the query.
                 let state = self.state.read().await;
                 for entry in state.cache.values() {
-                    if entry.content.contains(query) && !results.iter().any(|r| r.id == entry.id) {
+                    if matches_query(entry, query) && !results.iter().any(|r| r.id == entry.id) {
                         // Respect filters.
                         if let Some(ref session) = opts.session_filter {
                             if entry.session_id.as_deref() != Some(session.as_str()) {
@@ -357,7 +391,7 @@ impl Memory for ResilientMemory {
                     .cache
                     .values()
                     .filter(|entry| {
-                        if !entry.content.contains(query) {
+                        if !matches_query(entry, query) {
                             return false;
                         }
                         if let Some(ref session) = opts.session_filter {
@@ -834,6 +868,7 @@ mod tests {
         let (handle, primary) = create_fake();
         let config = FailoverConfig {
             max_consecutive_failures: 10, // high threshold so repair isn't triggered
+            ..Default::default()
         };
         let resilient = ResilientMemory::with_config(primary, config);
 
@@ -853,6 +888,7 @@ mod tests {
         let (handle, primary) = create_fake();
         let config = FailoverConfig {
             max_consecutive_failures: 10,
+            ..Default::default()
         };
         let resilient = ResilientMemory::with_config(primary, config);
 
@@ -871,6 +907,7 @@ mod tests {
         let (handle, primary) = create_fake();
         let config = FailoverConfig {
             max_consecutive_failures: 2,
+            ..Default::default()
         };
         let resilient = ResilientMemory::with_config(primary, config);
 
@@ -901,6 +938,7 @@ mod tests {
         let (handle, primary) = create_fake();
         let config = FailoverConfig {
             max_consecutive_failures: 2,
+            ..Default::default()
         };
         let resilient = ResilientMemory::with_config(primary, config);
 
@@ -1036,6 +1074,7 @@ mod tests {
         let (handle, primary) = create_fake();
         let config = FailoverConfig {
             max_consecutive_failures: 5,
+            ..Default::default()
         };
         let resilient = ResilientMemory::with_config(primary, config);
 

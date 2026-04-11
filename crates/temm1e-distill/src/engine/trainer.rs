@@ -62,16 +62,21 @@ impl TrainerOrchestrator {
                     updated.status = TrainingRunStatus::Failed;
                     updated.completed_at = Some(Utc::now());
                     updated.error_message = Some(format!("{e}"));
-                    let _ = self.store.update_run(&updated).await;
+                    if let Err(e) = self.store.update_run(&updated).await {
+                        tracing::warn!(error = %e, "Failed to persist training run failure status");
+                    }
                 }
 
                 // Revert the tier to Collecting via the state machine
                 let sm = EigenTuneStateMachine::new(self.store.clone(), self.config.clone());
                 if let Ok(current) = sm.state(tier).await {
                     if current == TierState::Training {
-                        let _ = sm
+                        if let Err(e) = sm
                             .transition(tier, TierState::Training, TierState::Collecting)
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(error = %e, "Failed to revert tier state to Collecting");
+                        }
                     }
                 }
 

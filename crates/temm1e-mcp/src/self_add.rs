@@ -108,10 +108,18 @@ impl Tool for SelfAddMcpTool {
         }
 
         let config = if has_url {
-            let url = args["url"].as_str().unwrap();
+            let url = args["url"].as_str().ok_or_else(|| {
+                temm1e_core::types::error::Temm1eError::Tool(
+                    "mcp_self_add: 'url' must be a string".into(),
+                )
+            })?;
             McpServerConfig::http(name, url)
         } else {
-            let command = args["command"].as_str().unwrap();
+            let command = args["command"].as_str().ok_or_else(|| {
+                temm1e_core::types::error::Temm1eError::Tool(
+                    "mcp_self_add: 'command' must be a string".into(),
+                )
+            })?;
             let cmd_args: Vec<String> = args
                 .get("args")
                 .and_then(|v| v.as_array())

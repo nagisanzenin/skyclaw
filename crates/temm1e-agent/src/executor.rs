@@ -332,6 +332,9 @@ fn is_read_only_tool(name: &str) -> bool {
 /// Dangerous shell command patterns that should be rejected.
 const BLOCKED_SHELL_PATTERNS: &[&str] = &[
     "rm -rf /",
+    "rm -fr /",
+    "rm -r -f /",
+    "rm --recursive --force /",
     "mkfs.",
     "dd if=",
     "> /dev/sd",

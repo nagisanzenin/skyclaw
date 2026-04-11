@@ -62,12 +62,13 @@ impl BrowserPool {
     /// Launch a single Chrome process and pre-create `max_size` isolated browser
     /// contexts. Each context has its own cookies, cache, and storage.
     ///
-    /// # Panics
-    ///
-    /// Panics if `max_size` exceeds 64 (bitset limit) or is zero.
+    /// Returns an error if `max_size` exceeds 64 (bitset limit) or is zero.
     pub async fn new(max_size: usize) -> Result<Self, Temm1eError> {
-        assert!(max_size > 0, "Pool size must be at least 1");
-        assert!(max_size <= 64, "Pool size limited to 64 (bitset)");
+        if max_size == 0 || max_size > 64 {
+            return Err(Temm1eError::Tool(format!(
+                "Browser pool size must be 1..=64, got {max_size}"
+            )));
+        }
 
         let force_headless = std::env::var("TEMM1E_HEADLESS").unwrap_or_default() == "1";
         let has_display = std::env::var("DISPLAY").is_ok()
@@ -183,11 +184,14 @@ impl BrowserPool {
 
     /// Get a `Page` for a claimed slot. Creates one if it doesn't exist yet.
     ///
-    /// # Panics
-    ///
-    /// Panics if `slot >= max_size`.
+    /// Returns an error if `slot >= max_size`.
     pub async fn get_page(&self, slot: usize) -> Result<Page, Temm1eError> {
-        assert!(slot < self.max_size, "Invalid pool slot: {slot}");
+        if slot >= self.max_size {
+            return Err(Temm1eError::Tool(format!(
+                "Invalid pool slot {slot}: max is {}",
+                self.max_size
+            )));
+        }
 
         let mut ctx = self.contexts[slot].lock().await;
         if let Some(ref page) = ctx.page {
@@ -217,11 +221,14 @@ impl BrowserPool {
     /// Closes the page, disposes the old context, and creates a fresh one to
     /// guarantee clean state (no lingering cookies, storage, or cache).
     ///
-    /// # Panics
-    ///
-    /// Panics if `slot >= max_size`.
+    /// Returns an error if `slot >= max_size`.
     pub async fn release(&self, slot: usize) -> Result<(), Temm1eError> {
-        assert!(slot < self.max_size, "Invalid pool slot: {slot}");
+        if slot >= self.max_size {
+            return Err(Temm1eError::Tool(format!(
+                "Invalid pool slot {slot}: max is {}",
+                self.max_size
+            )));
+        }
 
         {
             let mut ctx = self.contexts[slot].lock().await;

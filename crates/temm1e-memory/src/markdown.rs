@@ -57,13 +57,17 @@ impl MarkdownMemory {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
         }
-        let existing = Self::read_file(path).await?;
-        let new_content = if existing.is_empty() {
-            text.to_string()
-        } else {
-            format!("{existing}\n{text}")
-        };
-        fs::write(path, new_content).await?;
+        use tokio::io::AsyncWriteExt;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await?;
+        let needs_sep = file.metadata().await.map(|m| m.len() > 0).unwrap_or(false);
+        if needs_sep {
+            file.write_all(b"\n").await?;
+        }
+        file.write_all(text.as_bytes()).await?;
         Ok(())
     }
 

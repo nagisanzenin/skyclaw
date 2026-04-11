@@ -453,15 +453,24 @@ impl Provider for GeminiProvider {
             return Err(Temm1eError::Provider(format!(
                 "Gemini API error ({}): {}",
                 status,
-                &body[..body.len().min(500)]
+                {
+                    let mut end = body.len().min(500);
+                    while end > 0 && !body.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    &body[..end]
+                }
             )));
         }
 
         let gemini_resp: GeminiResponse = serde_json::from_str(&body).map_err(|e| {
-            Temm1eError::Provider(format!(
-                "Gemini response parse error: {e}\nBody: {}",
-                &body[..body.len().min(500)]
-            ))
+            Temm1eError::Provider(format!("Gemini response parse error: {e}\nBody: {}", {
+                let mut end = body.len().min(500);
+                while end > 0 && !body.is_char_boundary(end) {
+                    end -= 1;
+                }
+                &body[..end]
+            }))
         })?;
 
         Ok(self.convert_response(gemini_resp))

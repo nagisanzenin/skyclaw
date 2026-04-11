@@ -75,7 +75,14 @@ impl Tool for ScriptToolAdapter {
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
-        self.meta.parameters.clone()
+        let mut schema = self.meta.parameters.clone();
+        // Normalize schema type to lowercase (Anthropic API requires "object", not "OBJECT")
+        if let Some(t) = schema.get("type").and_then(|v| v.as_str()) {
+            if t != t.to_lowercase().as_str() {
+                schema["type"] = serde_json::Value::String(t.to_lowercase());
+            }
+        }
+        schema
     }
 
     fn declarations(&self) -> ToolDeclarations {

@@ -30,9 +30,20 @@ impl SqliteMemory {
             .await
             .map_err(|e| Temm1eError::Memory(format!("Failed to connect to SQLite: {e}")))?;
 
+        // Enable WAL mode for concurrent read/write safety and set busy timeout
+        // to avoid SQLITE_BUSY errors under contention.
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(&pool)
+            .await
+            .map_err(|e| Temm1eError::Memory(format!("Failed to set WAL mode: {e}")))?;
+        sqlx::query("PRAGMA busy_timeout=5000")
+            .execute(&pool)
+            .await
+            .map_err(|e| Temm1eError::Memory(format!("Failed to set busy_timeout: {e}")))?;
+
         let mem = Self { pool };
         mem.init_tables().await?;
-        info!("SQLite memory backend initialised");
+        info!("SQLite memory backend initialised (WAL mode)");
         Ok(mem)
     }
 
@@ -388,6 +399,13 @@ impl Memory for SqliteMemory {
     async fn lambda_store(&self, entry: LambdaMemoryEntry) -> Result<(), Temm1eError> {
         let tags_json = serde_json::to_string(&entry.tags).unwrap_or_else(|_| "[]".to_string());
         let memory_type = lambda_type_to_str(&entry.memory_type);
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Temm1eError::Memory(format!("lambda_store begin tx: {e}")))?;
+
         sqlx::query(
             "INSERT OR REPLACE INTO lambda_memories \
              (hash, created_at, last_accessed, access_count, importance, explicit_save, \
@@ -407,16 +425,15 @@ impl Memory for SqliteMemory {
         .bind(memory_type)
         .bind(&entry.session_id)
         .bind(entry.recall_boost)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| Temm1eError::Memory(format!("lambda_store failed: {e}")))?;
 
         // Sync FTS5: insert the searchable fields with the hash as the rowid substitute.
-        // We use the hash's rowid from the main table.
         let rowid: Option<(i64,)> =
             sqlx::query_as("SELECT rowid FROM lambda_memories WHERE hash = ?")
                 .bind(&entry.hash)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(|e| Temm1eError::Memory(format!("lambda_store FTS rowid lookup: {e}")))?;
 
@@ -430,7 +447,7 @@ impl Memory for SqliteMemory {
             .bind(&entry.summary_text)
             .bind(&entry.essence_text)
             .bind(&tags_json)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await;
 
             sqlx::query(
@@ -441,10 +458,14 @@ impl Memory for SqliteMemory {
             .bind(&entry.summary_text)
             .bind(&entry.essence_text)
             .bind(&tags_json)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| Temm1eError::Memory(format!("lambda_store FTS insert: {e}")))?;
         }
+
+        tx.commit()
+            .await
+            .map_err(|e| Temm1eError::Memory(format!("lambda_store commit: {e}")))?;
 
         debug!(hash = %entry.hash, importance = entry.importance, "Stored λ-memory");
         Ok(())

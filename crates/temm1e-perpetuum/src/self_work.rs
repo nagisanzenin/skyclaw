@@ -538,7 +538,11 @@ async fn write_cambium_inbox_entry(
     // Truncate the message for safety (logs can be huge).
     let mut safe_msg = message.to_string();
     if safe_msg.len() > 500 {
-        safe_msg.truncate(500);
+        let mut end = 500;
+        while end > 0 && !safe_msg.is_char_boundary(end) {
+            end -= 1;
+        }
+        safe_msg.truncate(end);
         safe_msg.push_str("...");
     }
     let entry = serde_json::json!({

@@ -150,6 +150,13 @@ impl TokenStore {
             .map_err(|e| Temm1eError::Auth(format!("Failed to serialize tokens: {}", e)))?;
         std::fs::write(&self.path, content)
             .map_err(|e| Temm1eError::Auth(format!("Failed to write tokens: {}", e)))?;
+        // Restrict file permissions to owner-only (prevent casual reading)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            let _ = std::fs::set_permissions(&self.path, perms);
+        }
         tracing::debug!(path = %self.path.display(), "OAuth tokens saved");
         Ok(())
     }

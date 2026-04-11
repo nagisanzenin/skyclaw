@@ -89,7 +89,7 @@ impl Tool for CodeGlobTool {
             .and_then(|v| v.as_str())
             .unwrap_or(".");
 
-        let base = crate::file::resolve_path(base_str, &ctx.workspace_path);
+        let base = crate::file::resolve_path(base_str, &ctx.workspace_path)?;
 
         // Compile the glob pattern into segments for matching
         let segments = parse_glob_pattern(pattern);

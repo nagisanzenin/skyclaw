@@ -95,7 +95,7 @@ impl Tool for CodeEditTool {
             .unwrap_or(false);
 
         // ── Resolve path ─────────────────────────────────────────────
-        let path = crate::file::resolve_path(path_str, &ctx.workspace_path);
+        let path = crate::file::resolve_path(path_str, &ctx.workspace_path)?;
 
         // ── Read-tracker gate ────────────────────────────────────────
         if let Some(ref tracker) = ctx.read_tracker {
@@ -471,10 +471,11 @@ mod tests {
         let tool = CodeEditTool::new();
         let (ctx, tracker) = test_ctx_with_tracker(dir.path().to_path_buf());
 
-        // Simulate that file_read has been called — insert path into tracker
+        // Simulate that file_read has been called — insert canonical path into
+        // tracker (resolve_path returns canonical paths after workspace containment fix)
         {
             let mut set = tracker.write().await;
-            set.insert(file_path.clone());
+            set.insert(file_path.canonicalize().unwrap());
         }
 
         let input = ToolInput {

@@ -178,7 +178,7 @@ impl WhatsAppWebChannel {
             DmPolicy::Allowlist => {
                 let list = self.allowlist.read().unwrap_or_else(|p| p.into_inner());
                 if list.is_empty() {
-                    return true; // Empty allowlist in AllowAll-default = allow everyone
+                    return false; // Empty allowlist denies all (DF-16)
                 }
                 if list.iter().any(|a| a == "*") {
                     return true;

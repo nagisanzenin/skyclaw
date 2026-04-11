@@ -687,7 +687,9 @@ impl Cortex {
                 );
             }
 
-            self.store.update_concern(&concern).await.ok();
+            if let Err(e) = self.store.update_concern(&concern).await {
+                tracing::warn!(concern_id = %concern.id, error = %e, "Failed to persist concern error count");
+            }
         }
     }
 
