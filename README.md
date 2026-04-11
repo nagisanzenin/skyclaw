@@ -6,7 +6,7 @@
   <a href="https://github.com/nagisanzenin/temm1e/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/temm1e?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.com/invite/temm1e"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-5.0.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-5.0.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.82+-orange.svg" alt="Rust 1.82+">
 </p>
 
@@ -290,6 +290,10 @@ v1 treats every message the same. v2 classifies each message into a complexity t
 
 ### Many Tems — Swarm Intelligence
 
+<p align="center">
+  <img src="assets/tem-swarm-overview.png" alt="Many Tems Swarm Intelligence Overview" width="100%">
+</p>
+
 What if complex tasks could be split across multiple Tems working in parallel? Many Tems is a stigmergic swarm intelligence runtime — workers coordinate through time-decaying scent signals and a shared Den (SQLite), not LLM-to-LLM chat. Zero coordination tokens.
 
 The Alpha (coordinator) decomposes complex orders into a task DAG. Tems claim tasks via atomic SQLite transactions, execute with task-scoped context (no history accumulation), and emit scent signals that guide other Tems.
@@ -309,6 +313,10 @@ Enabled by default in v3.0.0. Disable: `[pack] enabled = false`. Invisible for s
 [Research paper →](docs/swarm/RESEARCH_PAPER.md) · [Full experiment report →](docs/swarm/experiment_artifacts/EXPERIMENT_REPORT.md) · [Design doc →](tems_lab/swarm/DESIGN.md)
 
 ### Eigen-Tune — Self-Tuning Knowledge Distillation
+
+<p align="center">
+  <img src="assets/tem-eigentune-overview.png" alt="Eigen-Tune Distillation Overview" width="100%">
+</p>
 
 Every LLM call is a training example being thrown away. Eigen-Tune captures them, scores quality from user behavior, trains a local model, and graduates it through statistical gates — zero added LLM cost.
 
@@ -392,6 +400,10 @@ temm1e eigentune demote simple   # force a tier back to Collecting
 
 ### Unified Artifact Value Function — The Mathematics of Self-Learning
 
+<p align="center">
+  <img src="assets/tem-artifact-value-overview.png" alt="Unified Artifact Value Function Overview" width="100%">
+</p>
+
 Traditional ML adjusts numeric weights. TEMM1E adjusts **structured artifacts** — memories, lessons, blueprints, training pairs. The unified artifact value function scores every artifact across every self-learning subsystem:
 
 ```
@@ -415,6 +427,10 @@ Half-lives are ordered by artifact persistence: **memories < learnings < bluepri
 [Full mathematical framework →](tems_lab/ARTIFACT_VALUE_FUNCTION.md) · [Audit report →](docs/design/SELF_LEARNING_AUDIT.md)
 
 ### Tem Prowl — Web-Native Browsing with OTK Authentication
+
+<p align="center">
+  <img src="assets/tem-prowl-overview.png" alt="Tem Prowl Web Browsing Overview" width="100%">
+</p>
 
 The web is where humans live. Tem Prowl is a messaging-first web agent architecture — I browse websites autonomously behind a chat interface and report structured results back through messages. No live viewport. No shoulder-surfing. Just results.
 
@@ -797,6 +813,10 @@ Trust is **earned through track record**: 10 successful Level 3 changes graduate
 
 ## Interactive TUI
 
+<p align="center">
+  <img src="assets/tem-tui-overview.png" alt="TEMM1E Interactive TUI" width="100%">
+</p>
+
 `temm1e tui` gives you a Claude Code-level terminal experience — talk to Tem directly from your terminal with rich markdown rendering, syntax-highlighted code blocks, and real-time agent observability.
 
 ```
@@ -1133,6 +1153,8 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
 <summary><strong>Release Timeline</strong> — every version from first breath to now</summary>
 
 ```
+2026-04-11  v5.0.1  ●━━━ Fix: temm1e update for install.sh users — detects non-git installs, self-updates via GitHub Releases API (download binary, atomic replace, user data untouched). Fix: CLI setup wizard credential format — was writing broken TOML that load_credentials_file() couldn't parse, causing key not to load on next TUI launch. Now uses save_credentials() canonical format. README: overview images for Eigen-Tune, Swarm, Artifact Value Function, Prowl, TUI, and new main banner. 24 crates, 2,406 tests.
+                    │
 2026-04-10  v5.0.0  ●━━━ Tem-Code — foundational coding agent layer. 5 new tools (code_edit, code_glob, code_grep, code_patch, code_snapshot), each designed from deep research across 8 production coding agents (Claude Code, Codex, Aider, SWE-agent, Cursor, Windsurf, OpenCode, Antigravity). code_edit: exact string replacement with read-before-write gate + atomic temp-file writes + fuzzy match on failure. code_glob: recursive gitignore-aware file matching with 500-result limit. code_grep: regex content search with 3 output modes (content/files_with_matches/count) + 250-result head_limit. code_patch: multi-file atomic edits with dry-run validation + rollback on any failure. code_snapshot: checkpoint/restore via git write-tree/read-tree (no commit pollution). Enhanced file_read: +offset/limit params, line-numbered output, populates read_tracker for the read-before-write gate. Enhanced git: --no-verify and --amend blocked as self-governing guardrails (AGI-first safety — engineering discipline, not permission prompts). Context engine: replaced hardcoded MIN_RECENT_MESSAGES=30/MAX_RECENT_MESSAGES=60 with skull-aligned RECENT_BUDGET_FRACTION=0.25 — token-budgeted, scales with model context window (200K→50K, 2M→500K). System prompt: section_coding_tools() in Standard+Full tiers guides LLM to prefer code_edit over file_write, code_grep over shell grep. A/B benchmark: "Impossible Refactor" — 10-task multi-file scenario with UTF-8 traps + credential traps + git safety traps: NEW toolset 67.2% token savings, 4.4x efficiency, 100% accuracy, zero safety violations vs OLD 77.8% accuracy + 3 violations. Research paper: docs/TEM_CODE_RESEARCH.md. Harmony audit: zero conflicts across all 24 crates. 24 crates, 2,406 tests.
                     │
 2026-04-09  v4.8.0  ●━━━ TUI polish + observability pass. FIX: empty command overlays — `/config`, `/keys`, `/usage`, `/status`, `/model` now render real data instead of a placeholder stub (root cause: `views/config_panel.rs:12` had no access to `AppState`). Streaming tool trace in the activity panel — every tool call shows args preview, duration, and first-line result preview via two new `AgentTaskPhase` enrichments (`ExecutingTool` gains `args_preview` + `started_at_ms`, new `ToolCompleted` variant). Collapsed thinking line now shows `▸ shell {"cmd":"ls"} · 0.4s · 3 tools · 68s total` instead of a bare `Thinking (68s)`. Status bar now a 3-section layout: left state indicator (`● idle / ◐ thinking / ◉ tool:name / ⊗ cancelled`), center model/tokens/cost, right context-window meter + git repo · branch. Keybind hint bar above the status bar, context-sensitive (idle / working / overlay / scroll / select mode). `Ctrl+Y` opens a numbered code block yank picker backed by `arboard` with an OSC 52 fallback for headless/SSH terminals. `Alt+S` toggles mouse capture so native terminal text selection works without leaving the TUI. `Escape` (and `Ctrl+C`) now actually cancel Tem mid-task by reusing the existing `Arc<AtomicBool>` interrupt path the gateway worker already uses for higher-priority message preemption — zero new runtime code, zero new tokio::select! branches, zero browser-tool cleanup risk. `/tools` command opens a session tool-call history overlay grouped by turn. `/compact` stub removed from the command surface per the no-stubs rule. `/help` rewritten with commands-by-category sections (Editing, Navigation, Copy & Cancel, Overlays, Session). 24 crates, 2,308 tests. Zero-risk docs in `docs/tui/`.

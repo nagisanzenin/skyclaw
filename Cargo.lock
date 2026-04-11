@@ -5613,6 +5613,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "http 1.4.0",
@@ -6919,7 +6920,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6969,7 +6970,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-agent"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -6997,7 +6998,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-anima"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7013,7 +7014,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-automation"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "chrono",
  "temm1e-core",
@@ -7024,7 +7025,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-cambium"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7042,7 +7043,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-channels"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7077,7 +7078,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-codex-oauth"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -7098,7 +7099,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-core"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7121,7 +7122,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-cores"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7140,7 +7141,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-distill"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7160,7 +7161,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-filestore"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -7178,7 +7179,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-gateway"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -7205,7 +7206,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-gaze"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -7221,7 +7222,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-hive"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7240,7 +7241,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-mcp"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "dirs",
@@ -7256,7 +7257,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-memory"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7274,7 +7275,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-observable"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7291,7 +7292,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-perpetuum"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7321,7 +7322,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-providers"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -7337,7 +7338,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-skills"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "dirs",
  "serde",
@@ -7350,7 +7351,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-test-utils"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7365,7 +7366,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-tools"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -7392,7 +7393,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-tui"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -7430,7 +7431,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-vault"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -7450,7 +7451,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-watchdog"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "clap",
  "tempfile",

@@ -29,7 +29,7 @@ members = [
 ]
 
 [workspace.package]
-version = "5.0.0"
+version = "5.0.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/nagisanzenin/temm1e"
@@ -49,7 +49,7 @@ serde_yaml = "0.9"
 
 # HTTP
 axum = { version = "0.8", features = ["ws"] }
-reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "blocking"], default-features = false }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 

@@ -1204,10 +1204,9 @@ async fn run_setup_wizard() -> Result<()> {
                 };
                 println!("  Detected provider: {provider}");
 
-                // Save to credentials file (encrypted later by the agent)
-                let creds_path = temm1e_dir.join("credentials.toml");
-                let creds_content = format!("[providers.{}]\napi_key = \"{}\"\n", provider, key);
-                std::fs::write(&creds_path, creds_content)?;
+                // Save via the canonical credential system (correct TOML format)
+                let model = temm1e_core::types::model_registry::default_model(provider);
+                save_credentials(provider, &key, model, None).await?;
                 println!("  Saved to ~/.temm1e/credentials.toml");
             } else {
                 println!("  Skipped — you can paste your API key in chat later.");
@@ -1233,9 +1232,8 @@ async fn run_setup_wizard() -> Result<()> {
                     "openai"
                 };
                 println!("  Detected provider: {provider}");
-                let creds_path = temm1e_dir.join("credentials.toml");
-                let creds_content = format!("[providers.{}]\napi_key = \"{}\"\n", provider, key);
-                std::fs::write(&creds_path, creds_content)?;
+                let model = temm1e_core::types::model_registry::default_model(provider);
+                save_credentials(provider, &key, model, None).await?;
                 println!("  Saved to ~/.temm1e/credentials.toml");
             } else {
                 println!("  Skipped — you can paste your API key in chat later.");
@@ -7299,16 +7297,160 @@ Just type a message to chat with the AI agent.",
             println!("TEMM1E Update");
             println!("Current version: {}\n", env!("CARGO_PKG_VERSION"));
 
-            // 1. Check if we're in a git repo
+            // 1. Check if we're in a git repo — if not, do binary self-update
             let git_check = std::process::Command::new("git")
                 .args(["rev-parse", "--is-inside-work-tree"])
                 .output();
-            match git_check {
-                Ok(out) if out.status.success() => {}
-                _ => {
-                    eprintln!("Error: Not a git repository. Run `temm1e update` from the cloned repo directory.");
+            let in_git_repo = git_check.is_ok_and(|o| o.status.success());
+
+            if !in_git_repo {
+                // Binary self-update: download latest release from GitHub
+                println!("Not in a git repo — updating via GitHub Releases...\n");
+
+                // Fetch latest release tag
+                let client = reqwest::blocking::Client::builder()
+                    .user_agent("temm1e-updater")
+                    .build()
+                    .unwrap_or_else(|_| reqwest::blocking::Client::new());
+
+                let api_url = format!(
+                    "https://api.github.com/repos/{}/releases/latest",
+                    "temm1e-labs/temm1e"
+                );
+                let release: serde_json::Value = match client.get(&api_url).send() {
+                    Ok(resp) if resp.status().is_success() => match resp.json() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("Error: Failed to parse release info: {}", e);
+                            std::process::exit(1);
+                        }
+                    },
+                    Ok(resp) => {
+                        eprintln!("Error: GitHub API returned status {}", resp.status());
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("Error: Failed to reach GitHub: {}", e);
+                        eprintln!("Check your internet connection and try again.");
+                        std::process::exit(1);
+                    }
+                };
+
+                let latest_tag = release["tag_name"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .trim_start_matches('v');
+                let current = env!("CARGO_PKG_VERSION");
+
+                if latest_tag == current {
+                    println!("Already up to date (v{}).", current);
+                    return Ok(());
+                }
+
+                println!("New version available: v{} → v{}", current, latest_tag);
+
+                // Detect platform
+                let os = std::env::consts::OS;
+                let arch = std::env::consts::ARCH;
+                let target = match (os, arch) {
+                    ("macos", "aarch64") => "aarch64-apple-darwin",
+                    ("macos", "x86_64") => "x86_64-apple-darwin",
+                    ("linux", "x86_64") => "x86_64-unknown-linux-musl",
+                    ("linux", "aarch64") => "aarch64-unknown-linux-musl",
+                    _ => {
+                        eprintln!(
+                            "Error: No pre-built binary for {}-{}. Build from source instead.",
+                            os, arch
+                        );
+                        std::process::exit(1);
+                    }
+                };
+
+                let asset_name = format!("temm1e-{}", target);
+
+                // Find the matching asset URL
+                let assets = release["assets"].as_array();
+                let download_url = assets
+                    .and_then(|arr| {
+                        arr.iter().find(|a| {
+                            a["name"].as_str().is_some_and(|n| {
+                                n.starts_with(&asset_name) && !n.ends_with(".sha256")
+                            })
+                        })
+                    })
+                    .and_then(|a| a["browser_download_url"].as_str());
+
+                let url = match download_url {
+                    Some(u) => u.to_string(),
+                    None => {
+                        eprintln!(
+                            "Error: No binary found for {} in release v{}",
+                            target, latest_tag
+                        );
+                        std::process::exit(1);
+                    }
+                };
+
+                // Download binary
+                println!("Downloading {}...", asset_name);
+                let binary_data = match client.get(&url).send() {
+                    Ok(resp) if resp.status().is_success() => match resp.bytes() {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eprintln!("Error: Failed to download binary: {}", e);
+                            std::process::exit(1);
+                        }
+                    },
+                    _ => {
+                        eprintln!("Error: Failed to download from {}", url);
+                        std::process::exit(1);
+                    }
+                };
+
+                // Find current binary location and replace
+                let current_exe = std::env::current_exe().unwrap_or_else(|_| {
+                    // Fallback: check common install locations
+                    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                    let local_bin = home.join(".local/bin/temm1e");
+                    if local_bin.exists() {
+                        local_bin
+                    } else {
+                        home.join("bin/temm1e")
+                    }
+                });
+
+                // Atomic replace: write to .tmp, then rename
+                let tmp_path = current_exe.with_extension("tmp");
+                if let Err(e) = std::fs::write(&tmp_path, &binary_data) {
+                    eprintln!("Error: Failed to write temporary binary: {}", e);
                     std::process::exit(1);
                 }
+
+                // Make executable on Unix
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755));
+                }
+
+                // Replace current binary
+                if let Err(e) = std::fs::rename(&tmp_path, &current_exe) {
+                    eprintln!("Error: Failed to replace binary: {}", e);
+                    eprintln!(
+                        "You may need to run with sudo or manually move {} to {}",
+                        tmp_path.display(),
+                        current_exe.display()
+                    );
+                    let _ = std::fs::remove_file(&tmp_path);
+                    std::process::exit(1);
+                }
+
+                println!("\nUpdate complete! v{} → v{}", current, latest_tag);
+                println!("Binary: {}", current_exe.display());
+                println!("\nRestart with: temm1e start");
+                println!("\nNote: Your data in ~/.temm1e/ is untouched (keys, memory, config).");
+                return Ok(());
             }
 
             // 2. Fetch remote
