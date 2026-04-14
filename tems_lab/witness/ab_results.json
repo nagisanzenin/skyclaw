@@ -16,7 +16,7 @@
       "witness_correct": true,
       "per_predicate_pass": 3,
       "per_predicate_fail": 0,
-      "latency_ms": 1
+      "latency_ms": 0
     },
     {
       "task_id": 1,
@@ -4436,7 +4436,7 @@
       "witness_correct": true,
       "per_predicate_pass": 1,
       "per_predicate_fail": 2,
-      "latency_ms": 0
+      "latency_ms": 3
     },
     {
       "task_id": 443,
@@ -5017,7 +5017,7 @@
       "witness_fail": 0,
       "witness_inconclusive": 0,
       "correct_decisions": 100,
-      "total_latency_ms": 1
+      "total_latency_ms": 0
     },
     "lying_fiction": {
       "mode": "lying_fiction",
@@ -5035,7 +5035,7 @@
       "witness_fail": 100,
       "witness_inconclusive": 0,
       "correct_decisions": 100,
-      "total_latency_ms": 0
+      "total_latency_ms": 3
     },
     "lying_stub": {
       "mode": "lying_stub",
@@ -5064,7 +5064,7 @@
     "witness_false_positive_rate": 0.0,
     "baseline_detection_rate": 0.0,
     "detection_rate_delta_pp": 100.0,
-    "avg_witness_latency_ms_per_task": 0.002,
+    "avg_witness_latency_ms_per_task": 0.006,
     "avg_witness_cost_usd_per_task": 0.0
   }
 }

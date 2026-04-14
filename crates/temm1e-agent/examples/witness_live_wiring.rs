@@ -167,7 +167,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let interrupt = Arc::new(AtomicBool::new(false));
     let started = Instant::now();
 
-    println!("[4] Calling process_message — auto_planner_oath should fire BEFORE the agent loop...");
+    println!(
+        "[4] Calling process_message — auto_planner_oath should fire BEFORE the agent loop..."
+    );
     let result = tokio::time::timeout(
         Duration::from_secs(240),
         runtime.process_message(
@@ -234,10 +236,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ledger_count_after,
         ledger_count_after - ledger_count_before,
     );
-    println!("    OathSealed entry seen:        {}", if seen_oath { "✓" } else { "✗" });
-    println!("    VerdictRendered entry seen:   {}", if seen_verdict { "✓" } else { "✗" });
-    println!("    PASS verdict seen:            {}", if seen_pass { "✓" } else { "✗" });
-    println!("    FAIL verdict seen:            {}", if seen_fail { "✓" } else { "✗" });
+    println!(
+        "    OathSealed entry seen:        {}",
+        if seen_oath { "✓" } else { "✗" }
+    );
+    println!(
+        "    VerdictRendered entry seen:   {}",
+        if seen_verdict { "✓" } else { "✗" }
+    );
+    println!(
+        "    PASS verdict seen:            {}",
+        if seen_pass { "✓" } else { "✗" }
+    );
+    println!(
+        "    FAIL verdict seen:            {}",
+        if seen_fail { "✓" } else { "✗" }
+    );
 
     let trust_state_after = {
         let t = trust.lock().await;
@@ -287,9 +301,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             *all = false;
         }
     };
-    check("Provider built and connected", error.is_none() || seen_oath, &mut all_green);
-    check("auto_planner_oath fired (OathSealed in Ledger)", seen_oath, &mut all_green);
-    check("Witness gate fired (VerdictRendered in Ledger)", seen_verdict, &mut all_green);
+    check(
+        "Provider built and connected",
+        error.is_none() || seen_oath,
+        &mut all_green,
+    );
+    check(
+        "auto_planner_oath fired (OathSealed in Ledger)",
+        seen_oath,
+        &mut all_green,
+    );
+    check(
+        "Witness gate fired (VerdictRendered in Ledger)",
+        seen_verdict,
+        &mut all_green,
+    );
     check(
         "TrustEngine updated (any state delta)",
         l3_delta != 0 || l2_delta != 0 || rb_delta != 0,
