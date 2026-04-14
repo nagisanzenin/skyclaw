@@ -2,6 +2,10 @@
 //! multi-file refactor of *real* TEM source files, in two paired arms (with
 //! and without Witness), and validates the result via Witness predicates.
 
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::unnecessary_to_owned)]
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -386,11 +390,15 @@ async fn run_one_arm(
     let latency_ms = total_latency_ms;
     let result_pair = last_result.map(|(o, u)| (o.text, u));
 
-    let (out, usage, error): (Option<String>, Option<TurnUsage>, Option<String>) =
-        match result_pair {
-            Some((text, usage)) => (Some(text), Some(usage), last_error),
-            None => (None, None, last_error.or_else(|| Some("unknown".to_string()))),
-        };
+    let (out, usage, error): (Option<String>, Option<TurnUsage>, Option<String>) = match result_pair
+    {
+        Some((text, usage)) => (Some(text), Some(usage), last_error),
+        None => (
+            None,
+            None,
+            last_error.or_else(|| Some("unknown".to_string())),
+        ),
+    };
 
     let final_reply = out.unwrap_or_default();
     let witness_rewrote_reply =
@@ -695,7 +703,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         0.0
     };
-    println!("  Witness cost overhead:          {:.1}%", cost_overhead_pct);
+    println!(
+        "  Witness cost overhead:          {:.1}%",
+        cost_overhead_pct
+    );
     println!();
 
     let report = AbReport {

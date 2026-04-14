@@ -1,6 +1,11 @@
 //! Witness Gemini A/B harness — runs paired coding tasks against a real
 //! Gemini 3 Flash Preview agent, with and without the Witness gate, to
 //! produce empirical detection / cost / latency data.
+
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::unnecessary_to_owned)]
+
 //!
 //! Run via:
 //!   cargo run --release -p temm1e-agent --example witness_gemini_ab
@@ -744,16 +749,20 @@ async fn run_one_arm(
     let latency_ms = total_latency_ms;
     let result_pair = last_result.map(|(o, u)| (o.text, u));
 
-    let (out, usage, error): (Option<String>, Option<TurnUsage>, Option<String>) =
-        match result_pair {
-            Some((text, usage)) => (Some(text), Some(usage), last_error),
-            None => (None, None, last_error.or_else(|| Some("unknown".to_string()))),
-        };
+    let (out, usage, error): (Option<String>, Option<TurnUsage>, Option<String>) = match result_pair
+    {
+        Some((text, usage)) => (Some(text), Some(usage), last_error),
+        None => (
+            None,
+            None,
+            last_error.or_else(|| Some("unknown".to_string())),
+        ),
+    };
 
     let final_reply = out.unwrap_or_default();
     let (claimed_done, claimed_incomplete) = classify_reply(&final_reply);
-    let witness_rewrote_reply = final_reply.contains("Partial completion")
-        || final_reply.contains("Could not verify");
+    let witness_rewrote_reply =
+        final_reply.contains("Partial completion") || final_reply.contains("Could not verify");
 
     let files_present = list_files_in(&workspace);
     let (witness_outcome, w_pass, w_fail, w_inc) = match witness.as_ref() {
@@ -837,7 +846,8 @@ async fn run_one_arm(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = std::env::var("WITNESS_AB_MODEL").unwrap_or_else(|_| "gemini-3-flash-preview".to_string());
+    let model =
+        std::env::var("WITNESS_AB_MODEL").unwrap_or_else(|_| "gemini-3-flash-preview".to_string());
     let budget_ceiling: f64 = std::env::var("WITNESS_AB_BUDGET_USD")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -876,7 +886,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for task in TASKS {
         if cumulative_cost >= budget_ceiling {
-            eprintln!("⚠ Budget ceiling ${:.2} reached, aborting after {} tasks", budget_ceiling, tasks_completed);
+            eprintln!(
+                "⚠ Budget ceiling ${:.2} reached, aborting after {} tasks",
+                budget_ceiling, tasks_completed
+            );
             aborted = true;
             break;
         }
@@ -961,7 +974,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .filter(|r| r.arm_a.agent_claimed_done && r.arm_a.witness_outcome == "Fail")
         .count() as u32;
-    let rewritten: u32 = per_task.iter().filter(|r| r.arm_b.witness_rewrote_reply).count() as u32;
+    let rewritten: u32 = per_task
+        .iter()
+        .filter(|r| r.arm_b.witness_rewrote_reply)
+        .count() as u32;
 
     let arm_a_total_cost: f64 = per_task.iter().map(|r| r.arm_a.cost_usd).sum();
     let arm_b_total_cost: f64 = per_task.iter().map(|r| r.arm_b.cost_usd).sum();
@@ -970,12 +986,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arm_b_total_in: u64 = per_task.iter().map(|r| r.arm_b.input_tokens as u64).sum();
     let arm_b_total_out: u64 = per_task.iter().map(|r| r.arm_b.output_tokens as u64).sum();
     let arm_a_avg_lat: f64 = if !per_task.is_empty() {
-        per_task.iter().map(|r| r.arm_a.latency_ms as f64).sum::<f64>() / per_task.len() as f64
+        per_task
+            .iter()
+            .map(|r| r.arm_a.latency_ms as f64)
+            .sum::<f64>()
+            / per_task.len() as f64
     } else {
         0.0
     };
     let arm_b_avg_lat: f64 = if !per_task.is_empty() {
-        per_task.iter().map(|r| r.arm_b.latency_ms as f64).sum::<f64>() / per_task.len() as f64
+        per_task
+            .iter()
+            .map(|r| r.arm_b.latency_ms as f64)
+            .sum::<f64>()
+            / per_task.len() as f64
     } else {
         0.0
     };
@@ -1014,8 +1038,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Aborted by budget ceiling:      {}", aborted);
     println!("  Cumulative cost:                ${:.4}", cumulative_cost);
     println!();
-    println!("  Arm A (baseline) Witness PASS:  {}/{}", arm_a_pass, per_task.len());
-    println!("  Arm A (baseline) Witness FAIL:  {}/{}", arm_a_fail, per_task.len());
+    println!(
+        "  Arm A (baseline) Witness PASS:  {}/{}",
+        arm_a_pass,
+        per_task.len()
+    );
+    println!(
+        "  Arm A (baseline) Witness FAIL:  {}/{}",
+        arm_a_fail,
+        per_task.len()
+    );
     println!(
         "  Arm A baseline honest rate:     {:.1}%",
         summary.arm_a_honest_rate * 100.0
@@ -1025,14 +1057,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("  Arm A total cost:               ${:.4}", arm_a_total_cost);
     println!("  Arm B total cost:               ${:.4}", arm_b_total_cost);
-    println!("  Witness cost overhead:          {:.1}%", summary.cost_overhead_pct);
+    println!(
+        "  Witness cost overhead:          {:.1}%",
+        summary.cost_overhead_pct
+    );
     println!();
     println!("  Arm A avg latency:              {:.0} ms", arm_a_avg_lat);
     println!("  Arm B avg latency:              {:.0} ms", arm_b_avg_lat);
-    println!("  Witness latency overhead:       {:.0} ms", summary.latency_overhead_ms);
+    println!(
+        "  Witness latency overhead:       {:.0} ms",
+        summary.latency_overhead_ms
+    );
     println!();
-    println!("  Arm A tokens (in/out):          {}/{}", arm_a_total_in, arm_a_total_out);
-    println!("  Arm B tokens (in/out):          {}/{}", arm_b_total_in, arm_b_total_out);
+    println!(
+        "  Arm A tokens (in/out):          {}/{}",
+        arm_a_total_in, arm_a_total_out
+    );
+    println!(
+        "  Arm B tokens (in/out):          {}/{}",
+        arm_b_total_in, arm_b_total_out
+    );
     println!();
 
     let report = AbReport {

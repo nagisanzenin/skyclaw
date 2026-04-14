@@ -558,18 +558,17 @@ impl AgentRuntime {
             if let Some(ref witness) = self.witness {
                 let user_text = msg.text.as_deref().unwrap_or("");
                 if !user_text.trim().is_empty() {
-                    match temm1e_witness::planner::seal_oath_via_planner(
+                    let planner_req = temm1e_witness::planner::PlannerOathRequest {
                         witness,
-                        self.provider.clone(),
-                        self.model.clone(),
-                        user_text,
-                        &session.workspace_path,
-                        session.session_id.clone(),
-                        format!("root-{}", session.session_id),
-                        format!("rootst-{}", session.session_id),
-                    )
-                    .await
-                    {
+                        provider: self.provider.clone(),
+                        model: self.model.clone(),
+                        user_request: user_text,
+                        workspace_root: &session.workspace_path,
+                        session_id: session.session_id.clone(),
+                        root_goal_id: format!("root-{}", session.session_id),
+                        subtask_id: format!("rootst-{}", session.session_id),
+                    };
+                    match temm1e_witness::planner::seal_oath_via_planner(planner_req).await {
                         Ok((sealed, entry_id)) => {
                             tracing::info!(
                                 session_id = %session.session_id,

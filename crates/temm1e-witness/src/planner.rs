@@ -135,25 +135,30 @@ pub fn build_planner_user_prompt(user_request: &str, active_sets: &[String]) -> 
 /// Spec Reviewer rejection, sealing error). The caller is responsible for
 /// deciding whether to retry, fall back to a default Oath, or skip Witness
 /// for this session.
+/// Bundled inputs to `seal_oath_via_planner`. Kept as a struct so the
+/// function stays under clippy's `too_many_arguments` ceiling and so
+/// callers can construct the request as a literal.
+pub struct PlannerOathRequest<'a> {
+    pub witness: &'a std::sync::Arc<crate::witness::Witness>,
+    pub provider: std::sync::Arc<dyn temm1e_core::traits::Provider>,
+    pub model: String,
+    pub user_request: &'a str,
+    pub workspace_root: &'a std::path::Path,
+    pub session_id: String,
+    pub root_goal_id: String,
+    pub subtask_id: String,
+}
+
 pub async fn seal_oath_via_planner(
-    witness: &std::sync::Arc<crate::witness::Witness>,
-    provider: std::sync::Arc<dyn temm1e_core::traits::Provider>,
-    model: impl Into<String>,
-    user_request: &str,
-    workspace_root: &std::path::Path,
-    session_id: impl Into<String>,
-    root_goal_id: impl Into<String>,
-    subtask_id: impl Into<String>,
+    req: PlannerOathRequest<'_>,
 ) -> Result<(crate::types::Oath, i64), WitnessError> {
-    use temm1e_core::types::message::{
-        ChatMessage, CompletionRequest, MessageContent, Role,
-    };
+    use temm1e_core::types::message::{ChatMessage, CompletionRequest, MessageContent, Role};
 
-    let active_sets = crate::auto_detect::detect_active_sets(workspace_root);
-    let user_prompt = build_planner_user_prompt(user_request, &active_sets);
+    let active_sets = crate::auto_detect::detect_active_sets(req.workspace_root);
+    let user_prompt = build_planner_user_prompt(req.user_request, &active_sets);
 
-    let req = CompletionRequest {
-        model: model.into(),
+    let llm_req = CompletionRequest {
+        model: req.model.clone(),
         messages: vec![ChatMessage {
             role: Role::User,
             content: MessageContent::Text(user_prompt),
@@ -164,8 +169,9 @@ pub async fn seal_oath_via_planner(
         system: Some(OATH_GENERATION_PROMPT.to_string()),
     };
 
-    let resp = provider
-        .complete(req)
+    let resp = req
+        .provider
+        .complete(llm_req)
         .await
         .map_err(|e| WitnessError::Internal(format!("planner LLM call: {e}")))?;
 
@@ -183,12 +189,12 @@ pub async fn seal_oath_via_planner(
     let draft = parse_planner_oath(&text)?;
     let oath = oath_from_draft(
         draft,
-        subtask_id,
-        root_goal_id,
-        session_id,
-        workspace_root,
+        req.subtask_id,
+        req.root_goal_id,
+        req.session_id,
+        req.workspace_root,
     );
-    crate::oath::seal_oath(witness.ledger(), oath).await
+    crate::oath::seal_oath(req.witness.ledger(), oath).await
 }
 
 #[cfg(test)]
