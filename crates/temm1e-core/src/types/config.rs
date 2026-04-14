@@ -736,6 +736,11 @@ pub struct AgentConfig {
     #[serde(default = "default_max_tool_rounds")]
     pub max_tool_rounds: usize,
     /// Maximum wall-clock seconds for a single task before forcing a text reply.
+    /// **Default: 0 = unlimited** (the right choice for reasoning-model workloads
+    /// and CLI/long-form tasks where cost + turn/tool-round caps are the real
+    /// ceilings). Set a positive value only if you want a hard time SLA —
+    /// e.g. a messaging-channel bot where users expect replies within N minutes.
+    /// Values 1..=9 are rejected; use 0 (disabled) or >= 10.
     #[serde(default = "default_max_task_duration_secs")]
     pub max_task_duration_secs: u64,
     /// Whether to stream incremental text responses to the user (default: true).
@@ -769,7 +774,7 @@ impl Default for AgentConfig {
             max_turns: 200,
             max_context_tokens: 30_000,
             max_tool_rounds: 200,
-            max_task_duration_secs: 1800,
+            max_task_duration_secs: 0, // 0 = unlimited (see doc above)
             streaming_enabled: true,
             streaming_flush_interval_ms: 1000,
             streaming_tool_updates: true,
@@ -790,7 +795,10 @@ fn default_max_tool_rounds() -> usize {
     200
 }
 fn default_max_task_duration_secs() -> u64 {
-    1800
+    // 0 = unlimited. Reasoning models on long refactors routinely take 10-60+
+    // minutes; cost/turn/tool-round caps are the real ceilings. Set a positive
+    // value (>= 10) only if you want a hard wall-clock SLA.
+    0
 }
 fn default_streaming_flush_interval_ms() -> u64 {
     1000
@@ -1059,9 +1067,11 @@ impl AgentAccessibleConfig {
                 "agent.max_tool_rounds must be > 0".to_string(),
             ));
         }
-        if self.agent.max_task_duration_secs < 10 {
+        // 0 = unlimited (valid). Positive values < 10 are nonsensical
+        // (a 9-second task ceiling will brick basically anything useful).
+        if self.agent.max_task_duration_secs != 0 && self.agent.max_task_duration_secs < 10 {
             return Err(Temm1eError::Config(
-                "agent.max_task_duration_secs must be >= 10".to_string(),
+                "agent.max_task_duration_secs must be 0 (unlimited) or >= 10".to_string(),
             ));
         }
 
@@ -1195,7 +1205,10 @@ mod tests {
         let agent = AgentConfig::default();
         assert_eq!(agent.max_turns, 200);
         assert_eq!(agent.max_tool_rounds, 200);
-        assert_eq!(agent.max_task_duration_secs, 1800);
+        // v5.3.1: default is 0 (unlimited) — reasoning models on long tasks
+        // need the cost/turn/tool-round caps as the real ceilings, not
+        // wall-clock. Users opt in to a wall-clock SLA explicitly.
+        assert_eq!(agent.max_task_duration_secs, 0);
     }
 
     // ── Agent-Accessible Config tests ─────────────────────────────────
@@ -1349,9 +1362,28 @@ mod tests {
 
     #[test]
     fn agent_config_validate_low_task_duration() {
+        // 5 is in the nonsensical 1..=9 range — validator must reject.
         let mut cfg = AgentAccessibleConfig::default();
         cfg.agent.max_task_duration_secs = 5;
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn agent_config_validate_zero_task_duration_is_unlimited() {
+        // v5.3.1: 0 is the "unlimited" sentinel, must validate successfully.
+        let mut cfg = AgentAccessibleConfig::default();
+        cfg.agent.max_task_duration_secs = 0;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn agent_config_validate_positive_task_duration_ten_or_more_ok() {
+        // Any positive value >= 10 validates as a hard wall-clock SLA.
+        let mut cfg = AgentAccessibleConfig::default();
+        cfg.agent.max_task_duration_secs = 10;
+        assert!(cfg.validate().is_ok());
+        cfg.agent.max_task_duration_secs = 3600;
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

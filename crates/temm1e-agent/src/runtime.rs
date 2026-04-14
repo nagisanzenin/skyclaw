@@ -214,7 +214,10 @@ impl AgentRuntime {
             max_turns: 200,
             max_context_tokens: 30_000,
             max_tool_rounds: 200,
-            max_task_duration: Duration::from_secs(1800),
+            // v5.3.1: 0 = unlimited. Cost + turn + tool-round caps are the
+            // real ceilings for reasoning-model workloads; wall-clock SLA is
+            // opt-in via [agent] max_task_duration_secs in the user's config.
+            max_task_duration: Duration::from_secs(0),
             circuit_breaker: CircuitBreaker::default(),
             verification_enabled: true,
             max_consecutive_failures: 2,
@@ -1266,7 +1269,12 @@ impl AgentRuntime {
                 }
             }
 
-            if task_start.elapsed() > self.max_task_duration {
+            // v5.3.1: Duration::from_secs(0) = "unlimited" sentinel.
+            // Reasoning models on long refactors routinely exceed 30 minutes;
+            // cost/turn/tool-round caps are the real ceilings. Only enforce
+            // the wall-clock when the user has explicitly opted in to a
+            // positive duration (configured via [agent] max_task_duration_secs).
+            if !self.max_task_duration.is_zero() && task_start.elapsed() > self.max_task_duration {
                 warn!(
                     elapsed_secs = task_start.elapsed().as_secs(),
                     limit_secs = self.max_task_duration.as_secs(),
