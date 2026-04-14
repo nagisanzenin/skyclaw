@@ -818,6 +818,55 @@ Trust is **earned through track record**: 10 successful Level 3 changes graduate
 
 [Research paper →](tems_lab/cambium/CAMBIUM_RESEARCH_PAPER.md) · [Theory (10 first principles) →](docs/lab/cambium/THEORY.md) · [Wiring research →](docs/lab/cambium/WIRING_RESEARCH.md) · [Protected zones →](docs/lab/cambium/PROTECTED_ZONES.md)
 
+### Tem Witness — The Agent Cannot Self-Mark Done
+
+Every other lab above is a capability that makes Tem smarter. Witness is the capability that makes Tem *honest*. Every coding agent on the market — Claude Code, Codex, Aider, Cursor agent mode, Cline, Devin, every homegrown SWE-agent loop — has the same fundamental hole in its contract: **the agent is both the worker and the reporter of its own work.** Final messages are self-reports, and self-reports from optimization-pressured systems are exactly the signal you should never trust unconditionally. On umbrella tasks across large codebases, the convenient lie ("I've refactored X, Y, Z") ships quietly and the damage surfaces in production a week later.
+
+Witness ends that contract. Sealed into the `temm1e-witness` crate and wired into `AgentRuntime` between the `Finishing` and `Done` emissions of every `process_message` call, Witness gives Tem an **Oath / Witness / Ledger trinity** that executes on every task whether the agent asks for it or not:
+
+- **Oath** — a pre-committed, machine-checkable contract sealed into the Ledger *before the agent loop runs*. Structured JSON, list of postconditions, each tied to a Tier 0 predicate / Tier 1 LLM aspect check / Tier 2 adversarial auditor check. A **Spec Reviewer** rejects lenient Oaths (no wiring check, no stub check, no Tier 0 anchor) at **zero LLM cost** — the Oath must be strict before the agent starts, not after.
+- **Witness** — an independent three-tier verifier that runs in a clean-slate context with zero access to the agent's chain of thought: **Tier 0** = 27 deterministic predicates (`FileExists`, `FileContains`, `FileDoesNotContain`, `GrepCountAtLeast`, `GrepAbsent`, `CommandExits`, `FileSizeAtLeast`, `AllOf`, `AnyOf`, and more) at ~331 µs/task and **$0 cost**; **Tier 1** = cheap LLM aspect verifier for subtleties predicates cannot express; **Tier 2** = adversarial auditor whose job is to find the strongest possible argument that the work is incomplete (can only advisory-fail, never override a Tier 0 pass).
+- **Ledger** — hash-chained SQLite with append-only triggers enforced at the SQL layer. A file-based **Witness Root Anchor** is written by the immutable `temm1e-watchdog` supervisor (separate process, `chmod 0400`) so the live Ledger hash can be cross-checked against a sealed copy the main process cannot modify. Tampering is detectable across process boundaries.
+
+**The Five Laws** — property-tested invariants that hold across the entire system:
+
+1. **Pre-Commitment** — Oath sealed before the agent starts. Not after. Not as part of the final message. Before.
+2. **Independent Verdict** — verifier runs in clean-slate context, reads files only, cannot see the conversation.
+3. **Immutable History** — every Oath, every verdict, every verification result is SHA-256 chained and append-only at the storage layer.
+4. **Loud Failure** — on FAIL, the agent's final reply is **rewritten** to honestly surface the gap. No more confident lies. The user sees *"Partial completion. 1/3 postconditions verified. Here is what did NOT get done."*
+5. **Narrative-Only FAIL** — Witness has zero destructive APIs. It can rewrite messages. It cannot delete, truncate, or roll back anything. A failing verdict never burns your code.
+
+**Validated across two layers of evidence** (reproduce everything via `bash tems_lab/witness/e2e_test.sh`):
+
+| Layer | Scale | Result |
+|------|------|:------:|
+| Deterministic red-team sweep | 1,800 trajectories (10 pathologies × 3 tier configs × 3 languages × 20) | **1,620 / 1,800 (90.0%)**, 0.0% honest false-positive, **9 of 10 catastrophic pathologies at 100%** |
+| Per-task Witness latency | Tier 0 only | **~331 µs** |
+| Per-task Witness cost | Tier 0 only | **$0.0000** |
+| Real-LLM validation | 73 sessions, 2 production LLMs (Gemini 3 Flash Preview + gpt-5.4) | **$0.3431 / $10 budget spent (3.43%)** |
+| Phase 4 — Gemini refactor A/B | 6 sessions | **1st real-LLM partial-completion catch** (file 22% smaller than expected; Witness replied `1/2 predicates pass`) |
+| Phase 5 — gpt-5.4 refactor A/B | 6 sessions | **1st real-LLM Witness PASS verdict** (6/6 postconditions, readout `─── Witness: 6/6 PASS ─── ` landed in the agent's reply) |
+| Phase 6 — live wiring validation | 1 session, 12.95 s | **All four Phase 4 wiring paths fired live** (OathSealed entry, VerdictRendered entry, TrustEngine L3 streak +1, per-task readout in reply) |
+| Workspace regression | 2,692 tests across 25 crates | **zero failures, zero clippy warnings, zero fmt diffs** |
+| Witness crate alone | unit + Five-Laws + red-team + advanced red-team | **125 tests green** |
+
+**Wired into the runtime as three builder calls** — default OFF so existing users see zero behavioral change:
+
+```rust
+let runtime = AgentRuntime::new(provider, memory, tools, model, system)
+    .with_witness(witness, WitnessStrictness::Block, /*show_readout=*/true)
+    .with_cambium_trust(trust)
+    .with_auto_planner_oath(true);
+```
+
+The `with_auto_planner_oath(true)` builder tells the runtime to call a Planner LLM with a static `OATH_GENERATION_PROMPT` **before the agent loop** and seal the resulting Oath into the Ledger automatically. `with_cambium_trust(trust)` routes every verdict into the Cambium `TrustEngine::record_verdict` so autonomy is **earned** through tracked PASS streaks, not declared. The single-model policy is preserved: Tier 1 and Tier 2 verifiers use the same `Provider` as the agent.
+
+The agent can no longer silently lie. The worst case is the Ledger records `Verdict::Fail` with a readable list of which postconditions failed and why — and your code is untouched.
+
+Shipped in v5.3.0. Reproduce all numbers in this section by running `bash tems_lab/witness/e2e_test.sh` on the `verification-system` branch or `main` at v5.3.0.
+
+[Research paper →](tems_lab/witness/RESEARCH_PAPER.md) · [Implementation details →](tems_lab/witness/IMPLEMENTATION_DETAILS.md) · [Experiment report (§1–§16) →](tems_lab/witness/EXPERIMENT_REPORT.md) · [Live wiring validator →](crates/temm1e-agent/examples/witness_live_wiring.rs)
+
 ---
 
 ## Tem's Features — Out of the Box
