@@ -330,6 +330,7 @@ pub fn update(state: &mut AppState, event: Event) {
                     state.copy_feedback = None;
                     state.needs_redraw = true;
                 }
+                #[allow(clippy::collapsible_match)]
                 MouseEventKind::Drag(MouseButton::Left) => {
                     if state.mouse_selection.is_some() {
                         // Update current to the new cursor position
