@@ -102,7 +102,7 @@ impl Tool for CodeGlobTool {
         let total = matches.len();
 
         // Sort by modification time, newest first
-        matches.sort_by(|a, b| b.1.cmp(&a.1));
+        matches.sort_by_key(|m| std::cmp::Reverse(m.1));
 
         // Limit results
         matches.truncate(MAX_RESULTS);

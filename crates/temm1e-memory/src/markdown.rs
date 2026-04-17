@@ -193,7 +193,7 @@ impl MarkdownMemory {
             entries.extend(Self::parse_entries(&text));
         }
         // Sort by timestamp ascending.
-        entries.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        entries.sort_by_key(|e| e.timestamp);
         Ok(entries)
     }
 }

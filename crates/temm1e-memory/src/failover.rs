@@ -403,7 +403,7 @@ impl Memory for ResilientMemory {
                     })
                     .cloned()
                     .collect();
-                results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                results.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
                 results.truncate(opts.limit);
                 debug!(
                     cached_results = results.len(),
@@ -505,7 +505,7 @@ impl Memory for ResilientMemory {
                     .filter(|entry| entry.session_id.as_deref() == Some(session_id))
                     .cloned()
                     .collect();
-                history.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+                history.sort_by_key(|e| e.timestamp);
                 history.truncate(limit);
                 debug!(
                     session_id = %session_id,
@@ -640,7 +640,7 @@ mod tests {
                 .filter(|e| e.session_id.as_deref() == Some(session_id))
                 .cloned()
                 .collect();
-            history.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            history.sort_by_key(|e| e.timestamp);
             history.truncate(limit);
             Ok(history)
         }
