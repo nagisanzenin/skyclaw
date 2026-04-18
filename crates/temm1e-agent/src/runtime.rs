@@ -97,6 +97,10 @@ use temm1e_distill::EigenTuneEngine;
 /// Shared runtime mode handle (same type used by mode_switch tool).
 pub type SharedMode = Arc<RwLock<Temm1eMode>>;
 
+/// P6: per-runtime tool-filter closure. Returns `true` for tools that should
+/// remain visible to the provider, `false` to hide them.
+pub type ToolFilter = Arc<dyn Fn(&dyn Tool) -> bool + Send + Sync>;
+
 /// Maximum characters per tool output (roughly ~8K tokens).
 const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
 
@@ -206,6 +210,13 @@ pub struct AgentRuntime {
     /// loop starts, so the gate hook at the end of the loop can verify it.
     /// Adds one extra LLM call per Complex task. Default: false.
     auto_seal_planner_oath: bool,
+    /// P6: optional per-runtime tool filter. When set, tools for which the
+    /// predicate returns `false` are hidden from the provider's tool list
+    /// (the model physically cannot call them). Composes AND with the
+    /// existing role-based filter. Default: None = all role-permitted tools.
+    ///
+    /// Used by JIT swarm workers to exclude `spawn_swarm` (recursion block).
+    tool_filter: Option<ToolFilter>,
 }
 
 impl AgentRuntime {
@@ -258,6 +269,7 @@ impl AgentRuntime {
             witness_show_readout: false,
             cambium_trust: None,
             auto_seal_planner_oath: false,
+            tool_filter: None,
         }
     }
 
@@ -320,6 +332,19 @@ impl AgentRuntime {
     /// gate hook becomes a no-op for that session (Law 5: zero downside).
     pub fn with_auto_planner_oath(mut self, enabled: bool) -> Self {
         self.auto_seal_planner_oath = enabled;
+        self
+    }
+
+    /// P6: install a per-runtime tool filter. The closure is called for each
+    /// registered tool and must return `true` for tools that should be visible
+    /// to the provider, `false` to hide them. Composes AND with the session
+    /// role filter.
+    ///
+    /// Primary use: JIT swarm workers set a filter that excludes `spawn_swarm`
+    /// from the worker's toolset, making nested swarm recursion physically
+    /// impossible.
+    pub fn with_tool_filter(mut self, filter: ToolFilter) -> Self {
+        self.tool_filter = Some(filter);
         self
     }
 
@@ -401,6 +426,7 @@ impl AgentRuntime {
             witness_show_readout: false,
             cambium_trust: None,
             auto_seal_planner_oath: false,
+            tool_filter: None,
         }
     }
 
@@ -1194,16 +1220,23 @@ impl AgentRuntime {
                 None => false, // default: Echo Memory (user opts into λ-Memory via /memory lambda)
             };
 
-            // Role-based tool filtering — remove blocked tools so the LLM never sees them
-            let effective_tools: Vec<Arc<dyn Tool>> = if session.role.has_all_tools() {
-                self.tools.clone()
-            } else {
-                self.tools
-                    .iter()
-                    .filter(|t| session.role.is_tool_allowed(t.name()))
-                    .cloned()
-                    .collect()
-            };
+            // Role-based tool filtering + P6 per-runtime tool filter.
+            // Both filters compose with AND: a tool must be permitted by the
+            // session role AND pass the runtime filter (if set) to be visible.
+            let effective_tools: Vec<Arc<dyn Tool>> = self
+                .tools
+                .iter()
+                .filter(|t| {
+                    let role_ok =
+                        session.role.has_all_tools() || session.role.is_tool_allowed(t.name());
+                    let filter_ok = match &self.tool_filter {
+                        Some(f) => f(t.as_ref()),
+                        None => true,
+                    };
+                    role_ok && filter_ok
+                })
+                .cloned()
+                .collect();
 
             let mut request = build_context(
                 session,
@@ -3102,6 +3135,79 @@ pub fn model_supports_vision(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── P6: tool filter composition ─────────────────────────────
+
+    #[test]
+    fn tool_filter_closure_composes_correctly() {
+        // We can't trivially construct a full AgentRuntime in a unit test
+        // (requires real Provider/Memory/Tool instances). Instead, verify the
+        // filter closure type + behaviour that the runtime will compose.
+        //
+        // In runtime.rs:1206, effective_tools is built from:
+        //   role_ok AND filter_ok
+        // where filter_ok = tool_filter.map_or(true, |f| f(t))
+        //
+        // This test mirrors that logic with mock inputs.
+        struct MockTool(&'static str);
+
+        fn role_ok(tool_name: &str) -> bool {
+            // "admin" role sees everything.
+            tool_name != "blocked_by_role"
+        }
+
+        let filter: Arc<dyn Fn(&MockTool) -> bool + Send + Sync> =
+            Arc::new(|t| t.0 != "spawn_swarm");
+
+        let tools = [
+            MockTool("shell"),
+            MockTool("spawn_swarm"),
+            MockTool("blocked_by_role"),
+        ];
+
+        let visible: Vec<&str> = tools
+            .iter()
+            .filter(|t| role_ok(t.0) && filter(t))
+            .map(|t| t.0)
+            .collect();
+
+        assert_eq!(visible, ["shell"]);
+    }
+
+    #[test]
+    fn tool_filter_none_permits_all_role_tools() {
+        // When tool_filter is None, only role filter applies.
+        struct MockTool(&'static str);
+
+        fn role_ok(tool_name: &str) -> bool {
+            tool_name != "blocked_by_role"
+        }
+
+        type MockFilter = Arc<dyn Fn(&MockTool) -> bool + Send + Sync>;
+        let filter: Option<MockFilter> = None;
+
+        let tools = [
+            MockTool("shell"),
+            MockTool("spawn_swarm"),
+            MockTool("blocked_by_role"),
+        ];
+
+        let visible: Vec<&str> = tools
+            .iter()
+            .filter(|t| {
+                let r = role_ok(t.0);
+                let f = match &filter {
+                    Some(ff) => ff(t),
+                    None => true,
+                };
+                r && f
+            })
+            .map(|t| t.0)
+            .collect();
+
+        // With filter=None, spawn_swarm is permitted (role_ok allows it).
+        assert_eq!(visible, vec!["shell", "spawn_swarm"]);
+    }
 
     // ── Circuit breaker rate-limit exemption (P1) ───────────────
 
