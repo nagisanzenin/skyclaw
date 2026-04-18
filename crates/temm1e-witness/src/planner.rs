@@ -167,6 +167,7 @@ pub async fn seal_oath_via_planner(
         max_tokens: Some(1024),
         temperature: Some(0.0),
         system: Some(OATH_GENERATION_PROMPT.to_string()),
+        system_volatile: None,
     };
 
     let resp = req

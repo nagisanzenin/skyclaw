@@ -23,10 +23,18 @@ use crate::types::{HiveTask, SignalType, WorkerState};
 // ---------------------------------------------------------------------------
 
 /// The outcome of executing a single task.
+///
+/// P3: `input_tokens`, `output_tokens`, `cost_usd` surface the worker's
+/// isolated BudgetTracker totals so the parent can call `record_usage`
+/// exactly once after the swarm completes. `tokens_used` is retained as a
+/// legacy aggregate (input + output) for existing callers.
 #[derive(Debug, Clone)]
 pub struct TaskResult {
     pub summary: String,
     pub tokens_used: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
     pub artifacts: Vec<String>,
     pub success: bool,
     pub error: Option<String>,
@@ -73,9 +81,7 @@ impl HiveWorker {
     {
         let mut stats = WorkerStats {
             worker_id: self.state.id.clone(),
-            tasks_completed: 0,
-            tasks_failed: 0,
-            total_tokens: 0,
+            ..Default::default()
         };
 
         loop {
@@ -184,6 +190,9 @@ impl HiveWorker {
                     self.state.tokens_used += task_result.tokens_used as u64;
                     stats.tasks_completed += 1;
                     stats.total_tokens += task_result.tokens_used as u64;
+                    stats.total_input_tokens += task_result.input_tokens;
+                    stats.total_output_tokens += task_result.output_tokens;
+                    stats.total_cost_usd += task_result.cost_usd;
 
                     info!(
                         worker = %self.state.id,
@@ -205,6 +214,9 @@ impl HiveWorker {
 
                     stats.tasks_failed += 1;
                     stats.total_tokens += task_result.tokens_used as u64;
+                    stats.total_input_tokens += task_result.input_tokens;
+                    stats.total_output_tokens += task_result.output_tokens;
+                    stats.total_cost_usd += task_result.cost_usd;
 
                     warn!(
                         worker = %self.state.id,
@@ -274,12 +286,15 @@ pub fn build_scoped_context(task: &HiveTask, dependency_results: &[(String, Stri
 // ---------------------------------------------------------------------------
 
 /// Statistics from a worker's execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WorkerStats {
     pub worker_id: String,
     pub tasks_completed: usize,
     pub tasks_failed: usize,
     pub total_tokens: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cost_usd: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -414,6 +429,9 @@ mod tests {
                     Ok(TaskResult {
                         summary: "Done!".into(),
                         tokens_used: 50,
+                        input_tokens: 30,
+                        output_tokens: 20,
+                        cost_usd: 0.0005,
                         artifacts: vec![],
                         success: true,
                         error: None,
@@ -500,6 +518,9 @@ mod tests {
                         Ok(TaskResult {
                             summary: String::new(),
                             tokens_used: 10,
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            cost_usd: 0.0,
                             artifacts: vec![],
                             success: false,
                             error: Some("Tool error".into()),

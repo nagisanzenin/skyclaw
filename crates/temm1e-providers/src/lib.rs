@@ -16,6 +16,7 @@
 pub mod anthropic;
 pub mod gemini;
 pub mod openai_compat;
+pub mod rate_limit;
 
 pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;

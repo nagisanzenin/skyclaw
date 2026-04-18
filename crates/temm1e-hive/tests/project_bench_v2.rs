@@ -92,6 +92,7 @@ async fn llm_call(
             max_tokens: Some(8000),
             temperature: Some(0.2),
             system: Some(system.into()),
+            system_volatile: None,
         })
         .await?;
     let toks = (resp.usage.input_tokens + resp.usage.output_tokens) as u64;

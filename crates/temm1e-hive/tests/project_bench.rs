@@ -115,6 +115,7 @@ async fn tracked_call(
         max_tokens: Some(8000),
         temperature: Some(0.2),
         system: Some(system.into()),
+        system_volatile: None,
     };
 
     let response = provider.complete(request).await?;
@@ -696,6 +697,7 @@ async fn project_benchmark() {
         max_tokens: Some(10),
         temperature: Some(0.0),
         system: None,
+        system_volatile: None,
     };
     match provider.complete(request).await {
         Ok(_) => println!("\nAPI connected.\n"),

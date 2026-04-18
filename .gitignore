@@ -10,3 +10,10 @@ credentials.json
 Claude-Production-Grade-Suite/
 RESILIENCE_PATCH.md
 skills/
+
+# A/B test run artifacts (transient per-run outputs — never committed)
+tems_lab/swarm/AB_RESULTS_LIVE.json
+tems_lab/swarm/AB_RESULTS_*.json
+tems_lab/swarm/ab_*_results.json
+tems_lab/swarm/results/
+tems_lab/swarm/transcripts/

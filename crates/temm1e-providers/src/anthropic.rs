@@ -104,8 +104,28 @@ impl AnthropicProvider {
             }),
         });
 
-        if let Some(ref system) = request.system {
-            body["system"] = serde_json::json!(system);
+        // P2: emit `system` as an array of text blocks with `cache_control:
+        // ephemeral` on the stable base. Volatile tail (if present) goes in a
+        // second uncached block. Single block when volatile is absent.
+        match (&request.system, &request.system_volatile) {
+            (Some(base), Some(vol)) if !vol.is_empty() => {
+                body["system"] = serde_json::json!([
+                    {"type": "text", "text": base, "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": vol},
+                ]);
+            }
+            (Some(base), _) => {
+                body["system"] = serde_json::json!([
+                    {"type": "text", "text": base, "cache_control": {"type": "ephemeral"}},
+                ]);
+            }
+            (None, Some(vol)) if !vol.is_empty() => {
+                // No base but volatile present — emit as single uncached block.
+                body["system"] = serde_json::json!([
+                    {"type": "text", "text": vol},
+                ]);
+            }
+            _ => {}
         }
 
         if let Some(temp) = request.temperature {
@@ -325,58 +345,90 @@ impl Provider for AnthropicProvider {
 
         debug!(provider = "anthropic", model = %request.model, "Sending completion request");
 
-        let api_key = self.current_key().to_string();
-        let response = self
-            .client
-            .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Temm1eError::Provider(format!("Anthropic request failed: {e}")))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_body = response
-                .text()
+        // Rate-limit retry loop. Non-429 errors return immediately; success
+        // returns immediately; 429 backs off and retries up to MAX_RATELIMIT_RETRIES.
+        for attempt in 0..=crate::rate_limit::MAX_RATELIMIT_RETRIES {
+            let api_key = self.current_key().to_string();
+            let response = self
+                .client
+                .post(format!("{}/v1/messages", self.base_url))
+                .header("x-api-key", &api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
                 .await
-                .unwrap_or_else(|_| "unknown error".into());
-            error!(provider = "anthropic", %status, "API error: {}", error_body);
+                .map_err(|e| Temm1eError::Provider(format!("Anthropic request failed: {e}")))?;
+
+            let status = response.status();
+
+            // 429 handling: wait then retry, unless retries exhausted.
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let wait = crate::rate_limit::parse_retry_after(&response)
+                    .unwrap_or_else(|| crate::rate_limit::default_backoff(attempt));
+                let error_body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "unknown error".into());
                 self.rotate_key();
-                return Err(Temm1eError::RateLimited(error_body));
+                if attempt == crate::rate_limit::MAX_RATELIMIT_RETRIES {
+                    error!(
+                        provider = "anthropic",
+                        attempts = attempt + 1,
+                        "Rate limit: retries exhausted"
+                    );
+                    return Err(Temm1eError::RateLimited(error_body));
+                }
+                tracing::warn!(
+                    provider = "anthropic",
+                    attempt = attempt + 1,
+                    wait_ms = wait.as_millis() as u64,
+                    "Rate limited, backing off before retry"
+                );
+                tokio::time::sleep(wait).await;
+                continue;
             }
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                self.rotate_key();
-                return Err(Temm1eError::Auth(error_body));
+
+            if !status.is_success() {
+                let error_body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "unknown error".into());
+                error!(provider = "anthropic", %status, "API error: {}", error_body);
+                if status == reqwest::StatusCode::UNAUTHORIZED {
+                    self.rotate_key();
+                    return Err(Temm1eError::Auth(error_body));
+                }
+                return Err(Temm1eError::Provider(format!(
+                    "Anthropic API error ({status}): {error_body}"
+                )));
             }
-            return Err(Temm1eError::Provider(format!(
-                "Anthropic API error ({status}): {error_body}"
-            )));
+
+            let api_response: AnthropicResponse = response.json().await.map_err(|e| {
+                Temm1eError::Provider(format!("Failed to parse Anthropic response: {e}"))
+            })?;
+
+            let content = api_response
+                .content
+                .iter()
+                .filter_map(convert_anthropic_content)
+                .collect();
+
+            return Ok(CompletionResponse {
+                id: api_response.id,
+                content,
+                stop_reason: api_response.stop_reason,
+                usage: Usage {
+                    input_tokens: api_response.usage.input_tokens,
+                    output_tokens: api_response.usage.output_tokens,
+                    cost_usd: 0.0,
+                },
+            });
         }
 
-        let api_response: AnthropicResponse = response.json().await.map_err(|e| {
-            Temm1eError::Provider(format!("Failed to parse Anthropic response: {e}"))
-        })?;
-
-        let content = api_response
-            .content
-            .iter()
-            .filter_map(convert_anthropic_content)
-            .collect();
-
-        Ok(CompletionResponse {
-            id: api_response.id,
-            content,
-            stop_reason: api_response.stop_reason,
-            usage: Usage {
-                input_tokens: api_response.usage.input_tokens,
-                output_tokens: api_response.usage.output_tokens,
-                cost_usd: 0.0,
-            },
-        })
+        // Unreachable: loop either returns a value or exhausts and returns
+        // RateLimited when attempt == MAX_RATELIMIT_RETRIES.
+        unreachable!("rate-limit retry loop must exit via return")
     }
 
     async fn stream(
@@ -387,36 +439,70 @@ impl Provider for AnthropicProvider {
 
         debug!(provider = "anthropic", model = %request.model, "Sending streaming request");
 
-        let api_key = self.current_key().to_string();
-        let response = self
-            .client
-            .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Temm1eError::Provider(format!("Anthropic stream request failed: {e}")))?;
+        // Rate-limit retry at REQUEST-INITIATION ONLY. Once the byte stream
+        // begins yielding, a 429 mid-stream cannot be safely retried because
+        // SSE parser state (the unfold closure) is not recoverable.
+        let response = 'retry: {
+            for attempt in 0..=crate::rate_limit::MAX_RATELIMIT_RETRIES {
+                let api_key = self.current_key().to_string();
+                let response = self
+                    .client
+                    .post(format!("{}/v1/messages", self.base_url))
+                    .header("x-api-key", &api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("content-type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        Temm1eError::Provider(format!("Anthropic stream request failed: {e}"))
+                    })?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".into());
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                self.rotate_key();
-                return Err(Temm1eError::RateLimited(error_body));
+                let status = response.status();
+                if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    let wait = crate::rate_limit::parse_retry_after(&response)
+                        .unwrap_or_else(|| crate::rate_limit::default_backoff(attempt));
+                    let error_body = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "unknown error".into());
+                    self.rotate_key();
+                    if attempt == crate::rate_limit::MAX_RATELIMIT_RETRIES {
+                        error!(
+                            provider = "anthropic",
+                            attempts = attempt + 1,
+                            "Rate limit (stream): retries exhausted"
+                        );
+                        return Err(Temm1eError::RateLimited(error_body));
+                    }
+                    tracing::warn!(
+                        provider = "anthropic",
+                        attempt = attempt + 1,
+                        wait_ms = wait.as_millis() as u64,
+                        "Rate limited (stream), backing off before retry"
+                    );
+                    tokio::time::sleep(wait).await;
+                    continue;
+                }
+
+                if !status.is_success() {
+                    let error_body = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "unknown error".into());
+                    if status == reqwest::StatusCode::UNAUTHORIZED {
+                        self.rotate_key();
+                        return Err(Temm1eError::Auth(error_body));
+                    }
+                    return Err(Temm1eError::Provider(format!(
+                        "Anthropic API error ({status}): {error_body}"
+                    )));
+                }
+
+                break 'retry response;
             }
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                self.rotate_key();
-                return Err(Temm1eError::Auth(error_body));
-            }
-            return Err(Temm1eError::Provider(format!(
-                "Anthropic API error ({status}): {error_body}"
-            )));
-        }
+            unreachable!("rate-limit retry loop must exit via return or break")
+        };
 
         // Track state across SSE events for tool_use accumulation
         let byte_stream = response.bytes_stream();
@@ -653,14 +739,69 @@ mod tests {
             max_tokens: Some(1024),
             temperature: Some(0.5),
             system: Some("Be helpful".to_string()),
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, false).unwrap();
         assert_eq!(body["model"], "claude-sonnet-4-6");
         assert_eq!(body["max_tokens"], 1024);
         assert_eq!(body["temperature"], 0.5);
-        assert_eq!(body["system"], "Be helpful");
+        // P2: system is emitted as an array of blocks with cache_control on base.
+        let system = body["system"].as_array().expect("system should be array");
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0]["type"], "text");
+        assert_eq!(system[0]["text"], "Be helpful");
+        assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
         assert!(body.get("stream").is_none());
+    }
+
+    #[test]
+    fn system_emits_cache_control_on_base_only() {
+        // P2: with volatile tail, base block gets cache_control, volatile does not.
+        let provider = AnthropicProvider::new("k".to_string());
+        let request = CompletionRequest {
+            model: "m".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: MessageContent::Text("Hi".to_string()),
+            }],
+            tools: Vec::new(),
+            max_tokens: Some(1024),
+            temperature: None,
+            system: Some("stable base".to_string()),
+            system_volatile: Some("per-turn mutation".to_string()),
+        };
+
+        let body = provider.build_request_body(&request, false).unwrap();
+        let system = body["system"].as_array().expect("array");
+        assert_eq!(system.len(), 2);
+        assert_eq!(system[0]["text"], "stable base");
+        assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(system[1]["text"], "per-turn mutation");
+        assert!(
+            system[1].get("cache_control").is_none(),
+            "volatile block must NOT carry cache_control"
+        );
+    }
+
+    #[test]
+    fn system_absent_is_no_system_block() {
+        let provider = AnthropicProvider::new("k".to_string());
+        let request = CompletionRequest {
+            model: "m".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: MessageContent::Text("Hi".to_string()),
+            }],
+            tools: Vec::new(),
+            max_tokens: Some(1024),
+            temperature: None,
+            system: None,
+            system_volatile: None,
+        };
+
+        let body = provider.build_request_body(&request, false).unwrap();
+        assert!(body.get("system").is_none());
     }
 
     #[test]
@@ -676,6 +817,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             system: None,
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, true).unwrap();
@@ -699,6 +841,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             system: None,
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, false).unwrap();

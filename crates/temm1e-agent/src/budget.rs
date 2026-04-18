@@ -420,6 +420,28 @@ impl BudgetTracker {
             self.total_output_tokens.load(Ordering::Relaxed),
         )
     }
+
+    /// Atomic snapshot of current input/output/cost. Safe to call concurrently.
+    /// Each field is read atomically; the three reads are not mutually atomic,
+    /// but they're always monotonically non-decreasing so a consistent-enough
+    /// snapshot emerges in practice.
+    pub fn snapshot(&self) -> BudgetSnapshot {
+        BudgetSnapshot {
+            input_tokens: self.total_input_tokens.load(Ordering::Relaxed),
+            output_tokens: self.total_output_tokens.load(Ordering::Relaxed),
+            cost_usd: self.total_spend_usd(),
+        }
+    }
+}
+
+/// Immutable snapshot of a BudgetTracker's accumulated usage. Returned by
+/// `BudgetTracker::snapshot()` so callers can inspect totals without holding
+/// a reference to the tracker itself.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BudgetSnapshot {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
 }
 
 #[cfg(test)]
@@ -458,6 +480,23 @@ mod tests {
         assert!((tracker.max_spend_usd() - 5.0).abs() < 1e-6);
         assert!((tracker.total_spend_usd()).abs() < 1e-12);
         assert_eq!(tracker.total_tokens(), (0, 0));
+    }
+
+    #[test]
+    fn budget_snapshot_reflects_recorded_usage() {
+        let tracker = BudgetTracker::new(0.0);
+        let snap0 = tracker.snapshot();
+        assert_eq!(snap0.input_tokens, 0);
+        assert_eq!(snap0.output_tokens, 0);
+        assert!(snap0.cost_usd.abs() < 1e-12);
+
+        tracker.record_usage(100, 50, 0.0125);
+        tracker.record_usage(200, 100, 0.0250);
+
+        let snap = tracker.snapshot();
+        assert_eq!(snap.input_tokens, 300);
+        assert_eq!(snap.output_tokens, 150);
+        assert!((snap.cost_usd - 0.0375).abs() < 1e-6);
     }
 
     #[test]

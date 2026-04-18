@@ -39,7 +39,14 @@ pub enum ParseMode {
     Plain,
 }
 
-/// Request to an AI model provider
+/// Request to an AI model provider.
+///
+/// P2: `system` is the stable base prompt (cacheable). `system_volatile`
+/// holds per-turn mutations (mode block, user profile, Perpetuum temporal,
+/// consciousness, prompted-tool instructions) that must NOT go into the
+/// cached block. Providers that support prompt caching (Anthropic) emit two
+/// system blocks with `cache_control: ephemeral` on the base only; others
+/// flatten both fields into a single concatenated system message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
@@ -48,6 +55,54 @@ pub struct CompletionRequest {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub system: Option<String>,
+    /// Per-turn system-prompt additions that break cache (mode, profile,
+    /// temporal, consciousness injection, prompted-tool instructions).
+    /// Defaults to None for backward compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_volatile: Option<String>,
+}
+
+impl CompletionRequest {
+    /// Flatten `system` and `system_volatile` into a single string, in the
+    /// order [base, volatile] separated by a double newline. Used by providers
+    /// that don't support split cacheable system blocks (OpenAI-compat, Gemini).
+    pub fn system_flattened(&self) -> Option<String> {
+        match (&self.system, &self.system_volatile) {
+            (Some(base), Some(vol)) if !vol.is_empty() => Some(format!("{base}\n\n{vol}")),
+            (Some(base), _) => Some(base.clone()),
+            (None, Some(vol)) if !vol.is_empty() => Some(vol.clone()),
+            _ => None,
+        }
+    }
+
+    /// Append to the volatile tail. Preserves the stable base so it remains
+    /// cacheable. Used by runtime-level mutators (mode, profile, etc.).
+    pub fn append_system_volatile(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        match &mut self.system_volatile {
+            Some(existing) if !existing.is_empty() => {
+                existing.push_str("\n\n");
+                existing.push_str(s);
+            }
+            _ => self.system_volatile = Some(s.to_string()),
+        }
+    }
+
+    /// Prepend to the volatile tail. Semantics mirror the existing
+    /// `format!("{new}\n\n{existing}")` pattern in runtime.rs mutators.
+    pub fn prepend_system_volatile(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        match &mut self.system_volatile {
+            Some(existing) if !existing.is_empty() => {
+                *existing = format!("{s}\n\n{existing}");
+            }
+            _ => self.system_volatile = Some(s.to_string()),
+        }
+    }
 }
 
 /// A single message in the conversation
@@ -240,6 +295,7 @@ mod tests {
             max_tokens: Some(4096),
             temperature: Some(0.7),
             system: Some("You are helpful".to_string()),
+            system_volatile: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let restored: CompletionRequest = serde_json::from_str(&json).unwrap();
@@ -247,6 +303,112 @@ mod tests {
         assert_eq!(restored.messages.len(), 1);
         assert_eq!(restored.tools.len(), 1);
         assert_eq!(restored.max_tokens, Some(4096));
+    }
+
+    #[test]
+    fn system_flattened_base_only() {
+        let req = CompletionRequest {
+            model: "m".into(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            system: Some("base".into()),
+            system_volatile: None,
+        };
+        assert_eq!(req.system_flattened().as_deref(), Some("base"));
+    }
+
+    #[test]
+    fn system_flattened_with_volatile() {
+        let req = CompletionRequest {
+            model: "m".into(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            system: Some("base".into()),
+            system_volatile: Some("vol".into()),
+        };
+        assert_eq!(req.system_flattened().as_deref(), Some("base\n\nvol"));
+    }
+
+    #[test]
+    fn system_flattened_volatile_only() {
+        let req = CompletionRequest {
+            model: "m".into(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            system: None,
+            system_volatile: Some("vol".into()),
+        };
+        assert_eq!(req.system_flattened().as_deref(), Some("vol"));
+    }
+
+    #[test]
+    fn system_flattened_none() {
+        let req = CompletionRequest {
+            model: "m".into(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            system: None,
+            system_volatile: None,
+        };
+        assert_eq!(req.system_flattened(), None);
+    }
+
+    #[test]
+    fn append_system_volatile_composes() {
+        let mut req = CompletionRequest {
+            model: "m".into(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            system: Some("base".into()),
+            system_volatile: None,
+        };
+        req.append_system_volatile("a");
+        req.append_system_volatile("b");
+        assert_eq!(req.system_volatile.as_deref(), Some("a\n\nb"));
+        // Base is untouched.
+        assert_eq!(req.system.as_deref(), Some("base"));
+    }
+
+    #[test]
+    fn prepend_system_volatile_composes() {
+        let mut req = CompletionRequest {
+            model: "m".into(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            system: Some("base".into()),
+            system_volatile: None,
+        };
+        req.prepend_system_volatile("a");
+        req.prepend_system_volatile("b");
+        assert_eq!(req.system_volatile.as_deref(), Some("b\n\na"));
+    }
+
+    #[test]
+    fn empty_volatile_push_is_noop() {
+        let mut req = CompletionRequest {
+            model: "m".into(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            system: Some("base".into()),
+            system_volatile: None,
+        };
+        req.append_system_volatile("");
+        req.prepend_system_volatile("");
+        assert_eq!(req.system_volatile, None);
     }
 
     #[test]

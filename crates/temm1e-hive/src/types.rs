@@ -375,12 +375,25 @@ impl WorkerState {
 // ---------------------------------------------------------------------------
 
 /// The aggregated result of a swarm execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// P3: `total_input_tokens` / `total_output_tokens` / `total_cost_usd` surface
+/// the swarm's aggregated accounting so the parent agent's BudgetTracker can
+/// `record_usage` exactly once. `total_tokens` is kept as legacy (input + output).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SwarmResult {
     /// Aggregated text response to the user.
     pub text: String,
-    /// Total tokens consumed across all workers + queen.
+    /// Total tokens consumed across all workers + queen (input + output).
     pub total_tokens: u64,
+    /// Total input tokens consumed across all workers + queen.
+    #[serde(default)]
+    pub total_input_tokens: u64,
+    /// Total output tokens consumed across all workers + queen.
+    #[serde(default)]
+    pub total_output_tokens: u64,
+    /// Total cost in USD across all workers + queen.
+    #[serde(default)]
+    pub total_cost_usd: f64,
     /// Number of tasks that completed successfully.
     pub tasks_completed: usize,
     /// Number of tasks that escalated (fell back to single-agent or human).

@@ -97,8 +97,47 @@ use temm1e_distill::EigenTuneEngine;
 /// Shared runtime mode handle (same type used by mode_switch tool).
 pub type SharedMode = Arc<RwLock<Temm1eMode>>;
 
+/// P6: per-runtime tool-filter closure. Returns `true` for tools that should
+/// remain visible to the provider, `false` to hide them.
+pub type ToolFilter = Arc<dyn Fn(&dyn Tool) -> bool + Send + Sync>;
+
 /// Maximum characters per tool output (roughly ~8K tokens).
 const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
+
+/// Soft per-turn cost advisory threshold (USD). When a single turn exceeds
+/// this, we emit a `tracing::warn!` once so operators can notice runaway
+/// tool loops on ambiguous prompts. Log-only — no behavior change; users
+/// who need a hard ceiling set `[agent] max_spend_usd` in config.
+const SOFT_TURN_COST_WARNING_USD: f64 = 0.10;
+
+/// Record a provider failure into the circuit breaker UNLESS the error is a
+/// rate-limit. A 429 is a throttle signal, not a provider-health signal, and
+/// must not count toward the CB's failure threshold. Other errors (Auth,
+/// Provider, network) still trip the breaker on repeated failures.
+#[inline]
+fn record_cb_failure_unless_rate_limit(cb: &CircuitBreaker, err: &Temm1eError) {
+    if matches!(err, Temm1eError::RateLimited(_)) {
+        tracing::debug!("circuit breaker: ignoring RateLimited (not a health signal)");
+    } else {
+        cb.record_failure();
+    }
+}
+
+/// P5: derive a difficulty label from *actual* turn behaviour (tool-round
+/// count), not from the classifier's intent. Strictly more informative for
+/// downstream consumers (memory priors, eigen-tune routing) since it
+/// reflects what happened rather than what was predicted.
+///
+/// Thresholds chosen to match the existing TaskDifficulty::{Simple, Standard,
+/// Complex} tiers so the legacy string values remain usable for persistence.
+#[inline]
+pub fn derive_outcome_difficulty(tool_rounds: usize) -> &'static str {
+    match tool_rounds {
+        0..=2 => "simple",
+        3..=10 => "standard",
+        _ => "complex",
+    }
+}
 
 /// Shared pending-message queue (same type as temm1e_tools::PendingMessages).
 pub type PendingMessages = Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>;
@@ -193,6 +232,13 @@ pub struct AgentRuntime {
     /// loop starts, so the gate hook at the end of the loop can verify it.
     /// Adds one extra LLM call per Complex task. Default: false.
     auto_seal_planner_oath: bool,
+    /// P6: optional per-runtime tool filter. When set, tools for which the
+    /// predicate returns `false` are hidden from the provider's tool list
+    /// (the model physically cannot call them). Composes AND with the
+    /// existing role-based filter. Default: None = all role-permitted tools.
+    ///
+    /// Used by JIT swarm workers to exclude `spawn_swarm` (recursion block).
+    tool_filter: Option<ToolFilter>,
 }
 
 impl AgentRuntime {
@@ -213,10 +259,12 @@ impl AgentRuntime {
             system_prompt,
             max_turns: 200,
             max_context_tokens: 30_000,
-            max_tool_rounds: 200,
-            // v5.3.1: 0 = unlimited. Cost + turn + tool-round caps are the
-            // real ceilings for reasoning-model workloads; wall-clock SLA is
-            // opt-in via [agent] max_task_duration_secs in the user's config.
+            // v5.3.6: max_tool_rounds = 0 means unlimited (matches
+            // max_task_duration_secs convention). Stagnation detection +
+            // budget + duration are the real safety nets; iteration count
+            // alone is a proxy, not a meaningful limit. Users who want a
+            // hard ceiling can set a positive value in their TOML config.
+            max_tool_rounds: 0,
             max_task_duration: Duration::from_secs(0),
             circuit_breaker: CircuitBreaker::default(),
             verification_enabled: true,
@@ -243,6 +291,7 @@ impl AgentRuntime {
             witness_show_readout: false,
             cambium_trust: None,
             auto_seal_planner_oath: false,
+            tool_filter: None,
         }
     }
 
@@ -305,6 +354,19 @@ impl AgentRuntime {
     /// gate hook becomes a no-op for that session (Law 5: zero downside).
     pub fn with_auto_planner_oath(mut self, enabled: bool) -> Self {
         self.auto_seal_planner_oath = enabled;
+        self
+    }
+
+    /// P6: install a per-runtime tool filter. The closure is called for each
+    /// registered tool and must return `true` for tools that should be visible
+    /// to the provider, `false` to hide them. Composes AND with the session
+    /// role filter.
+    ///
+    /// Primary use: JIT swarm workers set a filter that excludes `spawn_swarm`
+    /// from the worker's toolset, making nested swarm recursion physically
+    /// impossible.
+    pub fn with_tool_filter(mut self, filter: ToolFilter) -> Self {
+        self.tool_filter = Some(filter);
         self
     }
 
@@ -386,6 +448,7 @@ impl AgentRuntime {
             witness_show_readout: false,
             cambium_trust: None,
             auto_seal_planner_oath: false,
+            tool_filter: None,
         }
     }
 
@@ -1028,7 +1091,6 @@ impl AgentRuntime {
                     info!(
                         complexity = ?complexity,
                         prompt_tier = ?profile.prompt_tier,
-                        max_iterations = profile.max_iterations,
                         "V2: Rule-based fallback classification"
                     );
                     Some(profile)
@@ -1115,6 +1177,14 @@ impl AgentRuntime {
         let task_start = Instant::now();
         let mut rounds: usize = 0;
         let mut interrupted = false;
+        // v5.3.6: stagnation detector — breaks the loop when the model gets
+        // stuck calling the same tool with the same input and getting the
+        // same result repeatedly. Conservative window (4) tolerates natural
+        // 2-3 step retry flows.
+        let mut stagnation = crate::stagnation::StagnationDetector::new();
+        let mut stagnation_detected = false;
+        // Observability: once-per-turn flag for the soft cost advisory warning.
+        let mut soft_cost_warning_emitted = false;
         // Track if send_message tool was used — suppresses the final reply
         // to avoid duplicating content already delivered to the user.
         let mut send_message_used = false;
@@ -1155,7 +1225,9 @@ impl AgentRuntime {
                 break;
             }
 
-            if rounds > self.max_tool_rounds {
+            // v5.3.6: max_tool_rounds = 0 means unlimited. Only enforce the
+            // ceiling when the user has explicitly opted into a positive value.
+            if self.max_tool_rounds > 0 && rounds > self.max_tool_rounds {
                 warn!(
                     "Exceeded maximum tool rounds ({}), forcing text reply",
                     self.max_tool_rounds
@@ -1172,16 +1244,23 @@ impl AgentRuntime {
                 None => false, // default: Echo Memory (user opts into λ-Memory via /memory lambda)
             };
 
-            // Role-based tool filtering — remove blocked tools so the LLM never sees them
-            let effective_tools: Vec<Arc<dyn Tool>> = if session.role.has_all_tools() {
-                self.tools.clone()
-            } else {
-                self.tools
-                    .iter()
-                    .filter(|t| session.role.is_tool_allowed(t.name()))
-                    .cloned()
-                    .collect()
-            };
+            // Role-based tool filtering + P6 per-runtime tool filter.
+            // Both filters compose with AND: a tool must be permitted by the
+            // session role AND pass the runtime filter (if set) to be visible.
+            let effective_tools: Vec<Arc<dyn Tool>> = self
+                .tools
+                .iter()
+                .filter(|t| {
+                    let role_ok =
+                        session.role.has_all_tools() || session.role.is_tool_allowed(t.name());
+                    let filter_ok = match &self.tool_filter {
+                        Some(f) => f(t.as_ref()),
+                        None => true,
+                    };
+                    role_ok && filter_ok
+                })
+                .cloned()
+                .collect();
 
             let mut request = build_context(
                 session,
@@ -1199,46 +1278,37 @@ impl AgentRuntime {
             .await;
 
             // ── Personality mode injection ──────────────────────────────
+            // P2: route to volatile tail so the stable base stays cacheable.
             if let Some(ref shared_mode) = self.shared_mode {
                 let mode = *shared_mode.read().await;
-                // Use personality config if available, otherwise fall back to hardcoded
                 let mode_block = if let Some(ref p) = self.personality {
                     p.generate_runtime_mode_block(mode)
                 } else {
                     mode_prompt_block(mode)
                 };
-                request.system = Some(match request.system {
-                    Some(existing) => format!("{mode_block}\n\n{existing}"),
-                    None => mode_block,
-                });
+                request.prepend_system_volatile(&mode_block);
             }
 
             // ── Social intelligence: inject user profile into system prompt ──
+            // P2: volatile (profile evolves between turns).
             if let (Some(storage), Some(config)) = (&self.social_storage, &self.social_config) {
                 if config.enabled {
                     if let Ok(Some(profile)) = storage.get_profile(&msg.user_id).await {
                         let profile_section =
                             temm1e_anima::communication::section_user_profile(&profile);
                         if !profile_section.is_empty() {
-                            request.system = Some(match request.system {
-                                Some(existing) => {
-                                    format!("{existing}\n\n{profile_section}")
-                                }
-                                None => profile_section,
-                            });
+                            request.append_system_volatile(&profile_section);
                         }
                     }
                 }
             }
 
             // ── Perpetuum: temporal context injection ─────────────────────
+            // P2: volatile (time-of-day changes every turn).
             if let Some(ref temporal) = self.perpetuum_temporal {
                 let temporal_str = temporal.read().await.clone();
                 if !temporal_str.is_empty() {
-                    request.system = Some(match request.system {
-                        Some(existing) => format!("{temporal_str}\n\n{existing}"),
-                        None => temporal_str,
-                    });
+                    request.prepend_system_volatile(&temporal_str);
                 }
             }
 
@@ -1273,24 +1343,20 @@ impl AgentRuntime {
                          {{{{/consciousness}}}}",
                         injection
                     );
-                    request.system = Some(match request.system {
-                        Some(existing) => format!("{consciousness_block}\n\n{existing}"),
-                        None => consciousness_block,
-                    });
+                    // P2: volatile (consciousness observer fires fresh per turn).
+                    request.prepend_system_volatile(&consciousness_block);
                 }
             }
 
             // ── Prompted mode: move tools from API body into system prompt ──
+            // P2: volatile (tool list may change between turns; retry hint is per-turn).
             if prompted_mode && !request.tools.is_empty() {
                 let tool_prompt = prompted_tool_calling::format_tools_prompt(&request.tools);
-                request.system = Some(match request.system {
-                    Some(existing) => format!("{existing}{tool_prompt}"),
-                    None => tool_prompt,
-                });
+                request.append_system_volatile(&tool_prompt);
                 // If this is a JSON retry, append the stricter instruction
                 if prompted_json_retries > 0 {
                     let retry_hint = prompted_tool_calling::format_strict_retry_prompt();
-                    request.system = request.system.map(|s| format!("{s}\n\n{retry_hint}"));
+                    request.append_system_volatile(retry_hint);
                 }
                 request.tools.clear();
                 debug!(
@@ -1434,7 +1500,7 @@ impl AgentRuntime {
                                     continue;
                                 }
                             }
-                            self.circuit_breaker.record_failure();
+                            record_cb_failure_unless_rate_limit(&self.circuit_breaker, &e);
                             return Err(e);
                         }
                     }
@@ -1475,7 +1541,7 @@ impl AgentRuntime {
                                     resp
                                 }
                                 Err(e) => {
-                                    self.circuit_breaker.record_failure();
+                                    record_cb_failure_unless_rate_limit(&self.circuit_breaker, &e);
                                     return Err(e);
                                 }
                             }
@@ -1492,7 +1558,7 @@ impl AgentRuntime {
                                     resp
                                 }
                                 Err(e) => {
-                                    self.circuit_breaker.record_failure();
+                                    record_cb_failure_unless_rate_limit(&self.circuit_breaker, &e);
                                     return Err(e);
                                 }
                             }
@@ -1551,7 +1617,7 @@ impl AgentRuntime {
                                     resp
                                 }
                                 Err(e) => {
-                                    self.circuit_breaker.record_failure();
+                                    record_cb_failure_unless_rate_limit(&self.circuit_breaker, &e);
                                     return Err(e);
                                 }
                             }
@@ -1570,7 +1636,7 @@ impl AgentRuntime {
                             resp
                         }
                         Err(e) => {
-                            self.circuit_breaker.record_failure();
+                            record_cb_failure_unless_rate_limit(&self.circuit_breaker, &e);
                             return Err(e);
                         }
                     };
@@ -1649,6 +1715,22 @@ impl AgentRuntime {
             turn_input_tokens = turn_input_tokens.saturating_add(response.usage.input_tokens);
             turn_output_tokens = turn_output_tokens.saturating_add(response.usage.output_tokens);
             turn_cost_usd += call_cost;
+
+            // Observability: soft warning when a single turn crosses the cost
+            // advisory threshold. This is log-only — no behavior change. Users
+            // who need a hard ceiling can set [agent] max_spend_usd in config.
+            if turn_cost_usd > SOFT_TURN_COST_WARNING_USD && !soft_cost_warning_emitted {
+                tracing::warn!(
+                    turn_cost_usd = format!("{:.4}", turn_cost_usd),
+                    threshold_usd = SOFT_TURN_COST_WARNING_USD,
+                    rounds = rounds,
+                    api_calls = turn_api_calls,
+                    "High per-turn cost — if the model appears to be looping on an \
+                     ambiguous prompt, consider setting [agent] max_spend_usd as a \
+                     hard ceiling or issuing a /stop"
+                );
+                soft_cost_warning_emitted = true;
+            }
 
             // ── Cancellation check point (v4.8.0) ───────────────────
             // The top-of-loop check catches cancels between rounds,
@@ -1821,6 +1903,19 @@ impl AgentRuntime {
 
             // If no tool calls, we have our final reply
             if tool_uses.is_empty() {
+                // P5: log outcome-derived difficulty alongside intent-based label.
+                // This is strictly more informative signal — reflects what actually
+                // happened, not what the classifier predicted would happen. Kept as
+                // a log line for now; future work will feed it into memory priors
+                // and eigen-tune routing.
+                let outcome_difficulty = derive_outcome_difficulty(rounds);
+                tracing::info!(
+                    rounds = rounds,
+                    intent_difficulty = %difficulty_label,
+                    outcome_difficulty = %outcome_difficulty,
+                    "P5: turn outcome classification"
+                );
+
                 // ── Status: Finishing ────────────────────────────────
                 if let Some(ref tx) = status_tx {
                     tx.send_modify(|s| {
@@ -2448,6 +2543,24 @@ impl AgentRuntime {
                     });
                 }
 
+                // ── Stagnation detection (P4) ─────────────────────────
+                // Observe (tool_name, input, result). When the same call with
+                // the same input produces the same result N times in a row,
+                // break the loop and let the final-reply block ask the model
+                // to synthesize what it has.
+                if let crate::stagnation::StagnationSignal::Stuck { count } =
+                    stagnation.observe(tool_name, arguments, &content)
+                {
+                    tracing::warn!(
+                        tool = %tool_name,
+                        count = count,
+                        "Stagnation detected — {} identical (call, result) pairs. Forcing synthesis.",
+                        count
+                    );
+                    stagnation_detected = true;
+                    break;
+                }
+
                 // ── Self-Correction: track failures and inject strategy rotation ──
                 if is_error {
                     failure_tracker.record_failure(tool_name, &content);
@@ -2547,6 +2660,12 @@ impl AgentRuntime {
             // tool-use loop too (the for-loop break above only exits the
             // inner tool iteration).
             if interrupted {
+                break;
+            }
+
+            // Stagnation break from inner for-loop → exit outer round loop too.
+            // The final-reply block below handles synthesis from what we have.
+            if stagnation_detected {
                 break;
             }
 
@@ -2670,11 +2789,25 @@ impl AgentRuntime {
             });
         }
 
-        // Fallback: exited loop due to interruption or max rounds
+        // Fallback: exited loop due to interruption, stagnation, or max rounds.
+        // P5: emit outcome-derived difficulty label for observability. This is
+        // strictly more informative than the classifier's intent-based label —
+        // it reflects what actually happened, not what we guessed would happen.
+        let outcome_difficulty = derive_outcome_difficulty(rounds);
+        tracing::info!(
+            rounds = rounds,
+            intent_difficulty = %difficulty_label,
+            outcome_difficulty = %outcome_difficulty,
+            "P5: turn outcome classification (fallback-path)"
+        );
+
         let text = if interrupted {
             // Task was cancelled — no resume capability exists.
             // Keep message short and factual. No false promises.
             "Task stopped.".to_string()
+        } else if stagnation_detected {
+            "I was looping on the same action without making progress. Here is what I have so far."
+                .to_string()
         } else {
             "I reached the maximum number of tool execution steps. Here is what I have so far."
                 .to_string()
@@ -2712,6 +2845,13 @@ impl AgentRuntime {
     /// Get a reference to the memory backend.
     pub fn memory(&self) -> &dyn Memory {
         self.memory.as_ref()
+    }
+
+    /// Atomic snapshot of this runtime's accumulated token/cost totals.
+    /// Used by the JIT swarm worker flow to return usage to the parent
+    /// without sharing a mutable BudgetTracker instance.
+    pub fn budget_snapshot(&self) -> budget::BudgetSnapshot {
+        self.budget.snapshot()
     }
 
     /// Get the memory backend as an Arc.
@@ -2784,6 +2924,7 @@ async fn author_blueprint(
              or the full Blueprint document otherwise. Nothing else."
                 .to_string(),
         ),
+        system_volatile: None,
     };
 
     let response = provider.complete(request).await?;
@@ -2827,6 +2968,7 @@ async fn refine_blueprint(
             "You are a technical writer. Output only the updated Blueprint document, nothing else."
                 .to_string(),
         ),
+        system_volatile: None,
     };
 
     let response = provider.complete(request).await?;
@@ -2984,6 +3126,7 @@ async fn run_social_evaluation(
         temperature: Some(0.3),
         max_tokens: None,
         system: Some(system_prompt),
+        system_volatile: None,
     };
     let response = provider.complete(request).await?;
     let response_text = extract_text_from_response(&response.content);
@@ -3056,6 +3199,146 @@ pub fn model_supports_vision(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── P5: outcome-derived difficulty helper ───────────────────
+
+    #[test]
+    fn outcome_difficulty_tiers() {
+        assert_eq!(derive_outcome_difficulty(0), "simple");
+        assert_eq!(derive_outcome_difficulty(1), "simple");
+        assert_eq!(derive_outcome_difficulty(2), "simple");
+        assert_eq!(derive_outcome_difficulty(3), "standard");
+        assert_eq!(derive_outcome_difficulty(5), "standard");
+        assert_eq!(derive_outcome_difficulty(10), "standard");
+        assert_eq!(derive_outcome_difficulty(11), "complex");
+        assert_eq!(derive_outcome_difficulty(100), "complex");
+    }
+
+    // ── P6: tool filter composition ─────────────────────────────
+
+    #[test]
+    fn tool_filter_closure_composes_correctly() {
+        // We can't trivially construct a full AgentRuntime in a unit test
+        // (requires real Provider/Memory/Tool instances). Instead, verify the
+        // filter closure type + behaviour that the runtime will compose.
+        //
+        // In runtime.rs:1206, effective_tools is built from:
+        //   role_ok AND filter_ok
+        // where filter_ok = tool_filter.map_or(true, |f| f(t))
+        //
+        // This test mirrors that logic with mock inputs.
+        struct MockTool(&'static str);
+
+        fn role_ok(tool_name: &str) -> bool {
+            // "admin" role sees everything.
+            tool_name != "blocked_by_role"
+        }
+
+        let filter: Arc<dyn Fn(&MockTool) -> bool + Send + Sync> =
+            Arc::new(|t| t.0 != "spawn_swarm");
+
+        let tools = [
+            MockTool("shell"),
+            MockTool("spawn_swarm"),
+            MockTool("blocked_by_role"),
+        ];
+
+        let visible: Vec<&str> = tools
+            .iter()
+            .filter(|t| role_ok(t.0) && filter(t))
+            .map(|t| t.0)
+            .collect();
+
+        assert_eq!(visible, ["shell"]);
+    }
+
+    #[test]
+    fn tool_filter_none_permits_all_role_tools() {
+        // When tool_filter is None, only role filter applies.
+        struct MockTool(&'static str);
+
+        fn role_ok(tool_name: &str) -> bool {
+            tool_name != "blocked_by_role"
+        }
+
+        type MockFilter = Arc<dyn Fn(&MockTool) -> bool + Send + Sync>;
+        let filter: Option<MockFilter> = None;
+
+        let tools = [
+            MockTool("shell"),
+            MockTool("spawn_swarm"),
+            MockTool("blocked_by_role"),
+        ];
+
+        let visible: Vec<&str> = tools
+            .iter()
+            .filter(|t| {
+                let r = role_ok(t.0);
+                let f = match &filter {
+                    Some(ff) => ff(t),
+                    None => true,
+                };
+                r && f
+            })
+            .map(|t| t.0)
+            .collect();
+
+        // With filter=None, spawn_swarm is permitted (role_ok allows it).
+        assert_eq!(visible, vec!["shell", "spawn_swarm"]);
+    }
+
+    // ── Circuit breaker rate-limit exemption (P1) ───────────────
+
+    #[test]
+    fn rate_limit_does_not_trip_cb() {
+        let cb = CircuitBreaker::new(3, std::time::Duration::from_secs(30));
+        let rate_limit = Temm1eError::RateLimited("429".into());
+
+        // Feed 10 rate-limit "failures" — CB must stay Closed.
+        for _ in 0..10 {
+            record_cb_failure_unless_rate_limit(&cb, &rate_limit);
+        }
+        assert_eq!(
+            cb.state(),
+            crate::circuit_breaker::CircuitState::Closed,
+            "CB should remain Closed after rate-limit errors only"
+        );
+        assert!(cb.can_execute());
+    }
+
+    #[test]
+    fn provider_error_still_trips_cb() {
+        let cb = CircuitBreaker::new(3, std::time::Duration::from_secs(30));
+        let provider_err = Temm1eError::Provider("500 bad gateway".into());
+
+        for _ in 0..3 {
+            record_cb_failure_unless_rate_limit(&cb, &provider_err);
+        }
+        assert_eq!(
+            cb.state(),
+            crate::circuit_breaker::CircuitState::Open,
+            "CB should Open after threshold provider errors"
+        );
+    }
+
+    #[test]
+    fn mixed_errors_only_non_rate_limit_count() {
+        let cb = CircuitBreaker::new(3, std::time::Duration::from_secs(30));
+        let rate_limit = Temm1eError::RateLimited("429".into());
+        let auth_err = Temm1eError::Auth("bad key".into());
+
+        // Interleave — only Auth counts toward threshold.
+        record_cb_failure_unless_rate_limit(&cb, &rate_limit);
+        record_cb_failure_unless_rate_limit(&cb, &auth_err);
+        record_cb_failure_unless_rate_limit(&cb, &rate_limit);
+        record_cb_failure_unless_rate_limit(&cb, &auth_err);
+        // 2 Auth failures so far → still Closed
+        assert_eq!(cb.state(), crate::circuit_breaker::CircuitState::Closed);
+
+        record_cb_failure_unless_rate_limit(&cb, &auth_err);
+        // 3 Auth failures → threshold hit → Open
+        assert_eq!(cb.state(), crate::circuit_breaker::CircuitState::Open);
+    }
 
     // ── Vision capability checks ────────────────────────────────
 

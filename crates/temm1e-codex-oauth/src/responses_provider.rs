@@ -677,6 +677,7 @@ mod tests {
             max_tokens: Some(1024),
             temperature: Some(0.7),
             system: Some("You are a helpful assistant.".into()),
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, false).unwrap();
@@ -713,6 +714,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             system: None,
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, false).unwrap();

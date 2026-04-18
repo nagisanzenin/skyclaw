@@ -341,6 +341,14 @@ impl Hive {
         // Collect results from all workers
         let mut total_completed = 0_usize;
         let mut total_tokens = order.queen_tokens;
+        // Queen's tokens are counted in total_tokens above as legacy. For the
+        // split-accounting fields, Queen input/output split is not tracked by
+        // the blackboard — we conservatively attribute all queen_tokens to
+        // input (decomposition prompts are input-heavy; a tiny amount of
+        // output goes into subtask descriptions). Workers carry full split.
+        let mut total_input_tokens: u64 = order.queen_tokens;
+        let mut total_output_tokens: u64 = 0;
+        let mut total_cost_usd: f64 = 0.0;
         let mut workers_used = 0_usize;
 
         for handle in handles {
@@ -348,6 +356,9 @@ impl Hive {
                 Ok(Ok(stats)) => {
                     total_completed += stats.tasks_completed;
                     total_tokens += stats.total_tokens;
+                    total_input_tokens += stats.total_input_tokens;
+                    total_output_tokens += stats.total_output_tokens;
+                    total_cost_usd += stats.total_cost_usd;
                     if stats.tasks_completed > 0 || stats.tasks_failed > 0 {
                         workers_used += 1;
                     }
@@ -376,6 +387,9 @@ impl Hive {
         let result = SwarmResult {
             text,
             total_tokens,
+            total_input_tokens,
+            total_output_tokens,
+            total_cost_usd,
             tasks_completed: total_completed,
             tasks_escalated: total_escalated,
             wall_clock_ms: start.elapsed().as_millis() as u64,
@@ -387,6 +401,9 @@ impl Hive {
             completed = result.tasks_completed,
             escalated = result.tasks_escalated,
             tokens = result.total_tokens,
+            input_tokens = result.total_input_tokens,
+            output_tokens = result.total_output_tokens,
+            cost_usd = format!("{:.6}", result.total_cost_usd),
             wall_ms = result.wall_clock_ms,
             workers = result.workers_used,
             "Pack execution complete"
@@ -602,6 +619,9 @@ mod tests {
                     Ok(TaskResult {
                         summary: format!("Done: {}", task.description),
                         tokens_used: 50,
+                        input_tokens: 30,
+                        output_tokens: 20,
+                        cost_usd: 0.0,
                         artifacts: vec![],
                         success: true,
                         error: None,
@@ -751,6 +771,9 @@ mod tests {
                     Ok(TaskResult {
                         summary: format!("Result of {}", task.id),
                         tokens_used: 30,
+                        input_tokens: 20,
+                        output_tokens: 10,
+                        cost_usd: 0.0,
                         artifacts: vec![],
                         success: true,
                         error: None,

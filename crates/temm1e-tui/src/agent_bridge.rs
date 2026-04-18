@@ -328,6 +328,7 @@ pub async fn validate_provider_key(
         max_tokens: Some(1),
         temperature: Some(0.0),
         system: None,
+        system_volatile: None,
     };
 
     match provider.complete(test_req).await {

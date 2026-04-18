@@ -176,7 +176,9 @@ impl GeminiProvider {
     /// Gemini only supports "user" and "model" roles.
     /// System messages are extracted and placed in `systemInstruction`.
     fn convert_request(&self, request: &CompletionRequest) -> GeminiRequest {
-        let mut system_text = request.system.clone().unwrap_or_default();
+        // P2: Gemini has no per-block cache_control in this API version;
+        // flatten base + volatile into a single systemInstruction.
+        let mut system_text = request.system_flattened().unwrap_or_default();
         let mut contents = Vec::new();
 
         for msg in &request.messages {

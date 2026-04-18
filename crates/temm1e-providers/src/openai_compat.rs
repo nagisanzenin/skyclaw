@@ -103,8 +103,9 @@ impl OpenAICompatProvider {
     ) -> Result<serde_json::Value, Temm1eError> {
         let mut messages: Vec<serde_json::Value> = Vec::new();
 
-        // System message goes first
-        if let Some(ref system) = request.system {
+        // System message goes first. P2: flatten base + volatile since the
+        // OpenAI-compat API doesn't support per-block cache_control.
+        if let Some(system) = request.system_flattened() {
             messages.push(serde_json::json!({
                 "role": "system",
                 "content": system,
@@ -635,81 +636,127 @@ impl Provider for OpenAICompatProvider {
 
         debug!(provider = "openai-compat", model = %request.model, base_url = %self.base_url, "Sending completion request");
 
-        // Retry loop: handles transient body-read failures (connection drop after 200 OK).
-        // Non-success status codes (401, 429, etc.) return immediately — no retry.
+        // Body-read retry: handles transient body-read failures (connection drop after 200 OK).
         const MAX_BODY_RETRIES: u32 = 2;
-        let mut last_body_err: Option<Temm1eError> = None;
 
-        let body_text = 'retry: {
-            for attempt in 0..=MAX_BODY_RETRIES {
-                if attempt > 0 {
-                    tracing::warn!(attempt, "Retrying after response body read failure");
-                    tokio::time::sleep(std::time::Duration::from_millis(500 * (1 << attempt)))
-                        .await;
-                }
+        // Outer loop: rate-limit (429) retry with exponential backoff.
+        // Inner loop: body-read retry (unchanged semantics). Non-429/401 errors
+        // return immediately from inside. 429 signals the outer loop to back off.
+        let body_text = 'rate_limit: {
+            for rl_attempt in 0..=crate::rate_limit::MAX_RATELIMIT_RETRIES {
+                let mut last_body_err: Option<Temm1eError> = None;
+                let mut rate_limit_signal: Option<(String, std::time::Duration)> = None;
 
-                let mut req = self
-                    .client
-                    .post(format!("{}/chat/completions", self.base_url))
-                    .header("Authorization", format!("Bearer {}", self.current_key()))
-                    .header("Content-Type", "application/json");
-                for (k, v) in &self.extra_headers {
-                    req = req.header(k.as_str(), v.as_str());
-                }
-                let response = match req.json(&body).send().await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        last_body_err = Some(Temm1eError::Provider(format!(
-                            "OpenAI-compat request failed: {e}"
-                        )));
-                        continue;
+                let inner_text: Option<String> = 'body_retry: {
+                    for attempt in 0..=MAX_BODY_RETRIES {
+                        if attempt > 0 {
+                            tracing::warn!(attempt, "Retrying after response body read failure");
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                500 * (1 << attempt),
+                            ))
+                            .await;
+                        }
+
+                        let mut req = self
+                            .client
+                            .post(format!("{}/chat/completions", self.base_url))
+                            .header("Authorization", format!("Bearer {}", self.current_key()))
+                            .header("Content-Type", "application/json");
+                        for (k, v) in &self.extra_headers {
+                            req = req.header(k.as_str(), v.as_str());
+                        }
+                        let response = match req.json(&body).send().await {
+                            Ok(r) => r,
+                            Err(e) => {
+                                last_body_err = Some(Temm1eError::Provider(format!(
+                                    "OpenAI-compat request failed: {e}"
+                                )));
+                                continue;
+                            }
+                        };
+
+                        let status = response.status();
+
+                        // 429 handling: signal outer loop to back off + retry.
+                        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                            let wait = crate::rate_limit::parse_retry_after(&response)
+                                .unwrap_or_else(|| crate::rate_limit::default_backoff(rl_attempt));
+                            let error_body = response
+                                .text()
+                                .await
+                                .unwrap_or_else(|_| "unknown error".into());
+                            self.rotate_key();
+                            rate_limit_signal = Some((error_body, wait));
+                            break 'body_retry None;
+                        }
+
+                        // Non-success, non-429 errors return immediately.
+                        if !status.is_success() {
+                            let error_body = response
+                                .text()
+                                .await
+                                .unwrap_or_else(|_| "unknown error".into());
+                            error!(provider = "openai-compat", %status, "API error: {}", error_body);
+                            if status == reqwest::StatusCode::UNAUTHORIZED {
+                                self.rotate_key();
+                                return Err(Temm1eError::Auth(error_body));
+                            }
+                            return Err(Temm1eError::Provider(format!(
+                                "OpenAI-compat API error ({status}): {error_body}"
+                            )));
+                        }
+
+                        let content_len = response.content_length();
+
+                        match response.text().await {
+                            Ok(text) => break 'body_retry Some(text),
+                            Err(e) => {
+                                tracing::warn!(
+                                    provider = "openai-compat",
+                                    %status,
+                                    content_length = ?content_len,
+                                    attempt,
+                                    "Response body read failed: {e}"
+                                );
+                                last_body_err = Some(Temm1eError::Provider(format!(
+                                    "Failed to read response body (status={status}, len={content_len:?}): {e}"
+                                )));
+                                continue;
+                            }
+                        }
                     }
+                    None
                 };
 
-                let status = response.status();
-                // Non-success errors are NOT retryable — return immediately.
-                if !status.is_success() {
-                    let error_body = response
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "unknown error".into());
-                    error!(provider = "openai-compat", %status, "API error: {}", error_body);
-                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                        self.rotate_key();
+                if let Some(text) = inner_text {
+                    break 'rate_limit text;
+                }
+
+                if let Some((error_body, wait)) = rate_limit_signal {
+                    if rl_attempt == crate::rate_limit::MAX_RATELIMIT_RETRIES {
+                        error!(
+                            provider = "openai-compat",
+                            attempts = rl_attempt + 1,
+                            "Rate limit: retries exhausted"
+                        );
                         return Err(Temm1eError::RateLimited(error_body));
                     }
-                    if status == reqwest::StatusCode::UNAUTHORIZED {
-                        self.rotate_key();
-                        return Err(Temm1eError::Auth(error_body));
-                    }
-                    return Err(Temm1eError::Provider(format!(
-                        "OpenAI-compat API error ({status}): {error_body}"
-                    )));
+                    tracing::warn!(
+                        provider = "openai-compat",
+                        attempt = rl_attempt + 1,
+                        wait_ms = wait.as_millis() as u64,
+                        "Rate limited, backing off before retry"
+                    );
+                    tokio::time::sleep(wait).await;
+                    continue;
                 }
 
-                // Capture headers before .text() consumes the response.
-                let content_len = response.content_length();
-
-                match response.text().await {
-                    Ok(text) => break 'retry text,
-                    Err(e) => {
-                        tracing::warn!(
-                            provider = "openai-compat",
-                            %status,
-                            content_length = ?content_len,
-                            attempt,
-                            "Response body read failed: {e}"
-                        );
-                        last_body_err = Some(Temm1eError::Provider(format!(
-                            "Failed to read response body (status={status}, len={content_len:?}): {e}"
-                        )));
-                        continue;
-                    }
-                }
+                // Body-read retries exhausted without 429.
+                return Err(last_body_err.unwrap_or_else(|| {
+                    Temm1eError::Provider("Request failed after retries".into())
+                }));
             }
-            // All retries exhausted
-            return Err(last_body_err
-                .unwrap_or_else(|| Temm1eError::Provider("Request failed after retries".into())));
+            unreachable!("rate-limit retry loop must exit via break or return")
         };
 
         // Sanitize: some OpenAI-compatible providers (OpenRouter, proxied Claude)
@@ -790,36 +837,67 @@ impl Provider for OpenAICompatProvider {
 
         debug!(provider = "openai-compat", model = %request.model, "Sending streaming request");
 
-        let mut req = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.current_key()))
-            .header("Content-Type", "application/json");
-        for (k, v) in &self.extra_headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        let response = req.json(&body).send().await.map_err(|e| {
-            Temm1eError::Provider(format!("OpenAI-compat stream request failed: {e}"))
-        })?;
+        // Rate-limit retry at REQUEST-INITIATION ONLY. Once bytes_stream begins
+        // yielding, a mid-stream 429 is not recoverable (SSE parser state is lost).
+        let response = 'retry: {
+            for attempt in 0..=crate::rate_limit::MAX_RATELIMIT_RETRIES {
+                let mut req = self
+                    .client
+                    .post(format!("{}/chat/completions", self.base_url))
+                    .header("Authorization", format!("Bearer {}", self.current_key()))
+                    .header("Content-Type", "application/json");
+                for (k, v) in &self.extra_headers {
+                    req = req.header(k.as_str(), v.as_str());
+                }
+                let response = req.json(&body).send().await.map_err(|e| {
+                    Temm1eError::Provider(format!("OpenAI-compat stream request failed: {e}"))
+                })?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".into());
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                self.rotate_key();
-                return Err(Temm1eError::RateLimited(error_body));
+                let status = response.status();
+                if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    let wait = crate::rate_limit::parse_retry_after(&response)
+                        .unwrap_or_else(|| crate::rate_limit::default_backoff(attempt));
+                    let error_body = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "unknown error".into());
+                    self.rotate_key();
+                    if attempt == crate::rate_limit::MAX_RATELIMIT_RETRIES {
+                        error!(
+                            provider = "openai-compat",
+                            attempts = attempt + 1,
+                            "Rate limit (stream): retries exhausted"
+                        );
+                        return Err(Temm1eError::RateLimited(error_body));
+                    }
+                    tracing::warn!(
+                        provider = "openai-compat",
+                        attempt = attempt + 1,
+                        wait_ms = wait.as_millis() as u64,
+                        "Rate limited (stream), backing off before retry"
+                    );
+                    tokio::time::sleep(wait).await;
+                    continue;
+                }
+
+                if !status.is_success() {
+                    let error_body = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "unknown error".into());
+                    if status == reqwest::StatusCode::UNAUTHORIZED {
+                        self.rotate_key();
+                        return Err(Temm1eError::Auth(error_body));
+                    }
+                    return Err(Temm1eError::Provider(format!(
+                        "OpenAI-compat API error ({status}): {error_body}"
+                    )));
+                }
+
+                break 'retry response;
             }
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                self.rotate_key();
-                return Err(Temm1eError::Auth(error_body));
-            }
-            return Err(Temm1eError::Provider(format!(
-                "OpenAI-compat API error ({status}): {error_body}"
-            )));
-        }
+            unreachable!("rate-limit retry loop must exit via return or break")
+        };
 
         let byte_stream = response.bytes_stream();
 
@@ -1064,6 +1142,7 @@ mod tests {
             max_tokens: Some(2048),
             temperature: Some(0.9),
             system: Some("Be concise".to_string()),
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, false).unwrap();
@@ -1101,6 +1180,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             system: None,
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, false).unwrap();
