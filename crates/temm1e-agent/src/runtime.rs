@@ -117,6 +117,22 @@ fn record_cb_failure_unless_rate_limit(cb: &CircuitBreaker, err: &Temm1eError) {
     }
 }
 
+/// P5: derive a difficulty label from *actual* turn behaviour (tool-round
+/// count), not from the classifier's intent. Strictly more informative for
+/// downstream consumers (memory priors, eigen-tune routing) since it
+/// reflects what happened rather than what was predicted.
+///
+/// Thresholds chosen to match the existing TaskDifficulty::{Simple, Standard,
+/// Complex} tiers so the legacy string values remain usable for persistence.
+#[inline]
+pub fn derive_outcome_difficulty(tool_rounds: usize) -> &'static str {
+    match tool_rounds {
+        0..=2 => "simple",
+        3..=10 => "standard",
+        _ => "complex",
+    }
+}
+
 /// Shared pending-message queue (same type as temm1e_tools::PendingMessages).
 pub type PendingMessages = Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>;
 
@@ -1863,6 +1879,19 @@ impl AgentRuntime {
 
             // If no tool calls, we have our final reply
             if tool_uses.is_empty() {
+                // P5: log outcome-derived difficulty alongside intent-based label.
+                // This is strictly more informative signal — reflects what actually
+                // happened, not what the classifier predicted would happen. Kept as
+                // a log line for now; future work will feed it into memory priors
+                // and eigen-tune routing.
+                let outcome_difficulty = derive_outcome_difficulty(rounds);
+                tracing::info!(
+                    rounds = rounds,
+                    intent_difficulty = %difficulty_label,
+                    outcome_difficulty = %outcome_difficulty,
+                    "P5: turn outcome classification"
+                );
+
                 // ── Status: Finishing ────────────────────────────────
                 if let Some(ref tx) = status_tx {
                     tx.send_modify(|s| {
@@ -2736,7 +2765,18 @@ impl AgentRuntime {
             });
         }
 
-        // Fallback: exited loop due to interruption, stagnation, or max rounds
+        // Fallback: exited loop due to interruption, stagnation, or max rounds.
+        // P5: emit outcome-derived difficulty label for observability. This is
+        // strictly more informative than the classifier's intent-based label —
+        // it reflects what actually happened, not what we guessed would happen.
+        let outcome_difficulty = derive_outcome_difficulty(rounds);
+        tracing::info!(
+            rounds = rounds,
+            intent_difficulty = %difficulty_label,
+            outcome_difficulty = %outcome_difficulty,
+            "P5: turn outcome classification (fallback-path)"
+        );
+
         let text = if interrupted {
             // Task was cancelled — no resume capability exists.
             // Keep message short and factual. No false promises.
@@ -3135,6 +3175,20 @@ pub fn model_supports_vision(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── P5: outcome-derived difficulty helper ───────────────────
+
+    #[test]
+    fn outcome_difficulty_tiers() {
+        assert_eq!(derive_outcome_difficulty(0), "simple");
+        assert_eq!(derive_outcome_difficulty(1), "simple");
+        assert_eq!(derive_outcome_difficulty(2), "simple");
+        assert_eq!(derive_outcome_difficulty(3), "standard");
+        assert_eq!(derive_outcome_difficulty(5), "standard");
+        assert_eq!(derive_outcome_difficulty(10), "standard");
+        assert_eq!(derive_outcome_difficulty(11), "complex");
+        assert_eq!(derive_outcome_difficulty(100), "complex");
+    }
 
     // ── P6: tool filter composition ─────────────────────────────
 
