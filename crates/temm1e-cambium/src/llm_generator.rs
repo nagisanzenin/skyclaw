@@ -173,6 +173,7 @@ impl CodeGenerator for LlmCodeGenerator {
             max_tokens: None,
             temperature: Some(0.2),
             system: Some(system),
+            system_volatile: None,
         };
 
         let response = self

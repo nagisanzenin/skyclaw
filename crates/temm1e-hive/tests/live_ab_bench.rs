@@ -56,6 +56,7 @@ async fn single_call(
         max_tokens: Some(2000),
         temperature: Some(0.3),
         system: Some("You are a helpful assistant. Be concise.".into()),
+        system_volatile: None,
     };
 
     let response = provider.complete(request).await?;

@@ -531,6 +531,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             system: None,
+            system_volatile: None,
         };
         let resp = provider.complete(request).await.unwrap();
         assert_eq!(resp.content.len(), 1);

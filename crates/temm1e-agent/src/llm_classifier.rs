@@ -318,6 +318,7 @@ pub async fn classify_message(
         max_tokens: None,
         temperature: Some(0.0),
         system: Some(system_prompt),
+        system_volatile: None,
     };
 
     debug!("LLM classify: sending classification request");

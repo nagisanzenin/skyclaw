@@ -166,6 +166,7 @@ impl ConsciousnessEngine {
             max_tokens: None,
             temperature: Some(0.3), // Low temperature for focused observation
             system: Some(system_prompt),
+            system_volatile: None,
         };
 
         match self.provider.complete(request).await {
@@ -284,6 +285,7 @@ impl ConsciousnessEngine {
             max_tokens: None,
             temperature: Some(0.3),
             system: Some(system_prompt.to_string()),
+            system_volatile: None,
         };
 
         match self.provider.complete(request).await {

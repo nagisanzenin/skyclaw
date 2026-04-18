@@ -234,6 +234,7 @@ async fn validate_provider_key(
         max_tokens: Some(1),
         temperature: Some(0.0),
         system: None,
+        system_volatile: None,
     };
 
     match provider_arc.complete(test_req).await {
@@ -3177,6 +3178,7 @@ async fn main() -> Result<()> {
                                             tools: vec![],
                                             max_tokens: None,
                                             temperature: Some(0.7),
+                                            system_volatile: None,
                                         };
 
                                         match provider.complete(request).await {
@@ -5289,6 +5291,7 @@ Just type a message to chat with the AI agent.",
                                                                         max_tokens: None,
                                                                         temperature: Some(0.3),
                                                                         system: None,
+                                                                        system_volatile: None,
                                                                     }).await?;
                                                                     let text: String = resp.content.iter().filter_map(|p| match p {
                                                                         temm1e_core::types::message::ContentPart::Text { text } => Some(text.clone()),

@@ -103,8 +103,9 @@ impl OpenAICompatProvider {
     ) -> Result<serde_json::Value, Temm1eError> {
         let mut messages: Vec<serde_json::Value> = Vec::new();
 
-        // System message goes first
-        if let Some(ref system) = request.system {
+        // System message goes first. P2: flatten base + volatile since the
+        // OpenAI-compat API doesn't support per-block cache_control.
+        if let Some(system) = request.system_flattened() {
             messages.push(serde_json::json!({
                 "role": "system",
                 "content": system,
@@ -1141,6 +1142,7 @@ mod tests {
             max_tokens: Some(2048),
             temperature: Some(0.9),
             system: Some("Be concise".to_string()),
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, false).unwrap();
@@ -1178,6 +1180,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             system: None,
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, false).unwrap();

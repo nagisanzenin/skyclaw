@@ -38,6 +38,7 @@ impl LlmCaller for ProviderCaller {
             max_tokens: None,
             temperature: Some(0.2),
             system: system.map(String::from),
+            system_volatile: None,
         };
 
         // Timeout: 300s (5 min) for LLM calls. Reasoning models (o1, o3, DeepSeek R1)

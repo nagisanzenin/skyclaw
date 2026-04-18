@@ -104,8 +104,28 @@ impl AnthropicProvider {
             }),
         });
 
-        if let Some(ref system) = request.system {
-            body["system"] = serde_json::json!(system);
+        // P2: emit `system` as an array of text blocks with `cache_control:
+        // ephemeral` on the stable base. Volatile tail (if present) goes in a
+        // second uncached block. Single block when volatile is absent.
+        match (&request.system, &request.system_volatile) {
+            (Some(base), Some(vol)) if !vol.is_empty() => {
+                body["system"] = serde_json::json!([
+                    {"type": "text", "text": base, "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": vol},
+                ]);
+            }
+            (Some(base), _) => {
+                body["system"] = serde_json::json!([
+                    {"type": "text", "text": base, "cache_control": {"type": "ephemeral"}},
+                ]);
+            }
+            (None, Some(vol)) if !vol.is_empty() => {
+                // No base but volatile present — emit as single uncached block.
+                body["system"] = serde_json::json!([
+                    {"type": "text", "text": vol},
+                ]);
+            }
+            _ => {}
         }
 
         if let Some(temp) = request.temperature {
@@ -719,14 +739,69 @@ mod tests {
             max_tokens: Some(1024),
             temperature: Some(0.5),
             system: Some("Be helpful".to_string()),
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, false).unwrap();
         assert_eq!(body["model"], "claude-sonnet-4-6");
         assert_eq!(body["max_tokens"], 1024);
         assert_eq!(body["temperature"], 0.5);
-        assert_eq!(body["system"], "Be helpful");
+        // P2: system is emitted as an array of blocks with cache_control on base.
+        let system = body["system"].as_array().expect("system should be array");
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0]["type"], "text");
+        assert_eq!(system[0]["text"], "Be helpful");
+        assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
         assert!(body.get("stream").is_none());
+    }
+
+    #[test]
+    fn system_emits_cache_control_on_base_only() {
+        // P2: with volatile tail, base block gets cache_control, volatile does not.
+        let provider = AnthropicProvider::new("k".to_string());
+        let request = CompletionRequest {
+            model: "m".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: MessageContent::Text("Hi".to_string()),
+            }],
+            tools: Vec::new(),
+            max_tokens: Some(1024),
+            temperature: None,
+            system: Some("stable base".to_string()),
+            system_volatile: Some("per-turn mutation".to_string()),
+        };
+
+        let body = provider.build_request_body(&request, false).unwrap();
+        let system = body["system"].as_array().expect("array");
+        assert_eq!(system.len(), 2);
+        assert_eq!(system[0]["text"], "stable base");
+        assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(system[1]["text"], "per-turn mutation");
+        assert!(
+            system[1].get("cache_control").is_none(),
+            "volatile block must NOT carry cache_control"
+        );
+    }
+
+    #[test]
+    fn system_absent_is_no_system_block() {
+        let provider = AnthropicProvider::new("k".to_string());
+        let request = CompletionRequest {
+            model: "m".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: MessageContent::Text("Hi".to_string()),
+            }],
+            tools: Vec::new(),
+            max_tokens: Some(1024),
+            temperature: None,
+            system: None,
+            system_volatile: None,
+        };
+
+        let body = provider.build_request_body(&request, false).unwrap();
+        assert!(body.get("system").is_none());
     }
 
     #[test]
@@ -742,6 +817,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             system: None,
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, true).unwrap();
@@ -765,6 +841,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             system: None,
+            system_volatile: None,
         };
 
         let body = provider.build_request_body(&request, false).unwrap();

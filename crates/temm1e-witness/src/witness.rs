@@ -120,6 +120,7 @@ impl Tier1Verifier for ProviderTier1Verifier {
             max_tokens: Some(self.max_tokens),
             temperature: Some(0.0),
             system: Some(TIER1_SYSTEM_PROMPT.to_string()),
+            system_volatile: None,
         };
 
         let resp = self
@@ -211,6 +212,7 @@ impl Tier2Verifier for ProviderTier2Verifier {
             max_tokens: Some(self.max_tokens),
             temperature: Some(0.0),
             system: Some(TIER2_SYSTEM_PROMPT.to_string()),
+            system_volatile: None,
         };
 
         let resp = self

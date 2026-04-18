@@ -624,6 +624,7 @@ pub async fn build_context(
         max_tokens: Some(model_max_output as u32),
         temperature: Some(0.7),
         system,
+        system_volatile: None,
     }
 }
 

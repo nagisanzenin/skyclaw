@@ -1221,46 +1221,37 @@ impl AgentRuntime {
             .await;
 
             // ── Personality mode injection ──────────────────────────────
+            // P2: route to volatile tail so the stable base stays cacheable.
             if let Some(ref shared_mode) = self.shared_mode {
                 let mode = *shared_mode.read().await;
-                // Use personality config if available, otherwise fall back to hardcoded
                 let mode_block = if let Some(ref p) = self.personality {
                     p.generate_runtime_mode_block(mode)
                 } else {
                     mode_prompt_block(mode)
                 };
-                request.system = Some(match request.system {
-                    Some(existing) => format!("{mode_block}\n\n{existing}"),
-                    None => mode_block,
-                });
+                request.prepend_system_volatile(&mode_block);
             }
 
             // ── Social intelligence: inject user profile into system prompt ──
+            // P2: volatile (profile evolves between turns).
             if let (Some(storage), Some(config)) = (&self.social_storage, &self.social_config) {
                 if config.enabled {
                     if let Ok(Some(profile)) = storage.get_profile(&msg.user_id).await {
                         let profile_section =
                             temm1e_anima::communication::section_user_profile(&profile);
                         if !profile_section.is_empty() {
-                            request.system = Some(match request.system {
-                                Some(existing) => {
-                                    format!("{existing}\n\n{profile_section}")
-                                }
-                                None => profile_section,
-                            });
+                            request.append_system_volatile(&profile_section);
                         }
                     }
                 }
             }
 
             // ── Perpetuum: temporal context injection ─────────────────────
+            // P2: volatile (time-of-day changes every turn).
             if let Some(ref temporal) = self.perpetuum_temporal {
                 let temporal_str = temporal.read().await.clone();
                 if !temporal_str.is_empty() {
-                    request.system = Some(match request.system {
-                        Some(existing) => format!("{temporal_str}\n\n{existing}"),
-                        None => temporal_str,
-                    });
+                    request.prepend_system_volatile(&temporal_str);
                 }
             }
 
@@ -1295,24 +1286,20 @@ impl AgentRuntime {
                          {{{{/consciousness}}}}",
                         injection
                     );
-                    request.system = Some(match request.system {
-                        Some(existing) => format!("{consciousness_block}\n\n{existing}"),
-                        None => consciousness_block,
-                    });
+                    // P2: volatile (consciousness observer fires fresh per turn).
+                    request.prepend_system_volatile(&consciousness_block);
                 }
             }
 
             // ── Prompted mode: move tools from API body into system prompt ──
+            // P2: volatile (tool list may change between turns; retry hint is per-turn).
             if prompted_mode && !request.tools.is_empty() {
                 let tool_prompt = prompted_tool_calling::format_tools_prompt(&request.tools);
-                request.system = Some(match request.system {
-                    Some(existing) => format!("{existing}{tool_prompt}"),
-                    None => tool_prompt,
-                });
+                request.append_system_volatile(&tool_prompt);
                 // If this is a JSON retry, append the stricter instruction
                 if prompted_json_retries > 0 {
                     let retry_hint = prompted_tool_calling::format_strict_retry_prompt();
-                    request.system = request.system.map(|s| format!("{s}\n\n{retry_hint}"));
+                    request.append_system_volatile(retry_hint);
                 }
                 request.tools.clear();
                 debug!(
@@ -2840,6 +2827,7 @@ async fn author_blueprint(
              or the full Blueprint document otherwise. Nothing else."
                 .to_string(),
         ),
+        system_volatile: None,
     };
 
     let response = provider.complete(request).await?;
@@ -2883,6 +2871,7 @@ async fn refine_blueprint(
             "You are a technical writer. Output only the updated Blueprint document, nothing else."
                 .to_string(),
         ),
+        system_volatile: None,
     };
 
     let response = provider.complete(request).await?;
@@ -3040,6 +3029,7 @@ async fn run_social_evaluation(
         temperature: Some(0.3),
         max_tokens: None,
         system: Some(system_prompt),
+        system_volatile: None,
     };
     let response = provider.complete(request).await?;
     let response_text = extract_text_from_response(&response.content);

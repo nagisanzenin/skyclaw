@@ -149,6 +149,7 @@ impl CoreRuntime {
                 max_tokens: None,
                 temperature: Some(self.temperature),
                 system: Some(self.system_prompt.clone()),
+                system_volatile: None,
             };
 
             // Call provider
