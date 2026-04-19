@@ -320,6 +320,13 @@ fn unset_readonly(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(windows)]
+// clippy::permissions_set_readonly_false warns that `set_readonly(false)`
+// resets permissions to world-writable on Unix — but this is the
+// #[cfg(windows)] branch where it just clears the FILE_ATTRIBUTE_READONLY
+// bit. The lint's recommended PermissionsExt alternative is Unix-only, and
+// the matching `set_readonly(true)` in the sibling function above is the
+// symmetric seal call we explicitly need to reverse here.
+#[allow(clippy::permissions_set_readonly_false)]
 fn unset_readonly(path: &Path) -> std::io::Result<()> {
     let mut perms = std::fs::metadata(path)?.permissions();
     perms.set_readonly(false);
