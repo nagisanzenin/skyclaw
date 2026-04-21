@@ -72,11 +72,13 @@ case "$PREV_REPORTED" in
     *) echo "FAIL: previous binary did not report $PREV_TAG — got: $PREV_REPORTED" >&2; exit 1 ;;
 esac
 
-# Run its update command. Most updaters prompt for confirmation; pipe
-# "y\n" just in case. If the command exits non-zero we've reproduced
-# exactly the user-facing failure.
-echo "→ running: $TMPDIR/$DOWNLOADED update"
-if ! printf 'y\n' | "$TMPDIR/$DOWNLOADED" update; then
+# Run its update command. Must `cd` to a non-git-repo directory first
+# because the updater auto-detects "in a git checkout" (via `git rev-parse`
+# walking up from cwd) and switches to `git pull` mode — which would
+# false-pass this smoke if the CI runner happens to be sitting in the
+# repo checkout.
+echo "→ running: $TMPDIR/$DOWNLOADED update   (from $TMPDIR to avoid git-mode)"
+if ! (cd "$TMPDIR" && printf 'y\n' | "./$DOWNLOADED" update); then
     echo "FAIL: \`temm1e update\` returned non-zero — the release is not updatable from $PREV_TAG on $PLATFORM/$ARCH_TAG" >&2
     exit 1
 fi
