@@ -149,6 +149,25 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # Rust-triple aliases — keeps the in-product `temm1e update` command
+      # on pre-v5.5.2 clients working forever. Those clients built the asset
+      # name from `std::env::consts::{OS,ARCH}` mapped to Rust target triples
+      # (e.g. `temm1e-aarch64-apple-darwin`). v5.5.2+ uses the friendly names
+      # that install.sh / this workflow already publish, but we keep shipping
+      # aliases so anyone still on an older version can always update.
+      #
+      # See src/update_assets.rs for the canonical list the current updater
+      # reads. The parity test there fails the build if release.yml's matrix
+      # drifts from what the updater expects.
+      - name: Publish rust-triple aliases (backward-compat for old updaters)
+        run: |
+          cd dist
+          cp temm1e-aarch64-macos          temm1e-aarch64-apple-darwin
+          cp temm1e-x86_64-macos           temm1e-x86_64-apple-darwin
+          cp temm1e-aarch64-linux          temm1e-aarch64-unknown-linux-musl
+          cp temm1e-x86_64-linux           temm1e-x86_64-unknown-linux-musl
+          ls -la temm1e-*
+
       - name: Generate checksums
         run: |
           cd dist

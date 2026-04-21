@@ -250,6 +250,37 @@ After pushing the tag:
 Do NOT declare the release done until the workflow completes successfully
 and the GitHub Release page shows all 4 binaries.
 
+### 10.5 Update-Path Smoke — MANDATORY (added in v5.5.2)
+
+After the release workflow publishes, verify that `temm1e update` from the
+previous release actually lands on the new one. This step exists because
+v5.5.1 shipped a broken updater across **four platforms** for multiple
+releases — an asset-naming drift between `release.yml` and the in-binary
+updater went undetected because the protocol never exercised the update
+path post-publish. The symptom (`Error: No binary found for <target> in
+release v...`) was invisible to anyone not actively upgrading.
+
+Run on each maintainer's machine (covers at least one OS/arch naturally):
+
+```bash
+scripts/release_update_smoke.sh <PREV_TAG> <NEW_TAG>
+# e.g. scripts/release_update_smoke.sh v5.5.1 v5.5.2
+```
+
+The script:
+1. Downloads the previous release's binary for the current platform
+2. Sanity-checks it reports the previous version
+3. Runs its `update` subcommand
+4. Asserts the binary now reports the new version
+
+If this fails, the release is not shippable to existing users — roll
+forward a hotfix rather than advancing the tag. An online compile-time
+gate (`update_assets::every_updater_asset_is_published_by_release_yml`
+in `src/update_assets.rs`) also runs on every PR and fails the build if
+`release.yml`'s artifact matrix ever drifts from the updater's expected
+asset list — so drift should be caught at `cargo test` time, not at
+release time. This smoke remains the final empirical check.
+
 ## Files That Do NOT Need Updating
 
 - **`docs/benchmarks/BENCHMARK_REPORT.md`** — Version in title reflects when benchmark was taken. Only update if benchmarks are re-run.

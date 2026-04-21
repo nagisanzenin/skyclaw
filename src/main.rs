@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 mod search_install;
+mod update_assets;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -8145,15 +8146,17 @@ Just type a message to chat with the AI agent.",
 
                 println!("New version available: v{} → v{}", current, latest_tag);
 
-                // Detect platform
+                // Detect platform. Asset names follow install.sh / release.yml
+                // convention: `temm1e-{arch}-{macos|linux|linux-desktop}`.
+                // Single source of truth is update_assets::asset_candidates() —
+                // see src/update_assets.rs for the full contract, which a unit
+                // test pins to .github/workflows/release.yml's matrix so any
+                // rename there will break the build loudly.
                 let os = std::env::consts::OS;
                 let arch = std::env::consts::ARCH;
-                let target = match (os, arch) {
-                    ("macos", "aarch64") => "aarch64-apple-darwin",
-                    ("macos", "x86_64") => "x86_64-apple-darwin",
-                    ("linux", "x86_64") => "x86_64-unknown-linux-musl",
-                    ("linux", "aarch64") => "aarch64-unknown-linux-musl",
-                    _ => {
+                let candidates = match update_assets::asset_candidates(os, arch) {
+                    Some(c) => c,
+                    None => {
                         eprintln!(
                             "Error: No pre-built binary for {}-{}. Build from source instead.",
                             os, arch
@@ -8162,30 +8165,34 @@ Just type a message to chat with the AI agent.",
                     }
                 };
 
-                let asset_name = format!("temm1e-{}", target);
-
-                // Find the matching asset URL
+                // Find the first candidate that exists in the release.
+                // Linux tries `-desktop` first, then `-linux` (server/musl)
+                // fallback — matches install.sh's preference.
                 let assets = release["assets"].as_array();
-                let download_url = assets
-                    .and_then(|arr| {
-                        arr.iter().find(|a| {
-                            a["name"].as_str().is_some_and(|n| {
-                                n.starts_with(&asset_name) && !n.ends_with(".sha256")
-                            })
-                        })
-                    })
-                    .and_then(|a| a["browser_download_url"].as_str());
+                let found = candidates.iter().find_map(|candidate| {
+                    let asset = assets?.iter().find(|a| {
+                        a["name"]
+                            .as_str()
+                            .is_some_and(|n| n == *candidate && !n.ends_with(".sha256"))
+                    })?;
+                    let url = asset["browser_download_url"].as_str()?;
+                    Some((*candidate, url.to_string()))
+                });
 
-                let url = match download_url {
-                    Some(u) => u.to_string(),
+                let (asset_name, url) = match found {
+                    Some(pair) => pair,
                     None => {
                         eprintln!(
-                            "Error: No binary found for {} in release v{}",
-                            target, latest_tag
+                            "Error: None of {:?} found in release v{}. Run the installer again:",
+                            candidates, latest_tag
+                        );
+                        eprintln!(
+                            "  curl -sSfL https://raw.githubusercontent.com/temm1e-labs/temm1e/main/install.sh | sh"
                         );
                         std::process::exit(1);
                     }
                 };
+                let asset_name = asset_name.to_string();
 
                 // Download binary
                 println!("Downloading {}...", asset_name);
