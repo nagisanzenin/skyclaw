@@ -22,9 +22,11 @@
 
 ## Current position
 
-This commit completes **checkpoint 31**: Gemini now uses actual bounded native SSE, retains native parts/signatures, maps function results to names/provider IDs, hides thought text and counts thinking usage. Final tests passed 83 provider unit tests and nine HTTP/retry integration tests. Full workspace lint passed before a small function-field refinement; scoped provider/all-target final lint passed (`implementation-gemini-native-post-review-clippy.log`), with 602.5 MiB cleaned. No Cargo process from this batch remains. Read `GEMINI-NATIVE-IMPLEMENTATION.md` for exact limits. No paid Gemini requests were made.
+This commit completes **checkpoint 32**: Hive stale dependency publication and transactional completion accounting, plus the production Gemini observer/collector integration. Read `HIVE-IMPLEMENTATION.md` and the checkpoint 32 addition to `GEMINI-NATIVE-IMPLEMENTATION.md`. Combined tests passed **80 Hive + 83 provider unit tests and nine HTTP/retry fixtures**; six existing Hive benchmark tests remain ignored. Scoped all-target lint passed, cleaning 897.2 MiB. No Cargo process from this batch remains.
 
-Checkpoint **30, `9df96c9`**, is pushed (CI 34261794031 still running). Browser checkpoint **29, `06d9bbd`**, CI 34261489651 has a **Windows test failure**, while the run is still active: Hive `parallel_respects_dag_dependencies` counted 4 completions for 3 tasks. Actual job log: `implementation-browser-windows-job.log`, job 102180270464. Source confirms `resolve_dependencies()` reads pending tasks then unconditionally writes ready, allowing a second resolver to reset an already claimed task. **Next priority: fix this Hive race with conditional/atomic readiness publication and completion accounting; do not rerun until green as a substitute for a repair.** Checkpoints 27/28 were fully green.
+Previous pushes: **31 `df4e6bd`** (CI 34263300717 running), **30 `9df96c9`** (CI 34261794031 fully green), **29 `06d9bbd`** (CI 34261489651 failed on Windows Hive DAG test). Actual failed job 102180270464 counted four completions for three tasks; log `implementation-browser-windows-job.log`. A later green run did not negate the race. Checkpoint 32 repairs the stale pending-snapshot write and adds deterministic regression cases; its CI must still be verified.
+
+Next concrete priority: shared accounting/entrypoint composition. Source inspection confirms TemDOS and JIT Hive parent contexts still allocate separate budgets instead of sharing the active runtime budget, and Perpetuum's String-only provider bridge drops usage. Fix attribution/admission without double-counting existing foreground or delegated accounting. Durable global reservations and attempt journaling remain distinct larger gates. Do not advertise accounting as solved by checkpoint 21’s price catalog.
 
 Final browser-feature tests passed **493 tests, one ignored real-Chrome test** (`implementation-browser-post-review-tests.log`). Eleven obsolete typed-accessibility formatter tests were removed with the unused formatter; schema tests remain. The real-Chrome test was separately invoked and passed (`implementation-browser-real-auth-final.log`): wrong origin rejected without submission, valid form submitted once, authentication explicitly unverified, reflected credentials redacted and owned profile removed. Final workspace/all-feature/all-target clippy passed (`implementation-browser-final-workspace-clippy.log`); the guard removed 1.2 GiB. Earlier lint failures are retained as evidence. No Cargo process from this validation is running.
 
@@ -37,7 +39,7 @@ Files for checkpoint 29:
 - `Cargo.toml`/lock: tools adds already-locked `fs2 0.4.3`. Cargo may rewrite lock format 3 to 4; keep format 3 if that is the only unrelated change.
 - `BROWSER-IMPLEMENTATION.md`: detailed behavior, migration/environment options, evidence and remaining boundaries. Review it against final code.
 
-After pushing checkpoint 31, finish the identified Hive readiness/completion race repair. Initial edits to blackboard.rs may be present locally, but are not validated or part of checkpoint 31. Keep the following boundaries visible; the browser checkpoint is not complete product acceptance.
+After pushing checkpoint 32, inspect CI and continue shared accounting/entrypoint composition. Keep the following boundaries visible; the browser checkpoint is not complete product acceptance.
 
 ## Validation evidence currently available locally
 

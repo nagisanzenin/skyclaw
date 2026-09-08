@@ -106,33 +106,25 @@ async fn real_sse_is_incremental_and_native_function_history_survives_restore() 
     let provider =
         GeminiProvider::new("fixture-key".into()).with_base_url(format!("http://{addr}/v1beta"));
     let mut req = request();
-    let mut stream = provider.stream(req.clone()).await.unwrap();
-    let first = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert_eq!(first.delta.as_deref(), Some("Hello 🌿"));
-    assert!(first.tool_use.is_none());
-    release.send(()).unwrap();
-    let mut parts = vec![ContentPart::Text {
-        text: first.delta.unwrap(),
-    }];
-    let mut final_usage = None;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.unwrap();
-        assert!(chunk.delta.is_none());
-        if let Some(tool) = chunk.tool_use {
-            parts.push(tool);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured = seen.clone();
+    let release = std::sync::Mutex::new(Some(release));
+    let observer = std::sync::Arc::new(move |text: &str| {
+        captured.lock().unwrap().push_str(text);
+        if let Some(release) = release.lock().unwrap().take() {
+            release.send(()).unwrap();
         }
-        if let Some(state) = chunk.provider_state {
-            parts.push(state);
-        }
-        if chunk.usage.is_some() {
-            final_usage = chunk.usage;
-        }
-    }
-    let usage = final_usage.unwrap();
+    });
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        provider.complete_with_observer(req.clone(), observer),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(*seen.lock().unwrap(), "Hello 🌿");
+    let parts = response.content;
+    let usage = response.usage;
     assert_eq!(usage.output_tokens, 12);
     assert_eq!(usage.cache_read_tokens, Some(10));
     assert_eq!(usage.totals_reported, Some(true));

@@ -42,7 +42,7 @@ impl Decoder {
         StreamChunk {
             provider_state: None,
             usage: None,
-            response_id: Some(self.id.clone()),
+            response_id: self.provider_id.clone(),
             delta: None,
             tool_use: None,
             stop_reason: None,
@@ -190,16 +190,23 @@ impl Protocol for Decoder {
     }
     fn end(&mut self) -> Result<(), Temm1eError> {
         let response = self.complete()?;
+        let mut final_state = None;
         for part in response.content {
             let mut chunk = self.chunk();
+            chunk.response_id = Some(self.id.clone());
             match part {
                 ContentPart::ToolUse { .. } => chunk.tool_use = Some(part),
-                ContentPart::ProviderState { .. } => chunk.provider_state = Some(part),
+                ContentPart::ProviderState { .. } => {
+                    final_state = Some(part);
+                    continue;
+                }
                 _ => continue,
             }
             self.queue.push_back(chunk);
         }
         let mut chunk = self.chunk();
+        chunk.response_id = Some(self.id.clone());
+        chunk.provider_state = final_state;
         chunk.stop_reason = response.stop_reason;
         chunk.usage = Some(response.usage);
         self.queue.push_back(chunk);

@@ -218,6 +218,13 @@ impl Provider for GeminiProvider {
         decoder.accept_value(body)?;
         decoder.complete()
     }
+    async fn complete_with_observer(
+        &self,
+        request: CompletionRequest,
+        observer: temm1e_core::streaming::TextObserver,
+    ) -> Result<CompletionResponse, Temm1eError> {
+        temm1e_core::streaming::collect_completion(self.stream(request).await?, observer).await
+    }
     async fn stream(
         &self,
         request: CompletionRequest,
