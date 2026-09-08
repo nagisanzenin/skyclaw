@@ -29,7 +29,7 @@ Run two tracks: **equal-resource harness comparison** (primary) and **each versi
 
 ## Corpus and execution
 
-Development fixtures can include known audit defects. Freeze a separate held-out manifest before tuning; hold-out tasks should not be used to select implementation thresholds. Start with a small live pilot to establish account/model compatibility and variance. Proposed main study: at least80 independent task scenarios with three repeats per version, stratified across coding, long-context, research/browser, memory/personalization, recovery, scheduled work and delegation. Deterministic infrastructure/credential/security faults also run offline and are not inflated into model-task success counts.
+Development fixtures can include known audit defects. Freeze a separate held-out manifest before tuning; hold-out tasks should not be used to select implementation thresholds. Start with a small live pilot to establish account/model compatibility and variance. Proposed main study: at least 80 independent task scenarios with three repeats per version, stratified across coding, long-context, research/browser, memory/personalization, recovery, scheduled work and delegation. Deterministic infrastructure/credential/security faults also run offline and are not inflated into model-task success counts.
 
 Alternate/randomize A/B order within task blocks to reduce time-of-day load bias. Restore isolated workspace, database and application caches for cold-start trials. Run warm-cache trials separately; interleaving may warm a provider cache shared across versions, so disclose this and never claim controlled cold provider cache unless the API permits it. Capture provider/model revision when exposed, region, timestamp, config hash and fixture hash. Keep immutable raw artifacts with redacted credentials.
 
@@ -41,8 +41,17 @@ Report paired success difference with task-clustered bootstrap confidence interv
 
 80 tasks is a starting design, not a guarantee of power. Use pilot baseline rates and variance to size the final study for a declared detectable effect; freeze sample/stopping rules before looking at held-out A/B results. No cherry-picked best-of-three runs. Numerical/statistical fixes get reference tests independently of A/B.
 
-Release gates: zero known failures of deterministic identity, cancellation, false-success and budget invariants; no material regression in creator-nonnegotiable behavior; evidence of primary-task quality improvement or a justified noninferiority result alongside efficiency gains. Targets (not promised results): +5 percentage points verified success or clearly lower unsupported-completion rate; >=15% lower usage/latency at equivalent quality. Averages never excuse a new severe correctness failure. If evidence is inconclusive, report inconclusive and expand the study under the preregistered rule.
+Release purpose clarified by the creator on September 8, 2026, after reviewing the development pilots: architectural correctness, stronger implementations and additional capabilities are the modernization's primary benefits. A/B is a regression guard, not a requirement to outperform main on coding speed or tokens. Neither a +5-point success gain nor a 15% efficiency gain is required for release.
+
+Release gates:
+
+1. The architecture and feature acceptance matrix has concrete implementation evidence, including the creator's vision-to-behavior mapping. Document any remaining limitations and avoid advertising unfinished capabilities.
+2. No known failures of deterministic identity, cancellation, false-success, budget or migration invariants; no unresolved severe correctness failure. A lower average latency never excuses a failing invariant.
+3. A broader paired comparison finds no material regression in existing supported behavior. Predeclare meaningful degradation margins and sample/stopping rules before the held-out run, and report per-family outcomes and uncertainty. A nonsignificant p-value or four passing pilot tasks is not by itself proof of noninferiority. Resource increases needed for verification or new functionality are explained separately from accidental regressions.
+4. Real CLI/server/TUI integration, release-protocol validation, migration and supported-platform checks pass. New features have direct acceptance checks even where old main has no equivalent feature to A/B.
+
+A release can therefore be justified by verified structural/capability improvements and adequate regression evidence without a throughput or token-efficiency win. Report inconclusive comparisons honestly; don't silently convert them into a claim of equivalence. Preserve the original pilot outcomes and the dated protocol amendment so the change of product criterion is transparent.
 
 ## Current status
 
-Protocol drafted before modernization benchmarking. Baseline unit results and audit probes are evidence of defects, NOT an A/B result. Live results, sample size and scorecards will be written only after execution. Z.ai's documented supported-tool list does not currently name Tem; a successful endpoint test is technical compatibility, not official product endorsement.
+Initial protocol drafted before modernization benchmarking; release-purpose amendment above is a subsequent explicit creator decision. Development pilots 01 and 02 are recorded in `PILOT-01.md` and `PILOT-02.md`; neither covers the full product. Baseline unit results and audit probes are evidence of defects, not an A/B result. Z.ai's documented supported-tool list does not currently name Tem; a successful endpoint test is technical compatibility, not official product endorsement.

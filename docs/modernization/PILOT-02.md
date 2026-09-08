@@ -19,3 +19,7 @@ All recorded requests together used 48,249 input / 25,149 output tokens for main
 The verified artifacts and protected files passed all external checks. This is artifact correctness, not a blanket claim that every sentence of the transcripts was truthful: for example, modern's invoice run initially described two commands as successful despite a missing `md5sum` executable, then corrected the verification approach. A dedicated assertion-to-evidence evaluator remains necessary.
 
 **Decision: no merge or release.** Preserve both pilots, complete implementation and production integration checks, then freeze the broader independent held-out study. Do not pool these repeated development tasks as independent release evidence.
+
+## Subsequent creator clarification
+
+After this pilot report, the creator clarified that a benchmark performance gain is not required: architecture/implementation improvements and new capabilities are the primary value, with A/B guarding against meaningful regressions. The 15% target above describes the earlier protocol and is no longer a release prerequisite. The pilot still does not cover enough existing behavior to authorize release on its own. The updated gates are in `BENCHMARK-PROTOCOL.md`; the original measurements are unchanged.

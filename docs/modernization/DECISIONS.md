@@ -30,3 +30,7 @@ Preserve native Tem as primary runtime. Add supported account routes and optiona
 Preserve selected-model default and Eigen's explicit double opt-in. Preserve Cambium's intended autonomy within protected zones; do not quietly expand zones or infer trust from unrelated successful tasks. A stricter evidence gate may reduce autonomous deployment frequency; record that tradeoff in implementation PRs, and ask creator before changing the default autonomy policy.
 
 No pending decision prevents implementing local correctness fixes, accurate telemetry, explicit skipped states, durable records or source-backed documentation.
+
+## D05 — Modernization value and release comparison (confirmed September 8, 2026)
+
+The creator explicitly clarified that fundamental architecture, implementation tightening and new capabilities are the purpose of modernization. Beating main on optimization benchmarks is not required. A/B should guard against meaningful regressions; verified structural and feature improvements plus production readiness can justify the authorized main merge and v6.0 release. This supersedes the earlier inferred requirement for primary-task or efficiency gains. Keep uncertainty visible and test all existing feature families; four development scenarios alone do not establish broad nonregression. See the dated amendment in `BENCHMARK-PROTOCOL.md`.
