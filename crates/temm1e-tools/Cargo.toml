@@ -35,8 +35,9 @@ htmd = { workspace = true, optional = true }
 # Optional: Desktop control
 temm1e-gaze = { path = "../temm1e-gaze", optional = true }
 
-[dev-dependencies]
 tempfile = "3"
+
+[dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 temm1e-test-utils.workspace = true
 
