@@ -114,8 +114,9 @@ pub fn format_issue_body(
 
     // Truncate if too long (safe UTF-8 boundary)
     if body.len() > MAX_ISSUE_BODY {
-        let safe_end = body[..MAX_ISSUE_BODY]
+        let safe_end = body
             .char_indices()
+            .take_while(|(index, _)| *index <= MAX_ISSUE_BODY)
             .last()
             .map(|(i, _)| i)
             .unwrap_or(0);
@@ -311,6 +312,24 @@ mod tests {
         let body = format_issue_body(&error, "BUG", "4.1.2", "Darwin");
         assert!(body.len() <= MAX_ISSUE_BODY + 100); // margin for truncation notice
         assert!(body.contains("[Report truncated"));
+    }
+
+    #[test]
+    fn unicode_report_truncation_preserves_boundaries() {
+        for offset in 0..4 {
+            let error = ErrorGroup {
+                signature: "test".into(),
+                message: "x".into(),
+                location: None,
+                count: 1,
+                timestamps: vec![],
+                sample_lines: vec![],
+            };
+            let triage = format!("{}{}", "a".repeat(offset), "界".repeat(22000));
+            let body = format_issue_body(&error, &triage, "test", "test");
+            assert!(body.contains("[Report truncated"));
+            assert!(body.len() <= MAX_ISSUE_BODY + 100);
+        }
     }
 
     #[test]

@@ -405,6 +405,7 @@ pub fn default_model(provider_name: &str) -> &'static str {
         "minimax" => "MiniMax-M2.5",
         "stepfun" => "step-3.5-flash",
         "zai" => "glm-4.7-flash",
+        "zai-coding-plan" => "glm-5.3-flash",
         "ollama" => "llama3.3",
         // LM Studio runs whatever local model the user downloaded — there is
         // no universal "default". This placeholder is a popular Qwen 3.5
@@ -449,7 +450,9 @@ pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
             "google/gemini-3-flash-preview",
             "openrouter/hunter-alpha",
         ],
+        "zai-coding-plan" => vec!["glm-5.3-flash"],
         "zai" | "zhipu" => vec![
+            "glm-5.3-flash",
             "glm-5.1",
             "glm-5",
             "glm-4.7",

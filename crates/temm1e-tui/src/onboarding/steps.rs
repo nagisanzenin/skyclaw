@@ -101,6 +101,11 @@ pub fn provider_select_items() -> Vec<SelectItem<String>> {
             description: "Multiple providers via proxy".to_string(),
         },
         SelectItem {
+            value: "zai-coding-plan".to_string(),
+            label: "Z.ai Coding Plan".to_string(),
+            description: "Subscription endpoint · separate from metered API".to_string(),
+        },
+        SelectItem {
             value: "zai".to_string(),
             label: "Z.ai".to_string(),
             description: "Zhipu GLM models".to_string(),

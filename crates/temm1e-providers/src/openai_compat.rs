@@ -20,6 +20,7 @@ use tracing::{debug, error, info};
 /// Chat Completions API.
 pub struct OpenAICompatProvider {
     client: Client,
+    provider_name: String,
     keys: Vec<String>,
     key_index: AtomicUsize,
     base_url: String,
@@ -34,6 +35,7 @@ impl OpenAICompatProvider {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_else(|_| Client::new()),
+            provider_name: "openai-compatible".into(),
             keys: vec![api_key],
             key_index: AtomicUsize::new(0),
             base_url: "https://api.openai.com/v1".to_string(),
@@ -42,6 +44,12 @@ impl OpenAICompatProvider {
                 std::time::Instant::now() - std::time::Duration::from_secs(10),
             ),
         }
+    }
+
+    /// Preserve connection identity even when the wire protocol is shared.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.provider_name = name.into();
+        self
     }
 
     pub fn with_keys(mut self, keys: Vec<String>) -> Self {
@@ -284,6 +292,14 @@ struct OpenAIFunctionCall {
 struct OpenAIUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAIPromptTokenDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIPromptTokenDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
 }
 
 // Streaming types
@@ -760,7 +776,7 @@ fn extract_delta_reasoning(delta: &OpenAIStreamDelta) -> Option<&str> {
 #[async_trait]
 impl Provider for OpenAICompatProvider {
     fn name(&self) -> &str {
-        "openai-compatible"
+        &self.provider_name
     }
 
     async fn complete(
@@ -969,6 +985,8 @@ impl Provider for OpenAICompatProvider {
             .usage
             .map(|u| Usage {
                 input_tokens: u.prompt_tokens,
+                cache_read_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
+                cache_write_tokens: None,
                 output_tokens: u.completion_tokens,
                 cost_usd: 0.0,
             })

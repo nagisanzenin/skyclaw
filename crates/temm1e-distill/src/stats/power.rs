@@ -3,36 +3,46 @@
 //! Computes the minimum sample size needed to detect a difference
 //! between two proportions with specified significance and power.
 
-use crate::stats::wilson::z_value;
-
-/// Minimum sample size to detect a difference between proportions p0 and p1.
-///
-/// Uses the formula for comparing a proportion to a fixed value:
-///   n = p_bar * (1 - p_bar) * ((z_alpha + z_beta) / delta)^2
-///
-/// where:
-/// - delta = |p1 - p0| (effect size)
-/// - p_bar = p0 (pooled proportion under H0)
-/// - z_alpha = z-value for significance level alpha
-/// - z_beta = z-value for power (1 - beta)
-///
-/// Returns the sample size rounded up to the nearest integer.
-pub fn min_sample_size(p0: f64, p1: f64, alpha: f64, power: f64) -> u64 {
-    let delta = (p1 - p0).abs();
-    if delta == 0.0 {
-        return u64::MAX; // Infinite sample needed for zero effect.
+/// Normal quantile approximation (absolute error < 0.00045).
+/// Abramowitz & Stegun 26.2.23, explained at
+/// https://www.johndcook.com/normal_cdf_inverse.html
+fn normal_quantile(p: f64) -> f64 {
+    if p == 0.5 {
+        return 0.0;
     }
+    let tail = if p < 0.5 { p } else { 1.0 - p };
+    let t = (-2.0 * tail.ln()).sqrt();
+    let q = t
+        - (2.515517 + t * (0.802853 + t * 0.010328))
+            / (1.0 + t * (1.432788 + t * (0.189269 + t * 0.001308)));
+    if p < 0.5 {
+        -q
+    } else {
+        q
+    }
+}
 
-    // Two-tailed significance: confidence = 1 - alpha.
-    let z_alpha = z_value(1.0 - alpha);
-    // Power: confidence = power (one-tailed, but we use the same z lookup).
-    let z_beta = z_value(power);
-
-    let p = p0;
-    let numerator = p * (1.0 - p) * (z_alpha + z_beta) * (z_alpha + z_beta);
-    let denominator = delta * delta;
-
-    (numerator / denominator).ceil() as u64
+/// Approximate one-sample size for a two-sided proportion test against fixed p0.
+/// Uses null and alternative variances and the ONE-sided power quantile:
+/// n = [z(1-alpha/2)*sqrt(p0*(1-p0)) + z(power)*sqrt(p1*(1-p1))]^2 / (p1-p0)^2.
+/// This is a normal approximation, not an exact binomial or paired A/B design.
+/// Invalid inputs and zero effect return u64::MAX (no finite estimate).
+pub fn min_sample_size(p0: f64, p1: f64, alpha: f64, power: f64) -> u64 {
+    if ![p0, p1, alpha, power].iter().all(|x| x.is_finite())
+        || !(0.0..1.0).contains(&p0)
+        || p0 == 0.0
+        || !(0.0..1.0).contains(&p1)
+        || p1 == 0.0
+        || !(0.0..1.0).contains(&alpha)
+        || alpha == 0.0
+        || !(0.5..1.0).contains(&power)
+        || p0 == p1
+    {
+        return u64::MAX;
+    }
+    let null = normal_quantile(1.0 - alpha / 2.0) * (p0 * (1.0 - p0)).sqrt();
+    let alternative = normal_quantile(power) * (p1 * (1.0 - p1)).sqrt();
+    ((null + alternative).powi(2) / (p1 - p0).powi(2)).ceil() as u64
 }
 
 #[cfg(test)]
@@ -41,18 +51,11 @@ mod tests {
 
     #[test]
     fn standard_case() {
-        // p0=0.5, p1=0.55, alpha=0.05, power=0.80
-        // delta=0.05, p=0.5, z_alpha=1.960, z_beta=1.282 (power=0.80 → conf=0.80)
-        // n = 0.25 * (1.960 + 1.282)^2 / 0.0025 = 0.25 * 10.5165 / 0.0025 ≈ 1052
-        // Actually: z for 0.80 from our table ≈ 1.282
-        // n = 0.25 * (1.960 + 1.282)^2 / 0.05^2
-        //   = 0.25 * (3.242)^2 / 0.0025
-        //   = 0.25 * 10.5106 / 0.0025
-        //   ≈ 1051
+        // Independent reference: Python statistics.NormalDist().inv_cdf.
+        assert!((normal_quantile(0.80) - 0.8416212336).abs() < 0.00045);
+        assert!((normal_quantile(0.975) - 1.9599639845).abs() < 0.00045);
         let n = min_sample_size(0.5, 0.55, 0.05, 0.80);
-        // Should be in the ballpark of ~1051.
-        assert!(n > 900, "n={} too small", n);
-        assert!(n < 1200, "n={} too large", n);
+        assert!((782..=784).contains(&n), "n={n}");
     }
 
     #[test]

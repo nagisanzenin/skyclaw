@@ -1,5 +1,6 @@
 pub mod config;
 pub mod orchestrator_impl;
+pub mod process;
 pub mod tenant_impl;
 pub mod traits;
 pub mod types;

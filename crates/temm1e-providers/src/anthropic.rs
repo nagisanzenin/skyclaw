@@ -182,6 +182,25 @@ enum AnthropicContentBlock {
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+}
+
+impl From<AnthropicUsage> for Usage {
+    fn from(raw: AnthropicUsage) -> Self {
+        Self {
+            input_tokens: raw
+                .input_tokens
+                .saturating_add(raw.cache_read_input_tokens.unwrap_or(0))
+                .saturating_add(raw.cache_creation_input_tokens.unwrap_or(0)),
+            output_tokens: raw.output_tokens,
+            cache_read_tokens: raw.cache_read_input_tokens,
+            cache_write_tokens: raw.cache_creation_input_tokens,
+            cost_usd: 0.0,
+        }
+    }
 }
 
 // SSE event types
@@ -418,11 +437,7 @@ impl Provider for AnthropicProvider {
                 id: api_response.id,
                 content,
                 stop_reason: api_response.stop_reason,
-                usage: Usage {
-                    input_tokens: api_response.usage.input_tokens,
-                    output_tokens: api_response.usage.output_tokens,
-                    cost_usd: 0.0,
-                },
+                usage: api_response.usage.into(),
             });
         }
 
@@ -724,6 +739,27 @@ fn extract_sse_event(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn cache_usage_is_additive_and_missing_is_unknown() {
+        let raw: super::AnthropicUsage = serde_json::from_value(serde_json::json!({
+            "input_tokens": 10, "output_tokens": 20,
+            "cache_read_input_tokens": 100, "cache_creation_input_tokens": 30
+        }))
+        .unwrap();
+        let usage: super::Usage = raw.into();
+        assert_eq!(usage.input_tokens, 140);
+        assert_eq!(usage.cache_read_tokens, Some(100));
+        assert_eq!(usage.cache_write_tokens, Some(30));
+        let raw: super::AnthropicUsage = serde_json::from_value(serde_json::json!({
+            "input_tokens": 10, "output_tokens": 20
+        }))
+        .unwrap();
+        let usage: super::Usage = raw.into();
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.cache_read_tokens, None);
+        assert_eq!(usage.cache_write_tokens, None);
+    }
     use super::*;
 
     #[test]

@@ -104,6 +104,31 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
                 .with_extra_headers(config.extra_headers.clone());
             Ok(Box::new(provider))
         }
+        "zai-coding-plan" => {
+            // Subscription traffic must never silently fall back to metered API.
+            // Custom/proxy endpoints belong to a separately selected connection.
+            const ENDPOINT: &str = "https://api.z.ai/api/coding/paas/v4";
+            if config
+                .base_url
+                .as_deref()
+                .is_some_and(|url| url.trim_end_matches('/') != ENDPOINT)
+            {
+                return Err(Temm1eError::Config(
+                    "zai-coding-plan requires its coding endpoint; select a separate API/proxy connection to change billing routes".into(),
+                ));
+            }
+            if all_keys.len() > 1 {
+                return Err(Temm1eError::Config(
+                    "zai-coding-plan uses one account key per connection".into(),
+                ));
+            }
+            Ok(Box::new(
+                OpenAICompatProvider::new(api_key)
+                    .with_name("zai-coding-plan")
+                    .with_base_url(ENDPOINT.into())
+                    .with_extra_headers(config.extra_headers.clone()),
+            ))
+        }
         "zai" | "zhipu" => {
             let base_url = config
                 .base_url
@@ -206,6 +231,15 @@ mod tests {
     fn create_minimax_provider() {
         let provider = create_provider(&config_with_name("minimax")).unwrap();
         assert_eq!(provider.name(), "openai-compatible");
+    }
+
+    #[test]
+    fn coding_plan_preserves_identity_and_rejects_metered_route() {
+        let config = config_with_name("zai-coding-plan");
+        assert_eq!(create_provider(&config).unwrap().name(), "zai-coding-plan");
+        let mut metered = config.clone();
+        metered.base_url = Some("https://api.z.ai/api/paas/v4".into());
+        assert!(create_provider(&metered).is_err());
     }
 
     #[test]

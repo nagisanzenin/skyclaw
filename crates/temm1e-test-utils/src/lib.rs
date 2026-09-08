@@ -47,6 +47,7 @@ impl MockProvider {
                     input_tokens: 10,
                     output_tokens: 20,
                     cost_usd: 0.0,
+                    ..Usage::default()
                 },
             },
             call_count: Arc::new(Mutex::new(0)),
@@ -70,6 +71,7 @@ impl MockProvider {
                     input_tokens: 10,
                     output_tokens: 30,
                     cost_usd: 0.0,
+                    ..Usage::default()
                 },
             },
             call_count: Arc::new(Mutex::new(0)),
@@ -167,6 +169,7 @@ impl QueuedMockProvider {
                 input_tokens: 10,
                 output_tokens: 20,
                 cost_usd: 0.0,
+                ..Usage::default()
             },
         }
     }
@@ -190,6 +193,7 @@ impl QueuedMockProvider {
                 input_tokens: 10,
                 output_tokens: 30,
                 cost_usd: 0.0,
+                ..Usage::default()
             },
         }
     }

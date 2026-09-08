@@ -8,6 +8,44 @@ use crate::conscience::SelfWorkKind;
 use crate::log_scanner;
 use crate::store::Store;
 
+/// Outcome of a maintenance attempt. Skipped work must not be recorded as completed.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", content = "detail", rename_all = "snake_case")]
+pub enum SelfWorkOutcome {
+    Completed(String),
+    Skipped(String),
+}
+
+impl std::fmt::Display for SelfWorkOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Completed(detail) => write!(f, "{detail}"),
+            Self::Skipped(reason) => write!(f, "Skipped: {reason}"),
+        }
+    }
+}
+
+pub async fn execute_self_work_outcome(
+    kind: &SelfWorkKind,
+    store: &Arc<Store>,
+    caller: Option<&Arc<dyn LlmCaller>>,
+) -> Result<SelfWorkOutcome, Temm1eError> {
+    match kind {
+        SelfWorkKind::SessionCleanup => Ok(SelfWorkOutcome::Skipped(
+            "session cleanup handler is not implemented".into(),
+        )),
+        SelfWorkKind::BlueprintRefinement => Ok(SelfWorkOutcome::Skipped(
+            "blueprint refinement handler is not implemented".into(),
+        )),
+        _ if kind.uses_llm() && caller.is_none() => {
+            Ok(SelfWorkOutcome::Skipped("no LLM caller available".into()))
+        }
+        _ => execute_self_work(kind, store, caller)
+            .await
+            .map(SelfWorkOutcome::Completed),
+    }
+}
+
 /// Execute a self-work activity during Sleep state.
 pub async fn execute_self_work(
     kind: &SelfWorkKind,
@@ -60,14 +98,14 @@ async fn consolidate_memory(store: &Arc<Store>) -> Result<String, Temm1eError> {
 
 /// Session cleanup: no-op for now (placeholder for future session pruning).
 async fn cleanup_sessions(_store: &Arc<Store>) -> Result<String, Temm1eError> {
-    tracing::info!(target: "perpetuum", work = "session_cleanup", "Session cleanup complete");
-    Ok("Session cleanup complete".to_string())
+    tracing::info!(target: "perpetuum", work = "session_cleanup", "Skipped: session cleanup handler is not implemented");
+    Ok("Skipped: session cleanup handler is not implemented".to_string())
 }
 
 /// Blueprint refinement: no-op for now (placeholder for future blueprint weight updates).
 async fn refine_blueprints(_store: &Arc<Store>) -> Result<String, Temm1eError> {
-    tracing::info!(target: "perpetuum", work = "blueprint_refinement", "Blueprint refinement complete");
-    Ok("Blueprint refinement complete".to_string())
+    tracing::info!(target: "perpetuum", work = "blueprint_refinement", "Skipped: blueprint refinement handler is not implemented");
+    Ok("Skipped: blueprint refinement handler is not implemented".to_string())
 }
 
 /// Failure analysis: LLM reviews recent errors from volition notes and transition logs.
@@ -641,5 +679,31 @@ mod tests {
     fn extract_json_array_no_brackets_returns_input() {
         let input = "no json here";
         assert_eq!(extract_json_array(input), "no json here");
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    #[tokio::test]
+    async fn absent_maintenance_handlers_never_report_completed() {
+        let store = Arc::new(Store::new("sqlite::memory:").await.unwrap());
+        for kind in [
+            SelfWorkKind::SessionCleanup,
+            SelfWorkKind::BlueprintRefinement,
+        ] {
+            assert!(matches!(
+                execute_self_work_outcome(&kind, &store, None)
+                    .await
+                    .unwrap(),
+                SelfWorkOutcome::Skipped(_)
+            ));
+        }
+        assert!(matches!(
+            execute_self_work_outcome(&SelfWorkKind::MemoryConsolidation, &store, None)
+                .await
+                .unwrap(),
+            SelfWorkOutcome::Completed(_)
+        ));
     }
 }

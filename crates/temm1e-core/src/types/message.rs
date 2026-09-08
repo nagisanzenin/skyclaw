@@ -180,8 +180,14 @@ pub struct StreamChunk {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
+    /// Total input, including cache reads and writes. Provider adapters normalize this.
     pub input_tokens: u32,
     pub output_tokens: u32,
+    /// None means the provider did not report this measurement, not zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u32>,
     #[serde(default)]
     pub cost_usd: f64,
 }

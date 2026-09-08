@@ -173,6 +173,7 @@ pub fn normalize_provider_name(name: &str) -> Option<&'static str> {
         "minimax" => Some("minimax"),
         "stepfun" | "step" => Some("stepfun"),
         "zai" | "zhipu" | "glm" => Some("zai"),
+        "zai-coding-plan" | "glm-coding-plan" => Some("zai-coding-plan"),
         "ollama" => Some("ollama"),
         "lmstudio" | "lm-studio" | "lm_studio" => Some("lmstudio"),
         _ => None,
@@ -216,7 +217,7 @@ pub fn detect_api_key(text: &str) -> Option<DetectedCredential> {
             match p.as_str() {
                 "anthropic" | "openai" | "gemini" | "grok" | "xai" | "openrouter" | "minimax"
                 | "stepfun" | "step" | "zai" | "zhipu" | "ollama" | "lmstudio" | "lm-studio"
-                | "github" | "gh"
+                | "zai-coding-plan" | "glm-coding-plan" | "github" | "gh"
                     if key.len() >= 8 && !is_placeholder_key(key) =>
                 {
                     return Some(DetectedCredential {
@@ -229,6 +230,7 @@ pub fn detect_api_key(text: &str) -> Option<DetectedCredential> {
                             "minimax" => "minimax",
                             "stepfun" | "step" => "stepfun",
                             "zai" | "zhipu" => "zai",
+                            "zai-coding-plan" | "glm-coding-plan" => "zai-coding-plan",
                             "ollama" => "ollama",
                             "lmstudio" | "lm-studio" => "lmstudio",
                             "github" | "gh" => "github",

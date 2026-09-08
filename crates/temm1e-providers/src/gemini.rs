@@ -124,6 +124,8 @@ struct GeminiCandidate {
 #[serde(rename_all = "camelCase")]
 struct GeminiUsageMetadata {
     #[serde(default)]
+    cached_content_token_count: Option<u32>,
+    #[serde(default)]
     prompt_token_count: u32,
     #[serde(default)]
     candidates_token_count: u32,
@@ -406,6 +408,8 @@ impl GeminiProvider {
             .usage_metadata
             .map(|u| Usage {
                 input_tokens: u.prompt_token_count,
+                cache_read_tokens: u.cached_content_token_count,
+                cache_write_tokens: None,
                 output_tokens: u.candidates_token_count,
                 cost_usd: 0.0,
             })

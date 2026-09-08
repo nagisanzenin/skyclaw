@@ -48,8 +48,7 @@ impl CodexResponsesProvider {
     ) -> Result<serde_json::Value, Temm1eError> {
         // Extract system message → "instructions" field
         let instructions = request
-            .system
-            .clone()
+            .system_flattened()
             .or_else(|| {
                 request.messages.iter().find_map(|m| {
                     if matches!(m.role, Role::System) {
@@ -252,6 +251,7 @@ impl Provider for CodexResponsesProvider {
                 input_tokens: 0,
                 output_tokens: 0,
                 cost_usd: 0.0,
+                ..Usage::default()
             },
         })
     }
@@ -682,6 +682,23 @@ mod tests {
 
         let body = provider.build_request_body(&request, false).unwrap();
         assert_eq!(body["instructions"], "You are a helpful assistant.");
+        let mut volatile_request = request.clone();
+        volatile_request.system_volatile = Some("Active goal: preserve this constraint.".into());
+        let volatile_body = provider
+            .build_request_body(&volatile_request, false)
+            .unwrap();
+        assert_eq!(
+            volatile_body["instructions"],
+            "You are a helpful assistant.\n\nActive goal: preserve this constraint."
+        );
+        volatile_request.system = None;
+        let volatile_only = provider
+            .build_request_body(&volatile_request, false)
+            .unwrap();
+        assert_eq!(
+            volatile_only["instructions"],
+            "Active goal: preserve this constraint."
+        );
         assert_eq!(body["model"], "gpt-5.3-codex");
         assert!(body.get("max_output_tokens").is_none());
         assert_eq!(body["stream"], false);

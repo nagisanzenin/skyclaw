@@ -453,9 +453,19 @@ impl Cortex {
             None
         };
 
-        let result = self_work::execute_self_work(&kind, &self.store, llm_caller.as_ref()).await?;
+        let result =
+            self_work::execute_self_work_outcome(&kind, &self.store, llm_caller.as_ref()).await?;
+        let recorded = serde_json::to_string(&result).map_err(|error| {
+            Temm1eError::Internal(format!("serialize self-work outcome: {error}"))
+        })?;
+        self.store
+            .set_state(
+                &format!("self_work:last_outcome:{}", kind.name()),
+                &recorded,
+            )
+            .await?;
 
-        tracing::info!(target: "perpetuum", work = %kind.name(), result = %result, "Self-work complete");
+        tracing::info!(target: "perpetuum", work = %kind.name(), result = %result, "Self-work attempt finished");
 
         // Self-work is one-shot: remove
         self.store.delete_concern(&concern.id).await?;

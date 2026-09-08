@@ -180,6 +180,11 @@ impl EigenTuneStateMachine {
                 );
                 Ok(Some(TierState::Collecting))
             }
+            SprtDecision::Inconclusive => {
+                tracing::info!(tier = %tier.as_str(), n = record.sprt_n,
+                    "Eigen-Tune: sample cap without sufficient evidence; return to Collecting");
+                Ok(Some(TierState::Collecting))
+            }
             SprtDecision::Continue => Ok(None),
         }
     }

@@ -80,7 +80,7 @@ use crate::agent_task_status::{AgentTaskPhase, AgentTaskStatus};
 use crate::budget::{self, BudgetTracker, ModelPricing};
 use crate::circuit_breaker::CircuitBreaker;
 use crate::context::build_context;
-use crate::done_criteria::{self, DoneCriteria};
+use crate::done_criteria;
 use crate::executor::execute_tool;
 use crate::learning;
 use crate::prompted_tool_calling::{self, PromptedToolResult};
@@ -1278,7 +1278,6 @@ impl AgentRuntime {
         // entirely disabled (v2_optimizations = false).
         let is_compound = classifier_compound
             .unwrap_or_else(|| done_criteria::is_compound_task_fallback(&user_text));
-        let mut _done_criteria = DoneCriteria::new();
 
         if is_compound {
             info!("Compound task detected — injecting DONE criteria prompt");
@@ -2227,15 +2226,6 @@ impl AgentRuntime {
                         "Suppressing final reply — send_message already delivered content to user"
                     );
                     reply_text.clear();
-                }
-
-                // For compound tasks, append a DONE verification reminder
-                // so the LLM checks its criteria before responding.
-                if is_compound {
-                    let verification = done_criteria::format_verification_prompt(&_done_criteria);
-                    if !verification.is_empty() {
-                        reply_text.push_str(&verification);
-                    }
                 }
 
                 // ── Witness gate ─────────────────────────────────────
