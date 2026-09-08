@@ -57,6 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxcb-randr0 \
         libxcb-shm0 \
         libxkbcommon0 \
+        libxdo3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Chromium path for chromiumoxide (Prowl browser engine)
@@ -69,6 +70,9 @@ RUN mkdir -p /var/lib/temm1e
 WORKDIR /app
 
 COPY --from=builder /app/target/release/temm1e ./temm1e
+
+# A successful link in the builder does not prove runtime libraries exist.
+RUN ldd ./temm1e && ./temm1e --version
 
 # Gateway port
 EXPOSE 8080
