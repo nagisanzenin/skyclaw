@@ -47,7 +47,7 @@ async fn fast_repeated_tools_emit_distinct_ordered_events_without_watch_receiver
         .unwrap();
     let events = events.lock().unwrap();
     assert_eq!(events.len(), 4);
-    for pair in events.chunks_exact(2) {
+    for pair in events.as_chunks::<2>().0 {
         assert_eq!(pair[0].execution_id, pair[1].execution_id);
         assert!(matches!(
             pair[0].phase,
