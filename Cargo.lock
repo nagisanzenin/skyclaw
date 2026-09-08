@@ -7471,6 +7471,7 @@ dependencies = [
  "futures",
  "insta",
  "nucleo",
+ "pulldown-cmark",
  "ratatui",
  "serde",
  "serde_json",

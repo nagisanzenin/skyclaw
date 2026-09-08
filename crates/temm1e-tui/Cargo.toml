@@ -34,6 +34,7 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 unicode-width = "0.2"
 textwrap = "0.16"
+pulldown-cmark = { version = "0.9.6", default-features = false }
 
 # Fuzzy matching
 nucleo = "0.5"

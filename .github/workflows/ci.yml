@@ -80,6 +80,11 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      - name: Exercise actual TUI input, resize and terminal restoration
+        run: |
+          cargo build --locked --bin temm1e
+          python3 scripts/tui_pty_smoke.py target/debug/temm1e
+
   # -----------------------------------------------
   # Job 2b: Windows cross-platform gate — fmt + clippy + test on windows-latest
   #

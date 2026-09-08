@@ -683,8 +683,16 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) {
         return;
     }
 
-    // Handle onboarding
+    // Onboarding also needs an exit path before credentials are configured.
     if state.screen == Screen::Onboarding {
+        if key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL)
+            && matches!(key.code, crossterm::event::KeyCode::Char('c' | 'd'))
+        {
+            state.should_quit = true;
+            return;
+        }
         handle_onboarding_key(state, key);
         return;
     }
@@ -1320,6 +1328,22 @@ fn handle_onboarding_key(state: &mut AppState, key: crossterm::event::KeyEvent) 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn onboarding_can_exit_without_credentials() {
+        for character in ['c', 'd'] {
+            let mut state = AppState::new().with_onboarding();
+            handle_key(
+                &mut state,
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(character),
+                    crossterm::event::KeyModifiers::CONTROL,
+                ),
+            );
+            assert!(state.should_quit);
+            assert!(state.pending_user_message.is_none());
+        }
+    }
 
     #[test]
     fn conversation_commands_are_gated_while_busy_and_clear_is_display_only() {

@@ -57,10 +57,6 @@ use widgets::select_list::SelectState;
 
 /// Restore the terminal to normal mode. Safe to call multiple times.
 fn restore_terminal() {
-    // Drain pending input so stale keypresses don't leak into the shell
-    while crossterm::event::poll(std::time::Duration::from_millis(1)).unwrap_or(false) {
-        let _ = crossterm::event::read();
-    }
     let _ = disable_raw_mode();
     let _ = execute!(
         io::stdout(),
@@ -70,18 +66,10 @@ fn restore_terminal() {
     );
     use std::io::Write;
     let _ = io::stdout().flush();
-    // Nuclear reset: stty sane guarantees the terminal is usable
-    // even if crossterm's disable_raw_mode() failed on macOS
-    let _ = std::process::Command::new("stty")
-        .arg("sane")
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    // Drain again after stty — catch any keys pressed during restoration
-    while crossterm::event::poll(std::time::Duration::from_millis(1)).unwrap_or(false) {
-        let _ = crossterm::event::read();
-    }
+    // disable_raw_mode restores the terminal attributes captured on entry.
+    // Do not invoke `stty sane`: it overwrites the caller's intentional settings.
+    // Do not drain input here: a continuously readable stream can prevent exit,
+    // and buffered input may belong to the caller after we leave the TUI.
 }
 
 /// Terminal cleanup guard — restores terminal even on panic.
@@ -106,6 +94,8 @@ pub async fn launch_tui(config: Temm1eConfig) -> anyhow::Result<()> {
     }));
 
     enable_raw_mode()?;
+    // Cover failures while entering the alternate screen as well as the loop.
+    let _guard = TerminalGuard;
     let mut stdout = io::stdout();
     // Mouse capture is ON so the TUI owns the whole terminal buffer
     // (exclusive alt-screen, scroll wheel scrolls the message list,
@@ -124,7 +114,6 @@ pub async fn launch_tui(config: Temm1eConfig) -> anyhow::Result<()> {
         cursor::Hide,
         crossterm::event::EnableMouseCapture
     )?;
-    let _guard = TerminalGuard;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -346,6 +335,11 @@ pub async fn launch_tui(config: Temm1eConfig) -> anyhow::Result<()> {
                 };
                 let _ = handle.inbound_tx.send(msg).await;
             }
+        }
+
+        // Honor exit before starting a new onboarding network operation.
+        if state.should_quit {
+            break;
         }
 
         // Handle onboarding async operations

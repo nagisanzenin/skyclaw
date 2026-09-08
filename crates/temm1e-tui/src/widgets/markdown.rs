@@ -358,116 +358,52 @@ fn render_code_block_with_width(
 }
 
 /// Render inline markdown (bold, italic, code, links) into spans.
-#[allow(clippy::while_let_on_iterator)]
 fn render_inline(text: &str, base: Style, code: Style, link: Style) -> Vec<Span<'static>> {
+    use pulldown_cmark::{Event, Options, Parser, Tag};
     let mut spans = Vec::new();
-    let mut chars = text.char_indices().peekable();
-    let mut current = String::new();
-
-    while let Some((_i, c)) = chars.next() {
-        match c {
-            '`' => {
-                // Inline code — render with distinct background
-                if !current.is_empty() {
-                    spans.push(Span::styled(current.clone(), base));
-                    current.clear();
-                }
-                let mut code_text = String::new();
-                while let Some((_, ch)) = chars.next() {
-                    if ch == '`' {
-                        break;
+    let mut styles = vec![base];
+    for event in Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH) {
+        let style = *styles.last().unwrap_or(&base);
+        match event {
+            Event::Start(tag) => {
+                let next = match tag {
+                    Tag::Emphasis => style.add_modifier(Modifier::ITALIC),
+                    Tag::Strong => style.add_modifier(Modifier::BOLD),
+                    Tag::Strikethrough => style.add_modifier(Modifier::CROSSED_OUT),
+                    Tag::Link(..) | Tag::Image(..) => {
+                        style.patch(link).add_modifier(Modifier::UNDERLINED)
                     }
-                    code_text.push(ch);
-                }
-                spans.push(Span::styled(
-                    format!(" {} ", code_text),
-                    code.add_modifier(Modifier::BOLD),
-                ));
+                    _ => style,
+                };
+                styles.push(next);
             }
-            '*' | '_' => {
-                let next_same = chars.peek().map(|(_, nc)| *nc == c).unwrap_or(false);
-                if next_same {
-                    // Bold **text**
-                    chars.next();
-                    if !current.is_empty() {
-                        spans.push(Span::styled(current.clone(), base));
-                        current.clear();
-                    }
-                    let mut bold_text = String::new();
-                    while let Some((_, ch)) = chars.next() {
-                        if ch == c && chars.peek().map(|(_, nc)| *nc == c).unwrap_or(false) {
-                            chars.next();
-                            break;
-                        }
-                        bold_text.push(ch);
-                    }
-                    spans.push(Span::styled(bold_text, base.add_modifier(Modifier::BOLD)));
-                } else {
-                    // Italic *text*
-                    if !current.is_empty() {
-                        spans.push(Span::styled(current.clone(), base));
-                        current.clear();
-                    }
-                    let mut italic_text = String::new();
-                    while let Some((_, ch)) = chars.next() {
-                        if ch == c {
-                            break;
-                        }
-                        italic_text.push(ch);
-                    }
-                    spans.push(Span::styled(
-                        italic_text,
-                        base.add_modifier(Modifier::ITALIC),
-                    ));
+            Event::End(tag) => {
+                if let Tag::Link(_, url, _) | Tag::Image(_, url, _) = tag {
+                    // Keep the destination visible rather than discarding it.
+                    spans.push(Span::styled(format!(" ({url})"), link));
                 }
+                styles.pop();
             }
-            '[' => {
-                // Markdown link [text](url)
-                if !current.is_empty() {
-                    spans.push(Span::styled(current.clone(), base));
-                    current.clear();
-                }
-                let mut link_text = String::new();
-                let mut found_close = false;
-                while let Some((_, ch)) = chars.next() {
-                    if ch == ']' {
-                        found_close = true;
-                        break;
-                    }
-                    link_text.push(ch);
-                }
-                if found_close && chars.peek().map(|(_, nc)| *nc == '(').unwrap_or(false) {
-                    chars.next();
-                    let mut url = String::new();
-                    while let Some((_, ch)) = chars.next() {
-                        if ch == ')' {
-                            break;
-                        }
-                        url.push(ch);
-                    }
-                    spans.push(Span::styled(
-                        format!("{} \u{2197}", link_text),
-                        link.add_modifier(Modifier::UNDERLINED),
-                    ));
-                } else {
-                    spans.push(Span::styled(format!("[{}]", link_text), base));
-                }
+            Event::Text(value) => spans.extend(highlight_paths(&value, style, link)),
+            Event::Code(value) => spans.push(Span::styled(
+                format!(" {value} "),
+                code.add_modifier(Modifier::BOLD),
+            )),
+            // HTML remains literal terminal text; no HTML/URL execution.
+            Event::Html(value) => spans.push(Span::styled(value.into_string(), style)),
+            Event::SoftBreak | Event::HardBreak => spans.push(Span::styled(" ", style)),
+            Event::FootnoteReference(value) => {
+                spans.push(Span::styled(format!("[{value}]"), style))
             }
-            _ => {
-                current.push(c);
+            Event::Rule => spans.push(Span::styled("---", style)),
+            Event::TaskListMarker(checked) => {
+                spans.push(Span::styled(if checked { "[x] " } else { "[ ] " }, style))
             }
         }
     }
-
-    if !current.is_empty() {
-        // Detect file paths and URLs in accumulated text and style them
-        spans.extend(highlight_paths(&current, base, link));
-    }
-
     if spans.is_empty() {
         spans.push(Span::raw(""));
     }
-
     spans
 }
 
@@ -662,5 +598,46 @@ mod tests {
     fn blockquote() {
         let lines = render_markdown("> quoted text", s(), s(), s(), s(), s());
         assert_eq!(lines.len(), 1);
+    }
+    #[test]
+    fn commonmark_preserves_identifiers_unmatched_delimiters_and_escapes() {
+        for input in [
+            "PTY_REPLY_42",
+            "snake_case_name",
+            "unclosed *value",
+            "unclosed `code",
+            "[unclosed",
+        ] {
+            let spans = render_inline(input, s(), s(), s());
+            assert_eq!(
+                spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                input
+            );
+        }
+        let spans = render_inline(r"escaped \*literal\*", s(), s(), s());
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "escaped *literal*"
+        );
+        let spans = render_inline("**outer *inner* outer**", s(), s(), s());
+        let inner = spans.iter().find(|span| span.content == "inner").unwrap();
+        assert!(inner
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD | Modifier::ITALIC));
+        let spans = render_inline("[label](https://example.test/a_(b))", s(), s(), s());
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "label (https://example.test/a_(b))"
+        );
     }
 }
