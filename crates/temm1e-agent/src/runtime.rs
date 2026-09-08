@@ -979,10 +979,9 @@ impl AgentRuntime {
         // prevents orphan Oaths (from e.g. HiveRoute early-returns, or
         // Planner-sealed turns whose workspace state was mutated by a
         // sibling session) from being applied to unrelated replies.
-        let turn_witness = self
-            .witness
-            .as_ref()
-            .map(|witness| Arc::new(witness.for_workspace(session.workspace_path.clone())));
+        let turn_witness = self.witness.as_ref().map(|witness| {
+            Arc::new(witness.for_authority(session.workspace_path.clone(), session.role))
+        });
         let mut oath_sealed_this_turn: Option<temm1e_witness::types::Oath> = None;
         if self.auto_seal_planner_oath {
             if let Some(ref witness) = turn_witness {
@@ -2709,9 +2708,9 @@ impl AgentRuntime {
                 // unrelated replies, producing false footers).
                 //
                 // Law 5 (Narrative-Only FAIL): any error in verification
-                // leaves reply_text untouched — delivery is never blocked,
-                // files are never mutated. Witness only controls the
-                // narrative.
+                // controls the reply according to configured strictness.
+                // Reply composition is narrative-only; authorized verification
+                // commands themselves may have filesystem or external effects.
                 if let (Some(witness), Some(oath)) =
                     (turn_witness.as_ref(), oath_sealed_this_turn.as_ref())
                 {

@@ -288,3 +288,248 @@ async fn malformed_failed_and_cancelled_planners_preserve_knownness_once() {
         );
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn user_role_cannot_launch_a_process_through_automatic_witness_checks() {
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join("unauthorized-verifier-marker");
+    let command = format!(
+        "printf verifier-ran > '{}'",
+        marker.display().to_string().replace('\'', "'\\''")
+    );
+    let proposed = serde_json::json!({"goal":"model proposal", "postconditions":[{
+        "kind":"command_exits", "cmd":"sh", "args":["-c",command], "expected_code":0,
+        "cwd":null, "timeout_ms":2000
+    }]})
+    .to_string();
+    let witness = Arc::new(Witness::new(
+        Ledger::open("sqlite::memory:").await.unwrap(),
+        directory.path(),
+    ));
+    let provider = Arc::new(QueuedMockProvider::with_responses(vec![
+        QueuedMockProvider::text_response(&proposed),
+        QueuedMockProvider::text_response("unverified reply"),
+    ]));
+    let runtime = AgentRuntime::new(
+        provider,
+        Arc::new(MockMemory::new()),
+        vec![],
+        "fixture".into(),
+        None,
+    )
+    .with_v2_optimizations(false)
+    .with_self_audit_enabled(false)
+    .with_witness(witness.clone(), WitnessStrictness::Observe, false)
+    .with_auto_planner_oath(true);
+    let mut session = make_session();
+    session.workspace_path = directory.path().into();
+    session.role = temm1e_core::types::rbac::Role::User;
+    runtime
+        .process_message(
+            &make_inbound_msg(
+                "In the workspace, write `demo.rs` with pub fn greet(name: &str) -> String.",
+            ),
+            &mut session,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        runtime
+            .shutdown_background(std::time::Duration::from_secs(1))
+            .await
+    );
+    assert!(
+        !marker.exists(),
+        "User bypassed shell authority through Witness"
+    );
+    let verdicts: Vec<_> = witness
+        .ledger()
+        .read_session(&session.session_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| match entry.payload {
+            LedgerPayload::VerdictRendered(verdict) => Some(verdict),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(verdicts.len(), 1);
+    assert_eq!(
+        verdicts[0].outcome,
+        temm1e_witness::types::VerdictOutcome::Inconclusive
+    );
+    assert_eq!(verdicts[0].tier_usage.tier0_calls, 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn witness_command_authority_covers_composites_without_changing_admin_or_file_checks() {
+    use temm1e_core::types::rbac::Role;
+    use temm1e_witness::types::{Predicate, VerdictOutcome};
+    for kind in [
+        "exit", "contains", "absent", "duration", "all", "any", "not",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("owned-command-marker");
+        let script = format!(
+            "printf observed; printf effect > '{}'",
+            marker.display().to_string().replace('\'', "'\\''")
+        );
+        let command = Predicate::CommandExits {
+            cmd: "sh".into(),
+            args: vec!["-c".into(), script.clone()],
+            expected_code: 0,
+            cwd: None,
+            timeout_ms: 2000,
+        };
+        let predicate = match kind {
+            "contains" => Predicate::CommandOutputContains {
+                cmd: "sh".into(),
+                args: vec!["-c".into(), script.clone()],
+                regex: "observed".into(),
+                stream: temm1e_witness::types::OutputStream::Stdout,
+                cwd: None,
+                timeout_ms: 2000,
+            },
+            "absent" => Predicate::CommandOutputAbsent {
+                cmd: "sh".into(),
+                args: vec!["-c".into(), script.clone()],
+                regex: "unexpected".into(),
+                stream: temm1e_witness::types::OutputStream::Stdout,
+                cwd: None,
+                timeout_ms: 2000,
+            },
+            "duration" => Predicate::CommandDurationUnder {
+                cmd: "sh".into(),
+                args: vec!["-c".into(), script],
+                max_ms: 2000,
+                cwd: None,
+            },
+            "all" => Predicate::AllOf {
+                predicates: vec![command.clone()],
+            },
+            "any" => Predicate::AnyOf {
+                predicates: vec![command.clone()],
+            },
+            "not" => Predicate::NotOf {
+                predicate: Box::new(command.clone()),
+            },
+            _ => command,
+        };
+        let witness = Witness::new(
+            Ledger::open("sqlite::memory:").await.unwrap(),
+            directory.path(),
+        );
+        // Trusted explicit host goal text; this test exercises evaluator authority,
+        // while the separate full-runtime test exercises planner admission.
+        let oath = Oath::draft(
+            format!("sub-{kind}"),
+            format!("goal-{kind}"),
+            "session",
+            "inspect fixture",
+        )
+        .with_postcondition(predicate)
+        .with_postcondition(Predicate::DirectoryExists {
+            path: directory.path().into(),
+        });
+        let (oath, _) = temm1e_witness::oath::seal_oath(witness.ledger(), oath)
+            .await
+            .unwrap();
+        let user = witness.for_authority(directory.path(), Role::User);
+        let verdict = user.verify_oath(&oath).await.unwrap();
+        assert!(!marker.exists(), "{kind} executed for User");
+        assert_eq!(
+            verdict.per_predicate[0].outcome,
+            VerdictOutcome::Inconclusive,
+            "{kind}"
+        );
+        assert_eq!(verdict.per_predicate[1].outcome, VerdictOutcome::Pass);
+        assert_eq!(verdict.tier_usage.tier0_calls, 1); // Only directory check actually ran.
+        let rebound = user
+            .for_authority(directory.path(), Role::Admin)
+            .verify_oath(&oath)
+            .await
+            .unwrap();
+        assert_eq!(
+            rebound.per_predicate[0].outcome,
+            VerdictOutcome::Inconclusive
+        );
+        assert!(!marker.exists(), "rebinding expanded existing authority");
+        let admin = witness
+            .for_authority(directory.path(), Role::Admin)
+            .verify_oath(&oath)
+            .await
+            .unwrap();
+        assert!(marker.exists(), "{kind} stopped authorized Admin execution");
+        assert_eq!(
+            admin.per_predicate[0].outcome,
+            if kind == "not" {
+                VerdictOutcome::Fail
+            } else {
+                VerdictOutcome::Pass
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn restricted_witness_denies_command_checks_before_platform_process_launch() {
+    use temm1e_core::types::rbac::Role;
+    use temm1e_witness::types::{Predicate, VerdictOutcome};
+    let directory = tempfile::tempdir().unwrap();
+    let witness = Witness::new(
+        Ledger::open("sqlite::memory:").await.unwrap(),
+        directory.path(),
+    );
+    let command = Predicate::CommandExits {
+        cmd: directory
+            .path()
+            .join("not-created-program")
+            .to_string_lossy()
+            .into_owned(),
+        args: vec![],
+        expected_code: 0,
+        cwd: None,
+        timeout_ms: 1000,
+    };
+    for (index, predicate) in [
+        command.clone(),
+        Predicate::AllOf {
+            predicates: vec![command.clone()],
+        },
+        Predicate::AnyOf {
+            predicates: vec![command.clone()],
+        },
+        Predicate::NotOf {
+            predicate: Box::new(command),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let oath = Oath::draft(
+            format!("sub-{index}"),
+            format!("goal-{index}"),
+            "session",
+            "inspect fixture",
+        )
+        .with_postcondition(predicate);
+        let (oath, _) = temm1e_witness::oath::seal_oath(witness.ledger(), oath)
+            .await
+            .unwrap();
+        let verdict = witness
+            .for_authority(directory.path(), Role::User)
+            .verify_oath(&oath)
+            .await
+            .unwrap();
+        assert_eq!(verdict.outcome, VerdictOutcome::Inconclusive);
+        assert_eq!(verdict.tier_usage.tier0_calls, 0);
+        assert!(verdict.per_predicate[0].detail.contains("shell permission"));
+    }
+}

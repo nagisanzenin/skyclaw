@@ -6,9 +6,9 @@
 //! and a static cached system prompt. Tier 2 remains advisory-only.
 //!
 //! The Witness is the ONLY entity authorized to produce a `Verified` outcome.
-//! It respects Law 5 (Narrative-Only FAIL) — it never mutates the file system,
-//! git state, or processes. Its only output is a `Verdict` plus a rewritten
-//! final-reply string.
+//! Final-reply composition changes only the narrative. Verification itself can
+//! run command/network predicates with external effects; arbitrary-program
+//! checks must inherit caller authority. Workspace binding is not an OS sandbox.
 
 use crate::config::WitnessStrictness;
 use crate::error::WitnessError;
@@ -255,6 +255,7 @@ pub fn parse_tier1_response(text: &str) -> Result<LlmVerifierResponse, WitnessEr
 pub struct Witness {
     ledger: Arc<Ledger>,
     workspace_root: std::path::PathBuf,
+    command_execution_allowed: bool,
     tier1: Option<Arc<dyn Tier1Verifier>>,
     tier2: Option<Arc<dyn Tier2Verifier>>,
 }
@@ -264,6 +265,7 @@ impl Witness {
         Self {
             ledger,
             workspace_root: workspace_root.into(),
+            command_execution_allowed: true, // Explicit legacy host construction is trusted.
             tier1: None,
             tier2: None,
         }
@@ -274,6 +276,18 @@ impl Witness {
     pub fn for_workspace(&self, workspace: impl Into<std::path::PathBuf>) -> Self {
         let mut scoped = self.clone();
         scoped.workspace_root = workspace.into();
+        scoped
+    }
+
+    /// Bind a turn's workspace and authenticated authority without changing
+    /// another active turn. Rebinding can narrow but cannot elevate a binding.
+    pub fn for_authority(
+        &self,
+        workspace: impl Into<std::path::PathBuf>,
+        role: temm1e_core::types::rbac::Role,
+    ) -> Self {
+        let mut scoped = self.for_workspace(workspace);
+        scoped.command_execution_allowed &= role.is_tool_allowed("shell");
         scoped
     }
 
@@ -350,7 +364,12 @@ impl Witness {
 
         for predicate in &oath.postconditions {
             let tier = predicate.tier();
-            let result = if tier == 0 {
+            let result = if !self.command_execution_allowed
+                && predicate.requires_command_execution()
+            {
+                PredicateCheckResult::inconclusive(
+                    "Command verification is unavailable: caller lacks shell permission. This check started no process.", 0)
+            } else if tier == 0 {
                 tier_usage.tier0_calls += 1;
                 let r = check_tier0(predicate, &ctx).await?;
                 tier_usage.tier0_latency_ms += r.latency_ms;

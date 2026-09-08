@@ -182,6 +182,23 @@ pub enum Predicate {
 }
 
 impl Predicate {
+    /// Arbitrary-program checks require the caller's shell capability, even
+    /// when nested inside a logical composite. Check before evaluating NotOf
+    /// so a denied check cannot be inverted into a passing verdict.
+    pub fn requires_command_execution(&self) -> bool {
+        match self {
+            Self::CommandExits { .. }
+            | Self::CommandOutputContains { .. }
+            | Self::CommandOutputAbsent { .. }
+            | Self::CommandDurationUnder { .. } => true,
+            Self::AllOf { predicates } | Self::AnyOf { predicates } => {
+                predicates.iter().any(Self::requires_command_execution)
+            }
+            Self::NotOf { predicate } => predicate.requires_command_execution(),
+            _ => false,
+        }
+    }
+
     /// Returns true if this predicate can be checked without any LLM call.
     pub fn is_tier0(&self) -> bool {
         !matches!(
