@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 mod command;
+mod mission_control;
 mod search_install;
 mod update_assets;
 mod updater;
@@ -3170,14 +3171,9 @@ async fn main() -> Result<()> {
 
             // ── Per-chat serial executor ───────────────────────
 
-            /// A user order queued for processing after the current task.
-            struct QueuedOrder {
-                original_msg: temm1e_core::types::message::InboundMessage,
-                #[allow(dead_code)]
-                queued_at: std::time::Instant,
-            }
-
-            type OrderQueue = Arc<std::sync::Mutex<std::collections::VecDeque<QueuedOrder>>>;
+            use crate::mission_control::OrderQueue;
+            let mission_tasks = tokio_util::task::TaskTracker::new();
+            let mission_slots = Arc::new(tokio::sync::Semaphore::new(32));
 
             /// Tracks the active task state for a single chat.
             #[allow(dead_code)]
@@ -3231,6 +3227,9 @@ async fn main() -> Result<()> {
                 let msg_tx_redispatch = msg_tx.clone();
                 let dispatcher_shutdown = shutdown_token.clone();
                 let dispatcher_workers = worker_handles.clone();
+                let dispatcher_missions = mission_tasks.clone();
+                let mission_shutdown = shutdown_token.clone();
+
                 task_handles.push(tokio::spawn(async move {
                     while let Some(mut inbound) = tokio::select! {
                         biased;
@@ -3426,27 +3425,45 @@ async fn main() -> Result<()> {
                                         .cloned()
                                         .or_else(|| primary_fallback.clone())
                                         .expect("channel_map non-empty");
+                                    let mission_permit = match mission_slots.clone().try_acquire_owned() {
+                                        Ok(permit) => permit,
+                                        Err(_) => {
+                                            let accepted = slot.tx.try_send(inbound.clone()).is_ok();
+                                            let notice = temm1e_core::types::message::OutboundMessage {
+                                                chat_id: chat_id.clone(), reply_to: Some(inbound.id.clone()), parse_mode: None,
+                                                text: if accepted { "Mission Control is at capacity; your message is queued as a normal follow-up." } else { "The request queue is full; your message was not queued. Please retry." }.into(),
+                                            };
+                                            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), icpt_sender.send_message(notice)).await;
+                                            continue;
+                                        }
+                                    };
                                     let icpt_chat_id = chat_id.clone();
                                     let icpt_route = route.clone();
                                     let icpt_msg_id = inbound.id.clone();
                                     let icpt_msg_text = inbound.text.clone().unwrap_or_default();
                                     let icpt_inbound = inbound.clone();
-                                    let icpt_interrupt = slot.interrupt.clone();
-                                    let icpt_active_cancel = slot.active_cancel.clone();
-                                    let icpt_task = slot.current_task.clone();
-                                    let icpt_status_tx = slot.status_tx.clone();
+                                    // Capture this task's token now; a late classifier must
+                                    // never cancel whichever newer task owns the slot later.
+                                    let icpt_task_cancel = slot.active_cancel.lock()
+                                        .unwrap_or_else(|e| e.into_inner()).clone();
+                                    let task_desc = slot.current_task.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                                    let icpt_busy = slot.is_busy.clone();
+                                    let icpt_worker_tx = slot.tx.clone();
+                                    let status_snap = slot.status_tx.borrow().clone();
                                     let icpt_order_queue = slot.order_queue.clone();
                                     let icpt_pending = pending_clone.clone();
                                     let icpt_perpetuum_temporal = perpetuum_temporal.clone();
                                     let icpt_agent_state = agent_state_clone.clone();
                                     let icpt_personality = personality.clone();
-                                    tokio::spawn(async move {
-                                        let task_desc = icpt_task.lock()
-                                            .map(|t| t.clone())
-                                            .unwrap_or_default();
-
-                                        // Read real-time phase from status watch channel
-                                        let status_snap = icpt_status_tx.borrow().clone();
+                                    let mission_stop = mission_shutdown.clone();
+                                    dispatcher_missions.spawn(async move {
+                                        let _permit = mission_permit;
+                                        tokio::select! {
+                                            biased;
+                                            _ = mission_stop.cancelled() => {
+                                                tracing::warn!("Mission Control interrupted during shutdown; unconfirmed routing requires reconciliation");
+                                            }
+                                            _ = async {
                                         let elapsed = status_snap.started_at.elapsed().as_secs();
                                         let phase_str = format!("{}", status_snap.phase);
 
@@ -3467,37 +3484,26 @@ async fn main() -> Result<()> {
                                         let Some(agent) = agent_guard.as_ref() else { return; };
                                         let provider = agent.provider_arc();
                                         let model = agent.model().to_string();
+                                        let budget = agent.budget();
+                                        let pricing = *agent.model_pricing();
                                         drop(agent_guard);
 
                                         let soul = build_system_prompt(&icpt_personality);
                                         let request = temm1e_core::types::message::CompletionRequest {
                                             model,
                                             system: Some(format!(
-                                                "{soul}\n\n\
-                                                 === MISSION CONTROL ===\n\
-                                                 You are Tem's MISSION CONTROL. Your main self is busy working.\n\n\
-                                                 FOREGROUND TASK:\n\
-                                                   Request: \"{task_desc}\"\n\
-                                                   Phase: {phase_str}\n\
-                                                   Elapsed: {elapsed}s | Rounds: {} | Tools run: {} | Cost: ${:.4}\n\n\
-                                                 BACKGROUND (Perpetuum):\n\
-                                                   {perpetuum_section}\n\n\
-                                                 QUEUED ORDERS: {oq_count}\n\n\
-                                                 The user says: \"{icpt_msg_text}\"\n\n\
-                                                 Classify and respond (1-3 sentences max). End with EXACTLY ONE token:\n\
-                                                 [AMEND] — user is correcting/adding to the CURRENT task\n\
-                                                 [QUEUE] — user wants something NEW done AFTER the current task\n\
-                                                 [CANCEL] — user wants to STOP the current task\n\
-                                                 [CHAT] — user is chatting or asking about status\n\n\
-                                                 Rules:\n\
-                                                 - For status questions: describe what you're doing using the phase info, then end with [CHAT]\n\
-                                                 - For [QUEUE]: confirm the order is queued\n\
-                                                 - For [AMEND]: acknowledge the update\n\
-                                                 - NEVER use [CANCEL] unless the user clearly wants to stop\n\
-                                                 === END MISSION CONTROL ===",
-                                                status_snap.rounds_completed,
-                                                status_snap.tools_executed,
-                                                status_snap.cost_usd,
+                                                "{soul}\n\n{}\nTask metadata: {}",
+                                                crate::mission_control::DECISION_INSTRUCTIONS,
+                                                serde_json::json!({
+                                                    "foreground_request": task_desc,
+                                                    "phase": phase_str,
+                                                    "elapsed_seconds": elapsed,
+                                                    "rounds": status_snap.rounds_completed,
+                                                    "tools_run": status_snap.tools_executed,
+                                                    "recorded_cost_usd": status_snap.cost_usd,
+                                                    "background": perpetuum_section,
+                                                    "queued_orders": oq_count,
+                                                }),
                                             )),
                                             messages: vec![
                                                 temm1e_core::types::message::ChatMessage {
@@ -3506,109 +3512,48 @@ async fn main() -> Result<()> {
                                                 },
                                             ],
                                             tools: vec![],
-                                            max_tokens: None,
-                                            temperature: Some(0.7),
+                                            max_tokens: Some(1024),
+                                            temperature: None,
                                             system_volatile: None,
                                         };
 
-                                        match provider.complete(request).await {
-                                            Ok(resp) => {
-                                                let mut text = resp.content.iter()
-                                                    .filter_map(|p| match p {
-                                                        temm1e_core::types::message::ContentPart::Text { text } => Some(text.as_str()),
-                                                        _ => None,
-                                                    })
-                                                    .collect::<Vec<_>>()
-                                                    .join("");
-
-                                                // Parse classification token
-                                                let classification = if text.contains("[CANCEL]") {
-                                                    "cancel"
-                                                } else if text.contains("[QUEUE]") {
-                                                    "queue"
-                                                } else if text.contains("[AMEND]") {
-                                                    "amend"
-                                                } else {
-                                                    "chat"
+                                        match crate::mission_control::classify(&*provider, &budget, &pricing, request).await {
+                                            Ok(decision) => {
+                                                let text = decision.reply;
+                                                let outcome = crate::mission_control::RoutingContext {
+                                                    captured_task: &icpt_task_cancel, busy: &icpt_busy,
+                                                    worker: &icpt_worker_tx, orders: &icpt_order_queue,
+                                                    pending: &icpt_pending, route: &icpt_route,
+                                                }.apply(decision.action, icpt_inbound);
+                                                let acknowledgement = outcome.acknowledgement().map(str::to_string).unwrap_or(text);
+                                                let reply = temm1e_core::types::message::OutboundMessage {
+                                                    chat_id: icpt_chat_id,
+                                                    text: acknowledgement,
+                                                    reply_to: Some(icpt_msg_id),
+                                                    parse_mode: None,
                                                 };
-
-                                                // Strip all tokens from response
-                                                for token in &["[CANCEL]", "[QUEUE]", "[AMEND]", "[CHAT]"] {
-                                                    text = text.replace(token, "");
-                                                }
-                                                text = text.trim().to_string();
-
-                                                // Send response to user
-                                                if !text.is_empty() {
-                                                    let reply = temm1e_core::types::message::OutboundMessage {
-                                                        chat_id: icpt_chat_id.clone(),
-                                                        text,
-                                                        reply_to: Some(icpt_msg_id),
-                                                        parse_mode: None,
-                                                    };
-                                                    let _ = icpt_sender.send_message(reply).await;
-                                                }
-
-                                                // Route based on classification
-                                                match classification {
-                                                    "cancel" => {
-                                                        icpt_interrupt.store(true, Ordering::Relaxed);
-                                                        if let Ok(ct) = icpt_active_cancel.lock() {
-                                                            ct.cancel();
-                                                        }
-                                                        tracing::info!(
-                                                            chat_id = %icpt_chat_id,
-                                                            "Mission Control cancelled active task"
-                                                        );
-                                                    }
-                                                    "queue" => {
-                                                        if let Ok(mut oq) = icpt_order_queue.lock() {
-                                                            oq.push_back(QueuedOrder {
-                                                                original_msg: icpt_inbound,
-                                                                queued_at: std::time::Instant::now(),
-                                                            });
-                                                        }
-                                                        tracing::info!(
-                                                            chat_id = %icpt_chat_id,
-                                                            "Mission Control queued new order"
-                                                        );
-                                                    }
-                                                    "amend" => {
-                                                        if let Ok(mut pq) = icpt_pending.lock() {
-                                                            pq.entry(icpt_route.clone())
-                                                                .or_default()
-                                                                .push(icpt_inbound);
-                                                        }
-                                                        tracing::info!(
-                                                            chat_id = %icpt_chat_id,
-                                                            "Mission Control routed amendment to pending"
-                                                        );
-                                                    }
-                                                    _ => {
-                                                        // [CHAT] — message consumed by response
-                                                    }
+                                                if !matches!(tokio::time::timeout(std::time::Duration::from_secs(10), icpt_sender.send_message(reply)).await, Ok(Ok(()))) {
+                                                    tracing::warn!("Mission Control acknowledgement was not confirmed; routing is not retried");
                                                 }
                                             }
                                             Err(e) => {
                                                 tracing::warn!(
                                                     error = %e,
-                                                    "Mission Control LLM call failed — fallback to pending"
+                                                    "Mission Control classification failed — attempting normal follow-up"
                                                 );
-                                                // Conservative: treat as amendment
-                                                if let Ok(mut pq) = icpt_pending.lock() {
-                                                    pq.entry(icpt_route.clone())
-                                                        .or_default()
-                                                        .push(icpt_inbound);
-                                                }
-                                                // Send hardcoded ack
+                                                let accepted = icpt_worker_tx.try_send(icpt_inbound).is_ok();
+                                                // Classification failed: preserve the original as a normal
+                                                // follow-up instead of silently treating it as a correction.
                                                 let ack = temm1e_core::types::message::OutboundMessage {
                                                     chat_id: icpt_chat_id,
-                                                    text: "Got your message \u{2014} I'll look at it when I finish what I'm working on.".to_string(),
+                                                    text: if accepted { "I could not classify this message; it is queued as a follow-up." } else { "I could not classify this message and the follow-up queue is full. Please retry." }.to_string(),
                                                     reply_to: Some(icpt_msg_id),
                                                     parse_mode: None,
                                                 };
-                                                let _ = icpt_sender.send_message(ack).await;
+                                                let _ = tokio::time::timeout(std::time::Duration::from_secs(10), icpt_sender.send_message(ack)).await;
                                             }
+                                        }
+                                            } => {}
                                         }
                                     });
                                     continue;
@@ -3654,7 +3599,6 @@ async fn main() -> Result<()> {
                                 Arc::new(std::sync::Mutex::new(cancel_token.child_token()));
                             let is_busy_clone = is_busy.clone();
                             let current_task_clone = current_task.clone();
-                            let self_tx = chat_tx.clone();
 
                             let agent_state = agent_state_clone.clone();
                             let memory = memory_clone.clone();
@@ -3698,15 +3642,24 @@ async fn main() -> Result<()> {
                             let browser_ref_worker = browser_tool_ref.clone();
                             let usage_store_worker = usage_store_clone.clone();
                             let hive_worker = hive_clone.clone();
-                            let worker_chat_id = chat_id.clone();
                             let worker_route = route.clone();
 
                             let conversations = conversations.clone();
                             let worker_handle = tokio::spawn(async move {
-                                while let Some(mut msg) = tokio::select! {
-                                    biased;
-                                    _ = cancel_token_clone.cancelled() => None,
-                                    message = chat_rx.recv() => message,
+                                while let Some(mut msg) = {
+                                    if cancel_token_clone.is_cancelled() {
+                                        None
+                                    } else {
+                                        let queued = order_queue_worker.lock().unwrap_or_else(|e| e.into_inner())
+                                            .pop_front().map(|order| order.original_msg);
+                                        if queued.is_some() { queued } else {
+                                            tokio::select! {
+                                                biased;
+                                                _ = cancel_token_clone.cancelled() => None,
+                                                message = chat_rx.recv() => message,
+                                            }
+                                        }
+                                    }
                                 } {
                                     // Resolve sender per-message from channel map
                                     let sender: Arc<dyn temm1e_core::Channel> = channel_map_worker
@@ -6134,50 +6087,11 @@ Just type a message to chat with the AI agent.",
                                         }
                                     }
 
-                                    // Re-queue any unconsumed pending messages as
-                                    // standalone requests, then clear active state.
-                                    if let Ok(mut pq) = pending_for_worker.lock() {
-                                        if let Some(pending_msgs) = pq.remove(&worker_route) {
-                                            if !pending_msgs.is_empty() {
-                                                tracing::info!(
-                                                    count = pending_msgs.len(),
-                                                    chat_id = %worker_chat_id,
-                                                    "Re-queuing unconsumed pending messages"
-                                                );
-                                                for original in pending_msgs {
-                                                    if self_tx.try_send(original).is_err() {
-                                                        tracing::warn!(
-                                                            chat_id = %worker_chat_id,
-                                                            "Failed to re-queue pending message — channel full"
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // ── Mission Control: dispatch next queued order ──
-                                    if let Ok(mut oq) = order_queue_worker.lock() {
-                                        if let Some(next_order) = oq.pop_front() {
-                                            tracing::info!(
-                                                chat_id = %worker_chat_id,
-                                                remaining = oq.len(),
-                                                "Dispatching next queued order"
-                                            );
-                                            if self_tx.try_send(next_order.original_msg).is_err() {
-                                                tracing::warn!(
-                                                    chat_id = %worker_chat_id,
-                                                    "Failed to dispatch queued order — channel full"
-                                                );
-                                            }
-                                        }
-                                    }
-                                    is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                    is_busy_clone.store(false, Ordering::Relaxed);
-                                    interrupt_clone.store(false, Ordering::Relaxed);
                                     }).catch_unwind().await;
-                                    // Also clean up early returns (including failed persistence).
+                                    // This also runs after early returns and caught panics.
+                                    let finished_task = active_cancel_clone.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                                    crate::mission_control::finish_task(&finished_task, &is_busy_clone, &order_queue_worker, &pending_for_worker, &worker_route);
                                     is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                    is_busy_clone.store(false, Ordering::Relaxed);
                                     interrupt_clone.store(false, Ordering::Relaxed);
 
                                     // ── Outer panic safety net ─────────────────
@@ -6355,6 +6269,14 @@ Just type a message to chat with the AI agent.",
                     .await;
                     println!("Drain timeout — remaining tracked tasks aborted; unfinished effects require reconciliation.");
                 }
+            }
+
+            mission_tasks.close();
+            if tokio::time::timeout(std::time::Duration::from_secs(1), mission_tasks.wait())
+                .await
+                .is_err()
+            {
+                tracing::warn!("Mission Control tasks did not join before shutdown deadline");
             }
 
             // Clean up PID file on graceful shutdown
