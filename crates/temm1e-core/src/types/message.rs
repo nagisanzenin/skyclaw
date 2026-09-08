@@ -184,6 +184,9 @@ pub enum ContentPart {
         provider: String,
         model: String,
         response_id: String,
+        /// Optional hash of the request prefix for context-bound native state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_fingerprint: Option<String>,
         output: Vec<serde_json::Value>,
     },
 }

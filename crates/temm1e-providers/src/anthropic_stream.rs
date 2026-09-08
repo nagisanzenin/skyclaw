@@ -30,7 +30,8 @@ enum Block {
         initial: Value,
         json: String,
     },
-    Ignored,
+    Thinking,
+    Redacted,
 }
 #[derive(Default)]
 struct Decoder {
@@ -43,6 +44,11 @@ struct Decoder {
     stop: Option<String>,
     done: bool,
     tool_bytes: usize,
+    native_bytes: usize,
+    output: BTreeMap<usize, Value>,
+    route: String,
+    model: String,
+    context_fingerprint: String,
 }
 impl Decoder {
     fn chunk(&self) -> StreamChunk {
@@ -164,6 +170,11 @@ impl Protocol for Decoder {
                     return Err(error("duplicate or late content block"));
                 }
                 let b = &value["content_block"];
+                self.native_bytes = self.native_bytes.saturating_add(b.to_string().len());
+                if self.native_bytes > 16 * 1024 * 1024 {
+                    return Err(error("native state exceeds 16 MiB"));
+                }
+                self.output.insert(i, b.clone());
                 let block = match string(b, "type")? {
                     "text" => {
                         let text = string(b, "text")?;
@@ -202,7 +213,19 @@ impl Protocol for Decoder {
                             "server-side tools need a supported result/history adapter",
                         ))
                     }
-                    _ => Block::Ignored,
+                    "thinking" => {
+                        string(b, "thinking")?;
+                        Block::Thinking
+                    }
+                    "redacted_thinking" => {
+                        string(b, "data")?;
+                        Block::Redacted
+                    }
+                    _ => {
+                        return Err(error(
+                            "unsupported content block requires an explicit adapter",
+                        ))
+                    }
                 };
                 if self.tool_bytes > 2 * 1024 * 1024 {
                     return Err(error("tool input exceeds 2 MiB limit"));
@@ -212,6 +235,14 @@ impl Protocol for Decoder {
             "content_block_delta" => {
                 let i = index(&value)?;
                 let delta = &value["delta"];
+                self.native_bytes = self.native_bytes.saturating_add(delta.to_string().len());
+                if self.native_bytes > 16 * 1024 * 1024 {
+                    return Err(error("native state exceeds 16 MiB"));
+                }
+                let native = self
+                    .output
+                    .get_mut(&i)
+                    .ok_or_else(|| error("native output missing for delta"))?;
                 let block = self
                     .blocks
                     .get_mut(&i)
@@ -219,6 +250,11 @@ impl Protocol for Decoder {
                 match (block, string(delta, "type")?) {
                     (Block::Text, "text_delta") => {
                         let text = string(delta, "text")?;
+                        if let Value::String(value) = &mut native["text"] {
+                            value.push_str(text);
+                        } else {
+                            return Err(error("invalid native text"));
+                        }
                         let mut c = self.chunk();
                         c.delta = Some(text.into());
                         self.queue.push_back(c);
@@ -231,17 +267,41 @@ impl Protocol for Decoder {
                         }
                         json.push_str(text);
                     }
-                    (Block::Ignored, _) => {}
-                    (_, "text_delta" | "input_json_delta") => {
-                        return Err(error("delta type does not match block"))
+                    (Block::Thinking, kind @ ("thinking_delta" | "signature_delta")) => {
+                        let field = if kind == "thinking_delta" {
+                            "thinking"
+                        } else {
+                            "signature"
+                        };
+                        if native.get(field).is_none() {
+                            native[field] = Value::String(String::new());
+                        }
+                        if let Value::String(value) = &mut native[field] {
+                            value.push_str(string(delta, field)?);
+                        } else {
+                            return Err(error("invalid native thinking field"));
+                        }
                     }
-                    _ => {} // e.g. text citations; private thinking is never visible text
+                    (Block::Text, "citations_delta") => {
+                        if !delta["citation"].is_object() {
+                            return Err(error("invalid citation delta"));
+                        }
+                        if native.get("citations").is_none() {
+                            native["citations"] = serde_json::json!([]);
+                        }
+                        native["citations"]
+                            .as_array_mut()
+                            .ok_or_else(|| error("invalid citations"))?
+                            .push(delta["citation"].clone());
+                    }
+                    _ => return Err(error("unsupported or mismatched content delta")),
                 }
             }
             "content_block_stop" => {
+                let i = index(&value)?;
                 let b = self
                     .blocks
-                    .remove(&index(&value)?)
+                    .remove(&i)
                     .ok_or_else(|| error("stop for unopened block"))?;
                 if let Block::Tool {
                     id,
@@ -259,14 +319,11 @@ impl Protocol for Decoder {
                     if !input.is_object() {
                         return Err(error("tool arguments must be an object"));
                     }
-                    let mut c = self.chunk();
-                    c.tool_use = Some(ContentPart::ToolUse {
-                        id,
-                        name,
-                        input,
-                        thought_signature: None,
-                    });
-                    self.queue.push_back(c);
+                    self.output
+                        .get_mut(&i)
+                        .ok_or_else(|| error("native tool output missing"))?["input"] = input;
+                    // Dispatch normalized tool chunks only after message_stop.
+                    let _ = (id, name);
                 }
             }
             "message_delta" => {
@@ -290,7 +347,24 @@ impl Protocol for Decoder {
                         "message_stop without completed blocks and stop reason",
                     ));
                 }
+                let output: Vec<_> = self.output.values().cloned().collect();
+                for part in crate::anthropic_native::normalize(&output)? {
+                    if matches!(part, ContentPart::ToolUse { .. }) {
+                        let mut chunk = self.chunk();
+                        chunk.tool_use = Some(part);
+                        self.queue.push_back(chunk);
+                    }
+                }
                 let mut c = self.chunk();
+                if !self.route.is_empty() {
+                    c.provider_state = Some(ContentPart::ProviderState {
+                        provider: self.route.clone(),
+                        model: self.model.clone(),
+                        response_id: self.id.clone().unwrap_or_default(),
+                        context_fingerprint: Some(self.context_fingerprint.clone()),
+                        output,
+                    });
+                }
                 c.usage = Some(self.snapshot()?);
                 c.stop_reason = self.stop.clone();
                 self.queue.push_back(c);
@@ -303,8 +377,19 @@ impl Protocol for Decoder {
 }
 pub(crate) fn stream(
     response: reqwest::Response,
+    route: String,
+    model: String,
+    context_fingerprint: String,
 ) -> BoxStream<'static, Result<StreamChunk, Temm1eError>> {
-    crate::sse_transport::stream(response, Decoder::default())
+    crate::sse_transport::stream(
+        response,
+        Decoder {
+            route,
+            model,
+            context_fingerprint,
+            ..Default::default()
+        },
+    )
 }
 
 #[cfg(test)]
@@ -321,6 +406,74 @@ mod tests {
     fn start(d: &mut Decoder) {
         send(d,"message_start",serde_json::json!({"message":{"id":"msg_1","usage":{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}})).unwrap();
     }
+    #[test]
+    fn streamed_thinking_and_redactions_survive_without_becoming_visible_deltas() {
+        let mut decoder = Decoder {
+            route: "anthropic|fixture".into(),
+            model: "claude-opus-5".into(),
+            context_fingerprint: "prefix".into(),
+            ..Default::default()
+        };
+        start(&mut decoder);
+        send(
+            &mut decoder,
+            "content_block_start",
+            serde_json::json!({"index":0,"content_block":{"type":"thinking","thinking":""}}),
+        )
+        .unwrap();
+        send(&mut decoder, "content_block_delta", serde_json::json!({"index":0,"delta":{"type":"thinking_delta","thinking":"private café"}})).unwrap();
+        for signature in ["first-", "second"] {
+            send(&mut decoder, "content_block_delta", serde_json::json!({"index":0,"delta":{"type":"signature_delta","signature":signature}})).unwrap();
+        }
+        send(
+            &mut decoder,
+            "content_block_stop",
+            serde_json::json!({"index":0}),
+        )
+        .unwrap();
+        send(&mut decoder, "content_block_start", serde_json::json!({"index":1,"content_block":{"type":"redacted_thinking","data":"opaque-data"}})).unwrap();
+        send(
+            &mut decoder,
+            "content_block_stop",
+            serde_json::json!({"index":1}),
+        )
+        .unwrap();
+        assert!(decoder.queue.is_empty());
+        send(&mut decoder, "content_block_start", serde_json::json!({"index":2,"content_block":{"type":"tool_use","id":"t1","name":"read","input":{}}})).unwrap();
+        send(
+            &mut decoder,
+            "content_block_stop",
+            serde_json::json!({"index":2}),
+        )
+        .unwrap();
+        assert!(
+            decoder.queue.is_empty(),
+            "tools must wait for terminal completion"
+        );
+        send(
+            &mut decoder,
+            "message_delta",
+            serde_json::json!({"delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}),
+        )
+        .unwrap();
+        send(&mut decoder, "message_stop", serde_json::json!({})).unwrap();
+        let chunks: Vec<_> = decoder.queue.into_iter().collect();
+        assert!(chunks.iter().all(|chunk| chunk.delta.is_none()));
+        assert!(matches!(&chunks[0].tool_use, Some(ContentPart::ToolUse { id, .. }) if id == "t1"));
+        let Some(ContentPart::ProviderState {
+            output,
+            context_fingerprint,
+            ..
+        }) = &chunks[1].provider_state
+        else {
+            panic!("missing native state");
+        };
+        assert_eq!(output[0]["thinking"], "private café");
+        assert_eq!(output[0]["signature"], "first-second");
+        assert_eq!(output[1]["data"], "opaque-data");
+        assert_eq!(context_fingerprint.as_deref(), Some("prefix"));
+    }
+
     #[test]
     fn indexed_blocks_do_not_pop_other_tools_and_usage_is_cumulative() {
         let mut d = Decoder::default();

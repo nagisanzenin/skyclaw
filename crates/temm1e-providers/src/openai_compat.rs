@@ -1208,6 +1208,7 @@ mod tests {
                 content: MessageContent::Parts(vec![
                     ContentPart::Text { text: "Hi".into() },
                     ContentPart::ProviderState {
+                        context_fingerprint: None,
                         provider: original.responses_route(),
                         model: "gpt-6-astra".into(),
                         response_id: "resp".into(),

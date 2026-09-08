@@ -364,6 +364,7 @@ async fn final_native_state_is_persisted_in_history_without_leaking_into_reply()
     use temm1e_core::types::message::{ContentPart, MessageContent};
     let mut response = QueuedMockProvider::text_response("Visible answer");
     let native = ContentPart::ProviderState {
+        context_fingerprint: None,
         provider: "openai".into(),
         model: "gpt-6-astra".into(),
         response_id: "resp_saved".into(),

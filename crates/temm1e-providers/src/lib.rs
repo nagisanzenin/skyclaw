@@ -14,6 +14,7 @@
 #![allow(dead_code)]
 
 mod anthropic;
+mod anthropic_native;
 mod anthropic_stream;
 pub mod chat_stream;
 pub mod gemini;

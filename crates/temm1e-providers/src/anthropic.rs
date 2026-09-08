@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use futures::stream::BoxStream;
+use futures::{stream::BoxStream, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -88,16 +88,8 @@ impl AnthropicProvider {
         request: &CompletionRequest,
         stream: bool,
     ) -> Result<serde_json::Value, Temm1eError> {
-        let messages = request
-            .messages
-            .iter()
-            .filter(|m| !matches!(m.role, Role::System))
-            .map(convert_message_to_anthropic)
-            .collect::<Result<Vec<_>, _>>()?;
-
         let mut body = serde_json::json!({
             "model": request.model,
-            "messages": messages,
             "max_tokens": request.max_tokens.unwrap_or_else(|| {
                 let (_, max_output) = temm1e_core::types::model_registry::model_limits(&request.model);
                 max_output as u32
@@ -128,7 +120,47 @@ impl AnthropicProvider {
             _ => {}
         }
 
-        if let Some(temp) = request.temperature {
+        // Preserve system instructions carried in history, rather than filtering
+        // them out without forwarding. Only the stable base has a cache breakpoint.
+        let mut system = body
+            .get("system")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for message in request
+            .messages
+            .iter()
+            .filter(|message| matches!(message.role, Role::System))
+        {
+            match &message.content {
+                MessageContent::Text(text) => {
+                    system.push(serde_json::json!({"type":"text","text":text}))
+                }
+                MessageContent::Parts(parts) => {
+                    for part in parts {
+                        if let ContentPart::Text { text } = part {
+                            system.push(serde_json::json!({"type":"text","text":text}));
+                        } else {
+                            return Err(Temm1eError::Provider(
+                                "System history contains a non-text block".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        if !system.is_empty() {
+            body["system"] = system.into();
+        }
+
+        // These catalogued newer models use adaptive thinking by default and
+        // reject temperature controls. Existing model defaults are unchanged.
+        if matches!(
+            request.model.as_str(),
+            "claude-fable-5-1" | "claude-opus-5" | "claude-sonnet-5"
+        ) {
+            body["thinking"] = serde_json::json!({"type":"adaptive"});
+        } else if let Some(temp) = request.temperature {
             body["temperature"] = serde_json::json!(temp);
         }
 
@@ -140,6 +172,31 @@ impl AnthropicProvider {
                 .collect();
             body["tools"] = serde_json::json!(tools);
         }
+
+        let owner = crate::anthropic_native::route(&self.base_url);
+        let mut messages = Vec::new();
+        for message in request
+            .messages
+            .iter()
+            .filter(|message| !matches!(message.role, Role::System))
+        {
+            if let MessageContent::Parts(parts) = &message.content {
+                let prefix = crate::anthropic_native::context_fingerprint(&body, &messages);
+                if let Some(output) =
+                    crate::anthropic_native::replay(parts, &owner, &request.model, &prefix)?
+                {
+                    if !matches!(message.role, Role::Assistant) {
+                        return Err(Temm1eError::Provider(
+                            "Native Anthropic state belongs only to assistant messages".into(),
+                        ));
+                    }
+                    messages.push(serde_json::json!({"role":"assistant","content":output}));
+                    continue;
+                }
+            }
+            messages.push(convert_message_to_anthropic(message)?);
+        }
+        body["messages"] = messages.into();
 
         if stream {
             body["stream"] = serde_json::json!(true);
@@ -156,26 +213,9 @@ impl AnthropicProvider {
 #[derive(Debug, Deserialize)]
 struct AnthropicResponse {
     id: String,
-    content: Vec<AnthropicContentBlock>,
+    content: Vec<serde_json::Value>,
     stop_reason: Option<String>,
     usage: AnthropicUsage,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-enum AnthropicContentBlock {
-    #[serde(rename = "text")]
-    Text { text: String },
-    #[serde(rename = "tool_use")]
-    ToolUse {
-        id: String,
-        name: String,
-        input: serde_json::Value,
-    },
-    /// Catch-all for block types we don't handle (e.g. `thinking` from
-    /// Anthropic-compatible providers like MiniMax). Silently ignored.
-    #[serde(other)]
-    Unknown,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,19 +228,21 @@ struct AnthropicUsage {
     cache_creation_input_tokens: Option<u32>,
 }
 
-impl From<AnthropicUsage> for Usage {
-    fn from(raw: AnthropicUsage) -> Self {
-        Self {
+impl TryFrom<AnthropicUsage> for Usage {
+    type Error = Temm1eError;
+    fn try_from(raw: AnthropicUsage) -> Result<Self, Self::Error> {
+        Ok(Self {
             totals_reported: Some(true),
             input_tokens: raw
                 .input_tokens
-                .saturating_add(raw.cache_read_input_tokens.unwrap_or(0))
-                .saturating_add(raw.cache_creation_input_tokens.unwrap_or(0)),
+                .checked_add(raw.cache_read_input_tokens.unwrap_or(0))
+                .and_then(|n| n.checked_add(raw.cache_creation_input_tokens.unwrap_or(0)))
+                .ok_or_else(|| Temm1eError::Provider("Anthropic usage total overflow".into()))?,
             output_tokens: raw.output_tokens,
             cache_read_tokens: raw.cache_read_input_tokens,
             cache_write_tokens: raw.cache_creation_input_tokens,
             cost_usd: 0.0,
-        }
+        })
     }
 }
 
@@ -287,22 +329,6 @@ fn convert_tool_to_anthropic(tool: &ToolDefinition) -> serde_json::Value {
     })
 }
 
-fn convert_anthropic_content(block: &AnthropicContentBlock) -> Option<ContentPart> {
-    match block {
-        AnthropicContentBlock::Text { text } => Some(ContentPart::Text { text: text.clone() }),
-        AnthropicContentBlock::ToolUse { id, name, input } => Some(ContentPart::ToolUse {
-            id: id.clone(),
-            name: name.clone(),
-            input: input.clone(),
-            thought_signature: None,
-        }),
-        AnthropicContentBlock::Unknown => {
-            tracing::debug!("Skipping unknown Anthropic content block type");
-            None
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Provider trait implementation
 // ---------------------------------------------------------------------------
@@ -342,10 +368,7 @@ impl Provider for AnthropicProvider {
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 let wait = crate::rate_limit::parse_retry_after(&response)
                     .unwrap_or_else(|| crate::rate_limit::default_backoff(attempt));
-                let error_body = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "unknown error".into());
+                let error_body = format!("Anthropic request rejected ({status}); check credentials, quota and model parameters");
                 self.rotate_key();
                 if attempt == crate::rate_limit::MAX_RATELIMIT_RETRIES
                     || wait > crate::rate_limit::MAX_INLINE_WAIT
@@ -371,10 +394,7 @@ impl Provider for AnthropicProvider {
             }
 
             if !status.is_success() {
-                let error_body = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "unknown error".into());
+                let error_body = format!("Anthropic request rejected ({status}); check credentials, quota and model parameters");
                 error!(provider = "anthropic", %status, "API error: {}", error_body);
                 if status == reqwest::StatusCode::UNAUTHORIZED {
                     self.rotate_key();
@@ -385,21 +405,46 @@ impl Provider for AnthropicProvider {
                 )));
             }
 
-            let api_response: AnthropicResponse = response.json().await.map_err(|e| {
-                Temm1eError::Provider(format!("Failed to parse Anthropic response: {e}"))
-            })?;
-
-            let content = api_response
-                .content
-                .iter()
-                .filter_map(convert_anthropic_content)
-                .collect();
+            let mut bytes = Vec::new();
+            let mut chunks = response.bytes_stream();
+            while let Some(chunk) = chunks.next().await {
+                let chunk = chunk
+                    .map_err(|_| Temm1eError::Provider("Anthropic response interrupted".into()))?;
+                if bytes.len().saturating_add(chunk.len()) > 32 * 1024 * 1024 {
+                    return Err(Temm1eError::Provider(
+                        "Anthropic response exceeds 32 MiB".into(),
+                    ));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            let api_response: AnthropicResponse = serde_json::from_slice(&bytes)
+                .map_err(|_| Temm1eError::Provider("Invalid Anthropic response".into()))?;
+            let content = crate::anthropic_native::completion(
+                api_response.id.clone(),
+                api_response.content,
+                &crate::anthropic_native::route(&self.base_url),
+                &request.model,
+                Some(crate::anthropic_native::context_fingerprint(
+                    &body,
+                    body["messages"].as_array().expect("built message array"),
+                )),
+            )?;
+            if api_response.stop_reason.is_none()
+                || (content
+                    .iter()
+                    .any(|part| matches!(part, ContentPart::ToolUse { .. }))
+                    && api_response.stop_reason.as_deref() != Some("tool_use"))
+            {
+                return Err(Temm1eError::Provider(
+                    "Anthropic response did not confirm complete tool generation".into(),
+                ));
+            }
 
             return Ok(CompletionResponse {
                 id: api_response.id,
                 content,
                 stop_reason: api_response.stop_reason,
-                usage: api_response.usage.into(),
+                usage: api_response.usage.try_into()?,
             });
         }
 
@@ -439,10 +484,7 @@ impl Provider for AnthropicProvider {
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                     let wait = crate::rate_limit::parse_retry_after(&response)
                         .unwrap_or_else(|| crate::rate_limit::default_backoff(attempt));
-                    let error_body = response
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "unknown error".into());
+                    let error_body = format!("Anthropic request rejected ({status}); check credentials, quota and model parameters");
                     self.rotate_key();
                     if attempt == crate::rate_limit::MAX_RATELIMIT_RETRIES
                         || wait > crate::rate_limit::MAX_INLINE_WAIT
@@ -468,10 +510,7 @@ impl Provider for AnthropicProvider {
                 }
 
                 if !status.is_success() {
-                    let error_body = response
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "unknown error".into());
+                    let error_body = format!("Anthropic request rejected ({status}); check credentials, quota and model parameters");
                     if status == reqwest::StatusCode::UNAUTHORIZED {
                         self.rotate_key();
                         return Err(Temm1eError::Auth(error_body));
@@ -486,7 +525,15 @@ impl Provider for AnthropicProvider {
             unreachable!("rate-limit retry loop must exit via return or break")
         };
 
-        Ok(crate::anthropic_stream::stream(response))
+        Ok(crate::anthropic_stream::stream(
+            response,
+            crate::anthropic_native::route(&self.base_url),
+            request.model,
+            crate::anthropic_native::context_fingerprint(
+                &body,
+                body["messages"].as_array().expect("built message array"),
+            ),
+        ))
     }
 
     async fn complete_with_observer(
@@ -526,13 +573,97 @@ impl Provider for AnthropicProvider {
 mod tests {
 
     #[test]
+    fn fable_replay_keeps_valid_thinking_and_drops_only_context_invalidated_blocks() {
+        let provider = AnthropicProvider::new("fixture".into());
+        let mut request = CompletionRequest {
+            model: "claude-fable-5-1".into(),
+            system: Some("stable rules".into()),
+            system_volatile: None,
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: MessageContent::Text("read a".into()),
+            }],
+            tools: vec![],
+            max_tokens: Some(4096),
+            temperature: Some(0.3),
+        };
+        let initial = provider.build_request_body(&request, false).unwrap();
+        assert!(initial.get("temperature").is_none());
+        assert_eq!(initial["thinking"]["type"], "adaptive");
+        let native = vec![
+            serde_json::json!({"type":"thinking","thinking":"","signature":"opaque"}),
+            serde_json::json!({"type":"redacted_thinking","data":"opaque-redacted"}),
+            serde_json::json!({"type":"tool_use","id":"t1","name":"read","input":{"path":"a"}}),
+        ];
+        let parts = crate::anthropic_native::completion(
+            "m1".into(),
+            native.clone(),
+            &crate::anthropic_native::route(&provider.base_url),
+            &request.model,
+            Some(crate::anthropic_native::context_fingerprint(
+                &initial,
+                initial["messages"].as_array().unwrap(),
+            )),
+        )
+        .unwrap();
+        request.messages.push(ChatMessage {
+            role: Role::Assistant,
+            content: MessageContent::Parts(parts),
+        });
+        request.messages.push(ChatMessage {
+            role: Role::Tool,
+            content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "file content".into(),
+                is_error: false,
+            }]),
+        });
+        let history_before = serde_json::to_value(&request.messages).unwrap();
+        let unchanged = provider.build_request_body(&request, false).unwrap();
+        assert_eq!(
+            unchanged["messages"][1]["content"],
+            serde_json::json!(native)
+        );
+        request.system_volatile = Some("changed volatile context".into());
+        let changed = provider.build_request_body(&request, false).unwrap();
+        assert_eq!(
+            changed["messages"][1]["content"],
+            serde_json::json!([native[2].clone()])
+        );
+        assert_eq!(
+            serde_json::to_value(&request.messages).unwrap(),
+            history_before
+        );
+        request.messages.push(ChatMessage {
+            role: Role::System,
+            content: MessageContent::Text("retain this constraint".into()),
+        });
+        let with_system_history = provider.build_request_body(&request, false).unwrap();
+        assert!(with_system_history["system"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|block| block["text"] == "retain this constraint"));
+    }
+
+    #[test]
+    fn cache_usage_overflow_is_rejected() {
+        let raw: super::AnthropicUsage = serde_json::from_value(serde_json::json!({
+            "input_tokens": u32::MAX, "output_tokens": 1,
+            "cache_read_input_tokens": 1
+        }))
+        .unwrap();
+        assert!(super::Usage::try_from(raw).is_err());
+    }
+
+    #[test]
     fn cache_usage_is_additive_and_missing_is_unknown() {
         let raw: super::AnthropicUsage = serde_json::from_value(serde_json::json!({
             "input_tokens": 10, "output_tokens": 20,
             "cache_read_input_tokens": 100, "cache_creation_input_tokens": 30
         }))
         .unwrap();
-        let usage: super::Usage = raw.into();
+        let usage: super::Usage = raw.try_into().unwrap();
         assert_eq!(usage.input_tokens, 140);
         assert_eq!(usage.cache_read_tokens, Some(100));
         assert_eq!(usage.cache_write_tokens, Some(30));
@@ -540,7 +671,7 @@ mod tests {
             "input_tokens": 10, "output_tokens": 20
         }))
         .unwrap();
-        let usage: super::Usage = raw.into();
+        let usage: super::Usage = raw.try_into().unwrap();
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.cache_read_tokens, None);
         assert_eq!(usage.cache_write_tokens, None);
@@ -755,14 +886,16 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_unknown_content_block() {
+    fn thinking_block_is_not_display_text() {
         let json = r#"{"type": "thinking", "thinking": "some reasoning"}"#;
-        let block: AnthropicContentBlock = serde_json::from_str(json).unwrap();
-        assert!(matches!(block, AnthropicContentBlock::Unknown));
+        let block: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert!(crate::anthropic_native::normalize(&[block])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
-    fn mixed_response_yields_only_known_blocks() {
+    fn mixed_response_normalizes_visible_text_without_exposing_thinking() {
         let json = r#"{
             "id": "msg_test",
             "content": [
@@ -774,11 +907,7 @@ mod tests {
             "usage": {"input_tokens": 10, "output_tokens": 20}
         }"#;
         let response: AnthropicResponse = serde_json::from_str(json).unwrap();
-        let parts: Vec<ContentPart> = response
-            .content
-            .iter()
-            .filter_map(convert_anthropic_content)
-            .collect();
+        let parts = crate::anthropic_native::normalize(&response.content).unwrap();
         assert_eq!(parts.len(), 2);
         assert!(matches!(&parts[0], ContentPart::Text { text } if text == "Hello"));
         assert!(matches!(&parts[1], ContentPart::Text { text } if text == "World"));
@@ -803,11 +932,7 @@ mod tests {
         assert_eq!(response.usage.input_tokens, 50);
         assert_eq!(response.usage.output_tokens, 30);
 
-        let parts: Vec<ContentPart> = response
-            .content
-            .iter()
-            .filter_map(convert_anthropic_content)
-            .collect();
+        let parts = crate::anthropic_native::normalize(&response.content).unwrap();
         assert_eq!(parts.len(), 2);
         assert!(
             matches!(&parts[0], ContentPart::Text { text } if text == "I'll look that up for you.")

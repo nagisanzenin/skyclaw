@@ -392,6 +392,7 @@ impl Protocol for ResponsesProtocol {
                     chunk.usage = Some(normalize_usage(&response["usage"])?);
                     chunk.stop_reason = Some("end_turn".into());
                     chunk.provider_state = Some(ContentPart::ProviderState {
+                        context_fingerprint: None,
                         provider: self.provider.clone(),
                         model: self.model.clone(),
                         response_id: id.into(),
@@ -681,6 +682,7 @@ mod tests {
     #[test]
     fn pruned_tool_history_does_not_resurrect_native_calls() {
         let native = ContentPart::ProviderState {
+            context_fingerprint: None,
             provider: "openai".into(),
             model: "gpt-6-astra".into(),
             response_id: "resp_1".into(),

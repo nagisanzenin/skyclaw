@@ -7,6 +7,8 @@ rust-version.workspace = true
 description = "LLM provider integrations for TEMM1E"
 
 [dependencies]
+sha2.workspace = true
+hex.workspace = true
 temm1e-core.workspace = true
 reqwest.workspace = true
 tokio.workspace = true

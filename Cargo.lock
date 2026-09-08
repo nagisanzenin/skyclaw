@@ -7389,11 +7389,13 @@ version = "5.8.1"
 dependencies = [
  "async-trait",
  "futures",
+ "hex",
  "httpdate",
  "rand 0.8.5",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "temm1e-core",
  "temm1e-test-utils",
  "tokio",
