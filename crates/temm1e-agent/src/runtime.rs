@@ -809,9 +809,18 @@ impl AgentRuntime {
                 }
             }
         };
+        let deadline = async {
+            if self.max_task_duration.is_zero() {
+                std::future::pending::<()>().await;
+            } else {
+                tokio::time::sleep(self.max_task_duration).await;
+            }
+        };
+        let mut deadline_expired = false;
         let outcome = tokio::select! {
             biased;
             _ = stopped => None,
+            _ = deadline => { deadline_expired = true; None },
             result = self.process_message_inner(msg, session, interrupt.clone(), pending, reply_tx, status_tx.clone(), journal.as_deref().zip(execution.as_deref())) => Some(result),
         };
         if let Some(result) = outcome {
@@ -852,7 +861,12 @@ impl AgentRuntime {
                 status.phase = AgentTaskPhase::Interrupted { round };
             });
         }
-        Err(Temm1eError::Tool("Task stopped. Interrupted operations may already have taken effect; inspect them before retrying. Usage from an interrupted provider request may be unavailable.".into()))
+        let reason = if deadline_expired {
+            "Task deadline reached"
+        } else {
+            "Task stopped"
+        };
+        Err(Temm1eError::Tool(format!("{reason}. Interrupted operations may already have taken effect; inspect them before retrying. Usage from an interrupted provider request may be unavailable.")))
     }
 
     #[allow(clippy::too_many_arguments)]

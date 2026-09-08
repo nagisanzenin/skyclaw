@@ -54,8 +54,8 @@ impl Tool for SlowTool {
 }
 
 #[tokio::test]
-async fn token_and_legacy_flag_interrupt_in_flight_tools_and_preserve_uncertainty() {
-    for legacy in [false, true] {
+async fn token_flag_and_deadline_interrupt_in_flight_tools_and_preserve_uncertainty() {
+    for mechanism in ["token", "legacy", "deadline"] {
         let started = Arc::new(tokio::sync::Notify::new());
         let dropped = Arc::new(AtomicBool::new(false));
         let effect = Arc::new(AtomicBool::new(false));
@@ -75,12 +75,17 @@ async fn token_and_legacy_flag_interrupt_in_flight_tools_and_preserve_uncertaint
             .await
             .unwrap(),
         );
-        let runtime = AgentRuntime::new(
+        let runtime = AgentRuntime::with_limits(
             provider,
             Arc::new(MockMemory::new()),
             vec![tool],
             "fixture-model".into(),
             Some("Test".into()),
+            10,
+            8000,
+            6,
+            if mechanism == "deadline" { 1 } else { 0 },
+            0.0,
         )
         .with_execution_journal(journal.clone())
         .with_v2_optimizations(false)
@@ -91,9 +96,9 @@ async fn token_and_legacy_flag_interrupt_in_flight_tools_and_preserve_uncertaint
         let stop_flag = flag.clone();
         let stop = tokio::spawn(async move {
             started.notified().await;
-            if legacy {
+            if mechanism == "legacy" {
                 stop_flag.store(true, Ordering::Relaxed);
-            } else {
+            } else if mechanism == "token" {
                 stop_token.cancel();
             }
         });
@@ -113,7 +118,12 @@ async fn token_and_legacy_flag_interrupt_in_flight_tools_and_preserve_uncertaint
         )
         .await
         .expect("cancellation must not wait for tool completion");
-        assert!(result.unwrap_err().to_string().contains("Task stopped"));
+        let expected = if mechanism == "deadline" {
+            "Task deadline reached"
+        } else {
+            "Task stopped"
+        };
+        assert!(result.unwrap_err().to_string().contains(expected));
         stop.await.unwrap();
         let unfinished = journal.unfinished(&session).await.unwrap();
         assert_eq!(unfinished.len(), 1);

@@ -16,6 +16,8 @@ futures.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
+rand.workspace = true
+httpdate = "1"
 
 [dev-dependencies]
 temm1e-test-utils.workspace = true

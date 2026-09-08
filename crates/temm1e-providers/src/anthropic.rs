@@ -390,13 +390,18 @@ impl Provider for AnthropicProvider {
                     .await
                     .unwrap_or_else(|_| "unknown error".into());
                 self.rotate_key();
-                if attempt == crate::rate_limit::MAX_RATELIMIT_RETRIES {
+                if attempt == crate::rate_limit::MAX_RATELIMIT_RETRIES
+                    || wait > crate::rate_limit::MAX_INLINE_WAIT
+                {
                     error!(
                         provider = "anthropic",
                         attempts = attempt + 1,
                         "Rate limit: retries exhausted"
                     );
-                    return Err(Temm1eError::RateLimited(error_body));
+                    return Err(Temm1eError::RateLimited(format!(
+                        "Retry after at least {} seconds; {error_body}",
+                        wait.as_secs()
+                    )));
                 }
                 tracing::warn!(
                     provider = "anthropic",
@@ -482,13 +487,18 @@ impl Provider for AnthropicProvider {
                         .await
                         .unwrap_or_else(|_| "unknown error".into());
                     self.rotate_key();
-                    if attempt == crate::rate_limit::MAX_RATELIMIT_RETRIES {
+                    if attempt == crate::rate_limit::MAX_RATELIMIT_RETRIES
+                        || wait > crate::rate_limit::MAX_INLINE_WAIT
+                    {
                         error!(
                             provider = "anthropic",
                             attempts = attempt + 1,
                             "Rate limit (stream): retries exhausted"
                         );
-                        return Err(Temm1eError::RateLimited(error_body));
+                        return Err(Temm1eError::RateLimited(format!(
+                            "Retry after at least {} seconds; {error_body}",
+                            wait.as_secs()
+                        )));
                     }
                     tracing::warn!(
                         provider = "anthropic",

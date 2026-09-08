@@ -7365,6 +7365,8 @@ version = "5.8.1"
 dependencies = [
  "async-trait",
  "futures",
+ "httpdate",
+ "rand 0.8.5",
  "reqwest",
  "serde",
  "serde_json",

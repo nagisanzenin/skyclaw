@@ -687,11 +687,9 @@ struct Metrics {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live Gemini benchmark: requires GEMINI_API_KEY and network; run explicitly with --ignored"]
 async fn project_benchmark_v2() {
-    if std::env::var("GEMINI_API_KEY").is_err() {
-        println!("GEMINI_API_KEY not set — skipping");
-        return;
-    }
+    std::env::var("GEMINI_API_KEY").expect("explicit live benchmark requires GEMINI_API_KEY");
 
     let provider = make_provider().expect("provider");
 
@@ -704,10 +702,7 @@ async fn project_benchmark_v2() {
     // Connectivity check
     match llm_call(&*provider, &Tracker::new(), "say ok", "say ok").await {
         Ok(_) => println!("\nAPI OK.\n"),
-        Err(e) => {
-            println!("API FAILED: {e}");
-            return;
-        }
+        Err(e) => panic!("Live benchmark connectivity failed: {e}"),
     }
 
     let single = run_single(provider.clone()).await;
