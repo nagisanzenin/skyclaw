@@ -34,7 +34,7 @@ use temm1e_core::{Channel, FileTransfer};
 /// A channel that reads from stdin and writes to stdout, for local CLI usage.
 pub struct CliChannel {
     /// Sender used by the stdin reader task to forward messages to the gateway.
-    tx: mpsc::Sender<InboundMessage>,
+    tx: Option<mpsc::Sender<InboundMessage>>,
     /// Receiver the gateway can drain to get inbound messages.
     rx: Option<mpsc::Receiver<InboundMessage>>,
     /// Handle to the background stdin reader task.
@@ -51,11 +51,102 @@ impl CliChannel {
     pub fn new(workspace: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel(64);
         Self {
-            tx,
+            tx: Some(tx),
             rx: Some(rx),
             reader_handle: None,
             workspace,
         }
+    }
+
+    fn start_reader<R>(&mut self, reader: R) -> Result<(), Temm1eError>
+    where
+        R: tokio::io::AsyncBufRead + Unpin + Send + 'static,
+    {
+        let tx = self.tx.take().ok_or_else(|| {
+            Temm1eError::Channel(
+                "CLI reader already started; create a new channel to restart".into(),
+            )
+        })?;
+
+        let handle = tokio::spawn(async move {
+            let mut lines = reader.lines();
+            let mut state = CliInputState::default();
+
+            // Print a prompt before reading.
+            eprint!("temm1e> ");
+
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(raw_line)) => {
+                        let cmd = state.handle_line(raw_line);
+                        match cmd {
+                            CliCommand::Continue => {
+                                // In paste mode, silently accumulate; do NOT
+                                // reprint the prompt (would be ugly mid-paste).
+                                if !state.paste_mode {
+                                    eprint!("temm1e> ");
+                                }
+                            }
+                            CliCommand::Info(msg) => {
+                                eprintln!("  [{msg}]");
+                                if !state.paste_mode {
+                                    eprint!("temm1e> ");
+                                }
+                            }
+                            CliCommand::FileNotFound(path) => {
+                                eprintln!("  [file not found: {}]", path.display());
+                                eprint!("temm1e> ");
+                            }
+                            CliCommand::SubmitText(text) => {
+                                if !send_to_gateway(&tx, text, vec![]).await {
+                                    break;
+                                }
+                                // Prompt redrawn when the agent's reply arrives
+                                // (see `Channel::send_message`).
+                            }
+                            CliCommand::SubmitFile(path) => {
+                                let att = AttachmentRef {
+                                    file_id: path.to_string_lossy().to_string(),
+                                    file_name: path
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().to_string()),
+                                    mime_type: None,
+                                    size: tokio::fs::metadata(&path)
+                                        .await
+                                        .ok()
+                                        .map(|m| m.len() as usize),
+                                };
+                                let text = format!("[file: {}]", path.display());
+                                if !send_to_gateway(&tx, text, vec![att]).await {
+                                    break;
+                                }
+                            }
+                            CliCommand::Exit => {
+                                tracing::info!("CLI session ended by user");
+                                break;
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // EOF — if a paste buffer is open, flush it as a
+                        // final message before exiting.
+                        if let Some(text) = state.flush_on_eof() {
+                            let _ = send_to_gateway(&tx, text, vec![]).await;
+                        }
+                        tracing::info!("stdin closed");
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Error reading stdin");
+                        break;
+                    }
+                }
+            }
+        });
+
+        self.reader_handle = Some(handle);
+        tracing::info!("CLI channel started");
+        Ok(())
     }
 
     /// Take the inbound message receiver. The gateway should call this once
@@ -213,89 +304,7 @@ impl Channel for CliChannel {
     }
 
     async fn start(&mut self) -> Result<(), Temm1eError> {
-        let tx = self.tx.clone();
-
-        let handle = tokio::spawn(async move {
-            let stdin = tokio::io::stdin();
-            let reader = BufReader::new(stdin);
-            let mut lines = reader.lines();
-            let mut state = CliInputState::default();
-
-            // Print a prompt before reading.
-            eprint!("temm1e> ");
-
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(raw_line)) => {
-                        let cmd = state.handle_line(raw_line);
-                        match cmd {
-                            CliCommand::Continue => {
-                                // In paste mode, silently accumulate; do NOT
-                                // reprint the prompt (would be ugly mid-paste).
-                                if !state.paste_mode {
-                                    eprint!("temm1e> ");
-                                }
-                            }
-                            CliCommand::Info(msg) => {
-                                eprintln!("  [{msg}]");
-                                if !state.paste_mode {
-                                    eprint!("temm1e> ");
-                                }
-                            }
-                            CliCommand::FileNotFound(path) => {
-                                eprintln!("  [file not found: {}]", path.display());
-                                eprint!("temm1e> ");
-                            }
-                            CliCommand::SubmitText(text) => {
-                                if !send_to_gateway(&tx, text, vec![]).await {
-                                    break;
-                                }
-                                // Prompt redrawn when the agent's reply arrives
-                                // (see `Channel::send_message`).
-                            }
-                            CliCommand::SubmitFile(path) => {
-                                let att = AttachmentRef {
-                                    file_id: path.to_string_lossy().to_string(),
-                                    file_name: path
-                                        .file_name()
-                                        .map(|n| n.to_string_lossy().to_string()),
-                                    mime_type: None,
-                                    size: tokio::fs::metadata(&path)
-                                        .await
-                                        .ok()
-                                        .map(|m| m.len() as usize),
-                                };
-                                let text = format!("[file: {}]", path.display());
-                                if !send_to_gateway(&tx, text, vec![att]).await {
-                                    break;
-                                }
-                            }
-                            CliCommand::Exit => {
-                                tracing::info!("CLI session ended by user");
-                                break;
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        // EOF — if a paste buffer is open, flush it as a
-                        // final message before exiting.
-                        if let Some(text) = state.flush_on_eof() {
-                            let _ = send_to_gateway(&tx, text, vec![]).await;
-                        }
-                        tracing::info!("stdin closed");
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Error reading stdin");
-                        break;
-                    }
-                }
-            }
-        });
-
-        self.reader_handle = Some(handle);
-        tracing::info!("CLI channel started");
-        Ok(())
+        self.start_reader(BufReader::new(tokio::io::stdin()))
     }
 
     async fn stop(&mut self) -> Result<(), Temm1eError> {
@@ -401,6 +410,32 @@ fn whoami() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reader_exit_closes_gateway_queue_even_while_channel_is_retained() {
+        for input in ["hello\n/quit\n", "hello\n/exit\n", "hello\n"] {
+            let mut channel = CliChannel::new(PathBuf::from("."));
+            let mut rx = channel.take_receiver().unwrap();
+            channel
+                .start_reader(BufReader::new(std::io::Cursor::new(
+                    input.as_bytes().to_vec(),
+                )))
+                .unwrap();
+            let message = rx.recv().await.unwrap();
+            assert_eq!(message.text.as_deref(), Some("hello"));
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                channel.reader_handle.is_some(),
+                "channel still retained by the gateway"
+            );
+            channel.stop().await.unwrap();
+        }
+    }
 
     #[test]
     fn single_line_unchanged() {

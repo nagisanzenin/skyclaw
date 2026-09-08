@@ -2840,6 +2840,10 @@ async fn main() -> Result<()> {
 
             // Track spawned task handles for graceful shutdown
             let mut task_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+            let shutdown_token = tokio_util::sync::CancellationToken::new();
+            let shutdown_perpetuum = perpetuum.clone();
+            let worker_handles: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+                Arc::new(std::sync::Mutex::new(Vec::new()));
 
             // Wire Telegram messages into the unified channel
             if let Some(mut tg_rx) = tg_rx {
@@ -3016,7 +3020,7 @@ async fn main() -> Result<()> {
                         parent_budget: Arc::new(temm1e_agent::budget::BudgetTracker::new(
                             config.agent.max_spend_usd,
                         )),
-                        cancel: tokio_util::sync::CancellationToken::new(),
+                        cancel: shutdown_token.child_token(),
                         workspace_path: std::env::current_dir()
                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),
                         witness_attachments: witness_attachments.clone(),
@@ -3087,8 +3091,14 @@ async fn main() -> Result<()> {
                     Arc::new(Mutex::new(HashMap::new()));
 
                 let msg_tx_redispatch = msg_tx.clone();
+                let dispatcher_shutdown = shutdown_token.clone();
+                let dispatcher_workers = worker_handles.clone();
                 task_handles.push(tokio::spawn(async move {
-                    while let Some(mut inbound) = msg_rx.recv().await {
+                    while let Some(mut inbound) = tokio::select! {
+                        biased;
+                        _ = dispatcher_shutdown.cancelled() => None,
+                        message = msg_rx.recv() => message,
+                    } {
                         let chat_id = inbound.chat_id.clone();
                         let is_heartbeat_msg = inbound.channel == "heartbeat";
 
@@ -3487,7 +3497,7 @@ async fn main() -> Result<()> {
                             let is_heartbeat = Arc::new(AtomicBool::new(false));
                             let is_busy = Arc::new(AtomicBool::new(false));
                             let current_task: Arc<std::sync::Mutex<String>> = Arc::new(std::sync::Mutex::new(String::new()));
-                            let cancel_token = tokio_util::sync::CancellationToken::new();
+                            let cancel_token = dispatcher_shutdown.child_token();
                             // ── Mission Control state ──
                             let (slot_status_tx, _) = tokio::sync::watch::channel(
                                 temm1e_agent::AgentTaskStatus::default(),
@@ -3543,7 +3553,7 @@ async fn main() -> Result<()> {
                             let hive_worker = hive_clone.clone();
                             let worker_chat_id = chat_id.clone();
 
-                            tokio::spawn(async move {
+                            let worker_handle = tokio::spawn(async move {
                                 // ── Restore conversation history from memory backend ──
                                 let history_key = format!("chat_history:{}", worker_chat_id);
                                 let mut persistent_history: Vec<temm1e_core::types::message::ChatMessage> =
@@ -3579,7 +3589,11 @@ async fn main() -> Result<()> {
                                         }
                                     };
 
-                                while let Some(mut msg) = chat_rx.recv().await {
+                                while let Some(mut msg) = tokio::select! {
+                                    biased;
+                                    _ = cancel_token_clone.cancelled() => None,
+                                    message = chat_rx.recv() => message,
+                                } {
                                     // Resolve sender per-message from channel map
                                     let sender: Arc<dyn temm1e_core::Channel> = channel_map_worker
                                         .get(&msg.channel)
@@ -6075,6 +6089,11 @@ Just type a message to chat with the AI agent.",
                                 }
                             });
 
+                            {
+                                let mut handles = dispatcher_workers.lock().unwrap_or_else(|e| e.into_inner());
+                                handles.retain(|handle| !handle.is_finished());
+                                handles.push(worker_handle);
+                            }
                             ChatSlot { tx: chat_tx, interrupt, is_heartbeat, is_busy, current_task, cancel_token, status_tx: slot_status_tx, order_queue, active_cancel }
                         });
 
@@ -6157,8 +6176,12 @@ Just type a message to chat with the AI agent.",
                 }));
             }
 
-            // Block until Ctrl+C, then drain gracefully
-            tokio::signal::ctrl_c().await?;
+            // Stop admission and cancel active turns on interactive or service signals.
+            temm1e_core::process::shutdown_signal().await?;
+            shutdown_token.cancel();
+            if let Some(perpetuum) = shutdown_perpetuum.read().await.as_ref() {
+                perpetuum.shutdown();
+            }
             println!("\nTEMM1E shutting down gracefully...");
 
             // ── SystemNotifier: fire Shutdown ──────────────────────
@@ -6179,14 +6202,28 @@ Just type a message to chat with the AI agent.",
             // when its receiver sees the channel closed.
             drop(msg_tx);
 
-            // Wait for spawned tasks with a timeout
-            let drain_timeout = tokio::time::timeout(
+            // Keep task ownership through the timeout instead of detaching handles.
+            task_handles.extend(std::mem::take(
+                &mut *worker_handles.lock().unwrap_or_else(|e| e.into_inner()),
+            ));
+            let drain = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                futures::future::join_all(task_handles),
-            );
-            match drain_timeout.await {
-                Ok(_) => println!("All tasks drained cleanly."),
-                Err(_) => println!("Drain timeout — forcing exit."),
+                futures::future::join_all(task_handles.iter_mut()),
+            )
+            .await;
+            match drain {
+                Ok(_) => println!("All tracked tasks drained cleanly."),
+                Err(_) => {
+                    for handle in &task_handles {
+                        handle.abort();
+                    }
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        futures::future::join_all(task_handles),
+                    )
+                    .await;
+                    println!("Drain timeout — remaining tracked tasks aborted; unfinished effects require reconciliation.");
+                }
             }
 
             // Clean up PID file on graceful shutdown
@@ -8080,6 +8117,9 @@ Just type a message to chat with the AI agent.",
                 }
             }
 
+            if let Some(perpetuum) = cli_perp_instance.read().await.as_ref() {
+                perpetuum.shutdown();
+            }
             println!("\nTEMM1E chat ended.");
         }
         Commands::Status => {
