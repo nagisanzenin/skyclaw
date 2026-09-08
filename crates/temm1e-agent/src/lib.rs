@@ -30,6 +30,7 @@ pub mod prompt_patches;
 pub mod prompted_tool_calling;
 pub mod recovery;
 pub mod runtime;
+pub mod runtime_policy;
 pub mod self_audit;
 pub mod self_correction;
 pub mod spawn_swarm;

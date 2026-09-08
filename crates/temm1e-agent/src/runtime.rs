@@ -737,6 +737,27 @@ impl AgentRuntime {
         self
     }
 
+    /// Apply one captured user policy without replacing resources or accounting.
+    pub fn with_policy(mut self, policy: &crate::runtime_policy::RuntimePolicy) -> Self {
+        self.v2_optimizations = policy.v2_optimizations;
+        self.self_audit_enabled = policy.self_audit_enabled;
+        self.parallel_phases = policy.parallel_phases;
+        self.blueprint_notice = policy.blueprint_notice;
+        self.engram_config = policy.engram.clone();
+        self
+    }
+
+    /// Capture the parent's effective policy for delegated runtimes.
+    pub fn runtime_policy(&self) -> crate::runtime_policy::RuntimePolicy {
+        crate::runtime_policy::RuntimePolicy {
+            v2_optimizations: self.v2_optimizations,
+            self_audit_enabled: self.self_audit_enabled,
+            parallel_phases: self.parallel_phases,
+            blueprint_notice: self.blueprint_notice,
+            engram: self.engram_config.clone(),
+        }
+    }
+
     /// Set the Engram permanent-memory configuration (default-on).
     pub fn with_engram_config(mut self, cfg: temm1e_core::types::config::EngramConfig) -> Self {
         self.engram_config = cfg;

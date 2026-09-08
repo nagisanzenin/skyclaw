@@ -17,6 +17,7 @@ import tempfile
 import termios
 import threading
 import time
+import memory_policy_fixture
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -51,7 +52,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def run(binary, root, server, trap, onboarding=False, restore_only=False, budget_limit=False):
+def run(binary, root, server, trap, onboarding=False, restore_only=False, budget_limit=False, engram_enabled=None):
     profile = root / 'profile'
     profile.mkdir(mode=0o700, exist_ok=restore_only)
     config = profile / 'config.toml'
@@ -63,12 +64,15 @@ base_url = "http://127.0.0.1:{server.server_port}/v1"
 [agent]
 max_spend_usd = {0.0002 if budget_limit else 0.0}
 [memory.engram]
+enabled = {str(engram_enabled if engram_enabled is not None else True).lower()}
 curator = "off"
 [perpetuum]
 enabled = false
 [hive]
 enabled = false
 ''')
+    if engram_enabled is not None:
+        memory_policy_fixture.seed(profile)
     if budget_limit:
         custom = profile / 'custom_models.toml'
         custom.write_text(''.join(f'''[[models]]
@@ -134,7 +138,10 @@ base_url = "http://127.0.0.1:{trap.server_port}/v1"
         else:
             until(b'pty-fixture')
             start = time.monotonic()
-            os.write(master, 'Chào Tem — PTY_INPUT_42'.encode())
+            first = 'Chào Tem — PTY_INPUT_42'
+            if engram_enabled is not None:
+                first += ' — This ordinary conversation checks the configured memory behavior.'
+            os.write(master, first.encode())
             until(b'PTY_INPUT_42')
             input_latency = time.monotonic() - start
             os.write(master, b'\r')
@@ -143,7 +150,10 @@ base_url = "http://127.0.0.1:{trap.server_port}/v1"
             os.write(master, b'/model pty-fixture-next\r')
             until(b'Switched')
             before_second = len(server.requests)
-            os.write(master, b'PTY_SWITCH_43\r')
+            second = 'PTY_SWITCH_43'
+            if engram_enabled is not None:
+                second += ' — This is another ordinary conversation after changing the model.'
+            os.write(master, (second + '\r').encode())
             if budget_limit:
                 until(b'exceeded:')  # renderer places cursor escapes between words
                 assert b'Budget' in output
@@ -168,13 +178,15 @@ base_url = "http://127.0.0.1:{trap.server_port}/v1"
         else:
             assert len(server.requests) > requests_before, 'no actual provider HTTP request occurred'
             assert any('PTY_INPUT_42' in json.dumps(request, ensure_ascii=False) for request in server.requests)
+        if engram_enabled is not None:
+            memory_policy_fixture.assert_policy(server.requests[requests_before:], engram_enabled)
         assert not trap.requests, 'unrelated saved endpoint received a provider request'
         assert all(auth == 'Bearer local-fixture-only' for auth in server.authorizations), 'selected endpoint received a wrong credential'
         if not onboarding:
             assert saved_path.read_text() == saved_text, 'config-owned switch overwrote saved credentials'
         if not onboarding and not restore_only and not budget_limit:
             assert any(request.get('model') == 'pty-fixture-next' for request in server.requests[requests_before:]), 'replacement runtime did not use the selected custom model'
-        return {'budget_continuity': budget_limit, 'connection_isolation': True, 'model_switch': not onboarding and not restore_only, 'passed': True, 'input_echo_seconds': round(input_latency, 4) if input_latency is not None else None,
+        return {'engram_enabled': engram_enabled, 'budget_continuity': budget_limit, 'connection_isolation': True, 'model_switch': not onboarding and not restore_only, 'passed': True, 'input_echo_seconds': round(input_latency, 4) if input_latency is not None else None,
                 'provider_requests': len(server.requests) - requests_before, 'request_models': [request.get('model') for request in server.requests[requests_before:]], 'onboarding': onboarding, 'restore_only': restore_only, 'terminal_bytes': len(output),
                 'terminal_attributes_restored': True, 'resize_and_exit': True}
     finally:

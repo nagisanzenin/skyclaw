@@ -519,10 +519,10 @@ pub(crate) async fn spawn_agent_with_budget(
         setup.config.agent.max_spend_usd,
     )
     .with_budget(budget.clone())
+    .with_policy(&temm1e_agent::runtime_policy::RuntimePolicy::from_config(
+        &setup.config,
+    ))
     .with_durable_execution()
-    .with_v2_optimizations(setup.config.agent.v2_optimizations)
-    .with_self_audit_enabled(setup.config.agent.self_audit_enabled)
-    .with_parallel_phases(setup.config.agent.parallel_phases)
     .with_hive_enabled(tui_hive_enabled)
     .with_shared_mode(shared_mode.clone())
     .with_shared_memory_strategy(shared_memory_strategy.clone())
@@ -595,6 +595,7 @@ pub(crate) async fn spawn_agent_with_budget(
             tools_template: tui_swarm_snapshot.clone(),
             model: agent.model().to_string(),
             parent_budget: agent.budget(),
+            policy: agent.runtime_policy(),
             cancel: tokio_util::sync::CancellationToken::new(),
             workspace_path: std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from(".")),

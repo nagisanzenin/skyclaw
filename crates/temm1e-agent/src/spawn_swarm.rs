@@ -77,6 +77,7 @@ pub struct SpawnSwarmContext {
     pub tools_template: Vec<Arc<dyn Tool>>,
     pub model: String,
     pub parent_budget: Arc<BudgetTracker>,
+    pub policy: crate::runtime_policy::RuntimePolicy,
     pub cancel: CancellationToken,
     /// Parent's workspace_path. Workers use this so Witness Planner
     /// Oaths ground against the user's real filesystem instead of the
@@ -234,6 +235,7 @@ impl Tool for SpawnSwarmTool {
         let workspace_for_closure = swarm_ctx.workspace_path.clone();
         let shared_context = args.shared_context.clone();
         let parent_budget = swarm_ctx.parent_budget.clone();
+        let policy = swarm_ctx.policy.clone();
 
         let execute_fn = Arc::new(
             move |task: temm1e_hive::types::HiveTask, dep_results: Vec<(String, String)>| {
@@ -245,6 +247,7 @@ impl Tool for SpawnSwarmTool {
                 let witness_for_worker = witness_attachments_for_closure.clone();
                 let workspace_for_worker = workspace_for_closure.clone();
                 let worker_budget = Arc::new(BudgetTracker::child(parent_budget.clone()));
+                let policy = policy.clone();
                 async move {
                     // Tool filter: strip spawn_swarm so the worker can't recurse.
                     let filter: crate::runtime::ToolFilter =
@@ -263,6 +266,7 @@ impl Tool for SpawnSwarmTool {
                         0.0,
                     )
                     .with_budget(worker_budget)
+                    .with_policy(&policy)
                     .with_tool_filter(filter)
                     .with_witness_attachments(witness_for_worker.as_ref());
 

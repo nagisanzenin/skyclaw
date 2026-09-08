@@ -10,9 +10,10 @@ import tempfile
 import threading
 
 from tui_pty_smoke import Provider
+import memory_policy_fixture
 
 
-def run(binary, server, trap, limited):
+def run(binary, server, trap, limited, engram_enabled=None):
     with tempfile.TemporaryDirectory(prefix='temm1e-cli-budget-') as directory:
         root = Path(directory)
         profile = root / 'profile'
@@ -27,6 +28,7 @@ base_url = "{endpoint}"
 max_spend_usd = {0.0002 if limited else 0.0}
 self_audit_enabled = false
 [memory.engram]
+enabled = {str(engram_enabled if engram_enabled is not None else True).lower()}
 curator = "off"
 [perpetuum]
 enabled = false
@@ -54,11 +56,18 @@ input_price_per_1m = 1.0
 output_price_per_1m = 1.0
 pricing_verified = true
 ''' for model in ['pty-fixture', 'pty-fixture-next']))
+        if engram_enabled is not None:
+            memory_policy_fixture.seed(profile)
         env = {key: value for key, value in os.environ.items()
                if not key.endswith(('_API_KEY', '_TOKEN')) and not key.startswith('TEMM1E_')}
         env['TEMM1E_DATA_DIR'] = str(profile)
         count = len(server.requests)
-        input_text = f'Chào Tem — CLI_INPUT_42\nproxy openai {endpoint} local-fixture-only model:pty-fixture-next\nCLI_NEXT_43\n/quit\n'
+        first = 'Chào Tem — CLI_INPUT_42'
+        second = 'CLI_NEXT_43'
+        if engram_enabled is not None:
+            first += ' — This ordinary conversation checks the configured memory behavior.'
+            second += ' — This is another ordinary conversation after changing the model.'
+        input_text = f'{first}\nproxy openai {endpoint} local-fixture-only model:pty-fixture-next\n{second}\n/quit\n'
         result = subprocess.run([str(binary), 'chat'], input=input_text, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 cwd=root, env=env, timeout=40)
@@ -75,9 +84,11 @@ pricing_verified = true
             assert 'PTY_REPLY_43' in result.stdout, result.stdout[-3000:]
             assert len(requests) == 4, f'unexpected request count: {len(requests)}'
             assert requests[-1].get('model') == 'pty-fixture-next'
+        if engram_enabled is not None:
+            memory_policy_fixture.assert_policy(requests, engram_enabled)
         assert not trap.requests, 'unrelated saved endpoint received a request'
         assert all(auth == 'Bearer local-fixture-only' for auth in server.authorizations)
-        return {'connection_isolation': True, 'passed': True, 'limited': limited, 'provider_requests': len(requests),
+        return {'engram_enabled': engram_enabled, 'connection_isolation': True, 'passed': True, 'limited': limited, 'provider_requests': len(requests),
                 'replacement_requests': sum(r.get('model') == 'pty-fixture-next' for r in requests),
                 'unicode_input': any('CLI_INPUT_42' in json.dumps(r) for r in requests)}
 

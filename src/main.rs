@@ -1919,6 +1919,10 @@ async fn main() -> Result<()> {
         config.agent.max_spend_usd,
     ));
 
+    let runtime_policy = Arc::new(temm1e_agent::runtime_policy::RuntimePolicy::from_config(
+        &config,
+    ));
+
     if !_is_tui {
         tracing::info!(mode = %cli.mode, "TEMM1E starting");
     }
@@ -2790,12 +2794,8 @@ async fn main() -> Result<()> {
                         config.agent.max_spend_usd,
                     )
                     .with_budget(runtime_budget.clone())
+                    .with_policy(&runtime_policy)
                     .with_durable_execution()
-                    .with_v2_optimizations(config.agent.v2_optimizations)
-                    .with_self_audit_enabled(config.agent.self_audit_enabled)
-                    .with_blueprint_notice(config.agent.blueprint_notice)
-                    .with_engram_config(config.memory.engram.clone())
-                    .with_parallel_phases(config.agent.parallel_phases)
                     .with_hive_enabled(hive_enabled_early)
                     .with_shared_mode(shared_mode.clone())
                     .with_shared_memory_strategy(shared_memory_strategy.clone())
@@ -2918,12 +2918,8 @@ async fn main() -> Result<()> {
                                         config.agent.max_spend_usd,
                                     )
                                     .with_budget(runtime_budget.clone())
+                                    .with_policy(&runtime_policy)
                                     .with_durable_execution()
-                                    .with_v2_optimizations(config.agent.v2_optimizations)
-                                    .with_self_audit_enabled(config.agent.self_audit_enabled)
-                                    .with_blueprint_notice(config.agent.blueprint_notice)
-                                    .with_engram_config(config.memory.engram.clone())
-                                    .with_parallel_phases(config.agent.parallel_phases)
                                     .with_shared_mode(shared_mode.clone())
                                     .with_shared_memory_strategy(shared_memory_strategy.clone())
                                     .with_personality(personality.clone())
@@ -3134,6 +3130,7 @@ async fn main() -> Result<()> {
                         tools_template: tools.clone(),
                         model: agent.model().to_string(),
                         parent_budget: agent.budget(),
+                        policy: agent.runtime_policy(),
                         cancel: shutdown_token.child_token(),
                         workspace_path: std::env::current_dir()
                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -3177,6 +3174,7 @@ async fn main() -> Result<()> {
                 let primary_fallback = primary_channel.clone();
                 let agent_state_clone = agent_state.clone();
                 let runtime_budget = runtime_budget.clone();
+                let runtime_policy = runtime_policy.clone();
                 let memory_clone = memory.clone();
                 let tools_clone = tools.clone();
                 let custom_registry_clone = custom_tool_registry.clone();
@@ -3187,9 +3185,7 @@ async fn main() -> Result<()> {
                 let agent_max_tool_rounds = config.agent.max_tool_rounds;
                 let agent_max_task_duration = config.agent.max_task_duration_secs;
                 let agent_max_spend_usd = config.agent.max_spend_usd;
-                let agent_v2_opt = config.agent.v2_optimizations;
-                let agent_parallel_phases = config.agent.parallel_phases;
-                let agent_self_audit = config.agent.self_audit_enabled;
+
                 let provider_base_url = config.provider.base_url.clone();
                 let ws_path = workspace_path.clone();
                 let pending_clone = pending_messages.clone();
@@ -3582,6 +3578,7 @@ async fn main() -> Result<()> {
 
                             let agent_state = agent_state_clone.clone();
                             let runtime_budget = runtime_budget.clone();
+                            let runtime_policy = runtime_policy.clone();
                             let memory = memory_clone.clone();
                             let tools_template = tools_clone.clone();
                             let custom_registry = custom_registry_clone.clone();
@@ -3592,9 +3589,6 @@ async fn main() -> Result<()> {
                             let max_rounds = agent_max_tool_rounds;
                             let max_task_duration = agent_max_task_duration;
                             let max_spend = agent_max_spend_usd;
-                            let v2_opt = agent_v2_opt;
-                            let pp_opt = agent_parallel_phases;
-                            let self_audit_opt = agent_self_audit;
                             let hive_on = hive_enabled_flag;
                             let base_url = provider_base_url.clone();
                             let channel_map_worker = channel_map_arc.clone();
@@ -4003,7 +3997,7 @@ async fn main() -> Result<()> {
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
                                                             tracing::info!(
                                                                 provider = "openai-codex",
@@ -4056,7 +4050,7 @@ async fn main() -> Result<()> {
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
                                                             tracing::info!(
                                                                 provider = %creds.active,
@@ -4550,7 +4544,7 @@ Just type a message to chat with the AI agent.",
                                                                     agent.model().to_string(),
                                                                     Some(build_system_prompt(&personality)),
                                                                     max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                                                ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                                ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                                 *agent_state.write().await = Some(new_agent);
                                                             }
                                                             mcp_mgr.take_tools_changed();
@@ -4579,7 +4573,7 @@ Just type a message to chat with the AI agent.",
                                                             agent.model().to_string(),
                                                             Some(build_system_prompt(&personality)),
                                                             max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                                        ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                        ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                         *agent_state.write().await = Some(new_agent);
                                                     }
                                                     mcp_mgr.take_tools_changed();
@@ -4606,7 +4600,7 @@ Just type a message to chat with the AI agent.",
                                                             agent.model().to_string(),
                                                             Some(build_system_prompt(&personality)),
                                                             max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                                        ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                        ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                         *agent_state.write().await = Some(new_agent);
                                                     }
                                                     mcp_mgr.take_tools_changed();
@@ -4692,7 +4686,7 @@ Just type a message to chat with the AI agent.",
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
                                                             tracing::info!(
                                                                 provider = %prov.name,
@@ -5211,7 +5205,7 @@ Just type a message to chat with the AI agent.",
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
                                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                                 chat_id: msg.chat_id.clone(),
@@ -5366,7 +5360,7 @@ Just type a message to chat with the AI agent.",
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
                                                             let key_count = keys.len();
                                                             let reply = temm1e_core::types::message::OutboundMessage {
@@ -5632,6 +5626,7 @@ Just type a message to chat with the AI agent.",
                                                             let witness_h = witness_attachments.clone();
                                                             let workspace_for_hive = workspace_path.clone();
                                                             let hive_budget = runtime_budget.clone();
+                                                            let hive_policy = runtime_policy.clone();
 
                                                             let swarm_result = hive.execute_order(
                                                                 &order_id, cancel,
@@ -5643,11 +5638,12 @@ Just type a message to chat with the AI agent.",
                                                                     let witness_for_worker = witness_h.clone();
                                                                     let workspace_for_worker = workspace_for_hive.clone();
                                                                     let runtime_budget = Arc::new(temm1e_agent::budget::BudgetTracker::child(hive_budget.clone()));
+                                                                    let runtime_policy = hive_policy.clone();
                                                                     async move {
                                                                         let scoped = temm1e_hive::worker::build_scoped_context(&task, &deps);
                                                                         let mini = temm1e_agent::AgentRuntime::with_limits(
                                                                             p, m_clone, t, mdl, None, 10, 30000, 50, 300, 0.0,
-                                                                        ).with_budget(runtime_budget.clone()).with_durable_execution()
+                                                                        ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution()
                                                                         .with_witness_attachments(
                                                                             witness_for_worker.as_ref(),
                                                                         );
@@ -5740,7 +5736,7 @@ Just type a message to chat with the AI agent.",
                                                                 agent.model().to_string(),
                                                                 Some(build_system_prompt(&personality)),
                                                                 max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                                            ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             let fallback_cancel = cancel_token_clone.clone();
                                                             let mut fallback_msg = msg.clone();
                                                             fallback_msg.id = format!("{}:hive-fallback", msg.id);
@@ -5858,7 +5854,7 @@ Just type a message to chat with the AI agent.",
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
                                                             tracing::info!(provider = %new_name, model = %new_model, "Agent hot-reloaded (key validated)");
                                                         }
@@ -5907,7 +5903,7 @@ Just type a message to chat with the AI agent.",
                                                 agent.model().to_string(),
                                                 Some(build_system_prompt(&personality)),
                                                 max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                            ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                             *agent_state.write().await = Some(new_agent);
                                             tracing::info!("Agent rebuilt with updated MCP tools");
                                         }
@@ -5938,7 +5934,7 @@ Just type a message to chat with the AI agent.",
                                                 agent.model().to_string(),
                                                 Some(build_system_prompt(&personality)),
                                                 max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                            ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                             *agent_state.write().await = Some(new_agent);
                                             tracing::info!("Agent rebuilt with updated custom tools");
                                         }
@@ -5997,7 +5993,7 @@ Just type a message to chat with the AI agent.",
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_budget(runtime_budget.clone()).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
 
                                                             if let Err(e) = save_credentials(provider_name, &api_key, &model, custom_base_url.as_deref()).await {
@@ -6520,9 +6516,6 @@ Just type a message to chat with the AI agent.",
             let max_rounds = config.agent.max_tool_rounds;
             let max_task_duration = config.agent.max_task_duration_secs;
             let max_spend = config.agent.max_spend_usd;
-            let v2_opt = config.agent.v2_optimizations;
-            let pp_opt = config.agent.parallel_phases;
-            let self_audit_opt = config.agent.self_audit_enabled;
 
             let mut agent_opt: Option<temm1e_agent::AgentRuntime> = None;
             let cli_perp_instance: Arc<
@@ -6705,10 +6698,8 @@ Just type a message to chat with the AI agent.",
                                 max_spend,
                             )
                             .with_budget(runtime_budget.clone())
+                            .with_policy(&runtime_policy)
                             .with_durable_execution()
-                            .with_v2_optimizations(v2_opt)
-                            .with_self_audit_enabled(self_audit_opt)
-                            .with_parallel_phases(pp_opt)
                             .with_hive_enabled(hive_enabled_early)
                             .with_shared_mode(shared_mode.clone())
                             .with_shared_memory_strategy(shared_memory_strategy.clone())
@@ -6824,10 +6815,8 @@ Just type a message to chat with the AI agent.",
                                             max_spend,
                                         )
                                         .with_budget(runtime_budget.clone())
+                                        .with_policy(&runtime_policy)
                                         .with_durable_execution()
-                                        .with_v2_optimizations(v2_opt)
-                                        .with_self_audit_enabled(self_audit_opt)
-                                        .with_parallel_phases(pp_opt)
                                         .with_hive_enabled(hive_enabled_early)
                                         .with_shared_mode(shared_mode.clone())
                                         .with_shared_memory_strategy(shared_memory_strategy.clone())
@@ -6888,6 +6877,7 @@ Just type a message to chat with the AI agent.",
                                     tools_template: cli_swarm_snapshot.clone(),
                                     model: rt.model().to_string(),
                                     parent_budget: rt.budget(),
+                                    policy: rt.runtime_policy(),
                                     cancel: tokio_util::sync::CancellationToken::new(),
                                     workspace_path: std::env::current_dir()
                                         .unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -6945,10 +6935,8 @@ Just type a message to chat with the AI agent.",
                                         max_spend,
                                     )
                                     .with_budget(runtime_budget.clone())
+                                    .with_policy(&runtime_policy)
                                     .with_durable_execution()
-                                    .with_v2_optimizations(v2_opt)
-                                    .with_self_audit_enabled(self_audit_opt)
-                                    .with_parallel_phases(pp_opt)
                                     .with_shared_mode(shared_mode.clone())
                                     .with_shared_memory_strategy(shared_memory_strategy.clone())
                                     .with_personality(personality.clone())
@@ -7511,10 +7499,8 @@ Just type a message to chat with the AI agent.",
                                                     max_spend,
                                                 )
                                                 .with_budget(runtime_budget.clone())
+                                                .with_policy(&runtime_policy)
                                                 .with_durable_execution()
-                                                .with_v2_optimizations(v2_opt)
-                                                .with_self_audit_enabled(self_audit_opt)
-                                                .with_parallel_phases(pp_opt)
                                                 .with_shared_mode(shared_mode.clone())
                                                 .with_shared_memory_strategy(
                                                     shared_memory_strategy.clone(),
@@ -7572,10 +7558,8 @@ Just type a message to chat with the AI agent.",
                                             max_spend,
                                         )
                                         .with_budget(runtime_budget.clone())
+                                        .with_policy(&runtime_policy)
                                         .with_durable_execution()
-                                        .with_v2_optimizations(v2_opt)
-                                        .with_self_audit_enabled(self_audit_opt)
-                                        .with_parallel_phases(pp_opt)
                                         .with_shared_mode(shared_mode.clone())
                                         .with_shared_memory_strategy(shared_memory_strategy.clone())
                                         .with_personality(personality.clone())
@@ -7624,10 +7608,8 @@ Just type a message to chat with the AI agent.",
                                             max_spend,
                                         )
                                         .with_budget(runtime_budget.clone())
+                                        .with_policy(&runtime_policy)
                                         .with_durable_execution()
-                                        .with_v2_optimizations(v2_opt)
-                                        .with_self_audit_enabled(self_audit_opt)
-                                        .with_parallel_phases(pp_opt)
                                         .with_shared_mode(shared_mode.clone())
                                         .with_shared_memory_strategy(shared_memory_strategy.clone())
                                         .with_personality(personality.clone())
@@ -7857,10 +7839,8 @@ Just type a message to chat with the AI agent.",
                                                 max_spend,
                                             )
                                             .with_budget(runtime_budget.clone())
+                                            .with_policy(&runtime_policy)
                                             .with_durable_execution()
-                                            .with_v2_optimizations(v2_opt)
-                                            .with_self_audit_enabled(self_audit_opt)
-                                            .with_parallel_phases(pp_opt)
                                             .with_shared_mode(shared_mode.clone())
                                             .with_shared_memory_strategy(
                                                 shared_memory_strategy.clone(),
@@ -7946,10 +7926,8 @@ Just type a message to chat with the AI agent.",
                                     max_spend,
                                 )
                                 .with_budget(runtime_budget.clone())
+                                .with_policy(&runtime_policy)
                                 .with_durable_execution()
-                                .with_v2_optimizations(v2_opt)
-                                .with_self_audit_enabled(self_audit_opt)
-                                .with_parallel_phases(pp_opt)
                                 .with_hive_enabled(hive_enabled_early)
                                 .with_shared_mode(shared_mode.clone())
                                 .with_shared_memory_strategy(shared_memory_strategy.clone())
@@ -8114,10 +8092,8 @@ Just type a message to chat with the AI agent.",
                                     max_spend,
                                 )
                                 .with_budget(runtime_budget.clone())
+                                .with_policy(&runtime_policy)
                                 .with_durable_execution()
-                                .with_v2_optimizations(v2_opt)
-                                .with_self_audit_enabled(self_audit_opt)
-                                .with_parallel_phases(pp_opt)
                                 .with_witness_attachments(witness_attachments.as_ref());
                                 let re_msg = temm1e_core::types::message::InboundMessage {
                                     id: format!("{}:hive-fallback", msg.id),
