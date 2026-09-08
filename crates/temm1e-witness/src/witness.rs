@@ -251,6 +251,7 @@ pub fn parse_tier1_response(text: &str) -> Result<LlmVerifierResponse, WitnessEr
 }
 
 /// The Witness: verifies sealed Oaths and records verdicts to the Ledger.
+#[derive(Clone)]
 pub struct Witness {
     ledger: Arc<Ledger>,
     workspace_root: std::path::PathBuf,
@@ -266,6 +267,14 @@ impl Witness {
             tier1: None,
             tier2: None,
         }
+    }
+
+    /// Bind checks to the actual turn workspace while sharing the append-only
+    /// ledger and verifier handles. Never mutate a shared process-wide root.
+    pub fn for_workspace(&self, workspace: impl Into<std::path::PathBuf>) -> Self {
+        let mut scoped = self.clone();
+        scoped.workspace_root = workspace.into();
+        scoped
     }
 
     /// Attach a Tier 1 verifier. Without this, Tier 1 predicates
@@ -874,6 +883,54 @@ mod tests {
             }),
             calls: Mutex::new(0),
         })
+    }
+
+    #[tokio::test]
+    async fn turn_workspace_does_not_inherit_or_mutate_another_workspace() {
+        let (witness, original) = setup().await;
+        let turn = tempdir().unwrap();
+        tokio::fs::write(original.path().join("artifact"), "wrong workspace")
+            .await
+            .unwrap();
+        let scoped = witness.for_workspace(turn.path());
+        let oath = Oath::draft("scoped", "root", "session", "Check artifact presence")
+            .with_postcondition(Predicate::FileExists {
+                path: PathBuf::from("artifact"),
+            });
+        let (sealed, _) = seal_oath(witness.ledger(), oath).await.unwrap();
+        assert_eq!(
+            scoped.verify_oath(&sealed).await.unwrap().outcome,
+            VerdictOutcome::Fail
+        );
+        assert_eq!(
+            witness.verify_oath(&sealed).await.unwrap().outcome,
+            VerdictOutcome::Pass
+        );
+        assert_eq!(witness.workspace_root(), original.path());
+        #[cfg(unix)]
+        {
+            let command = Predicate::CommandExits {
+                cmd: "sh".into(),
+                args: vec!["-c".into(), "test -f artifact".into()],
+                expected_code: 0,
+                cwd: None,
+                timeout_ms: 1000,
+            };
+            assert_eq!(
+                check_tier0(&command, &CheckContext::new(original.path()))
+                    .await
+                    .unwrap()
+                    .outcome,
+                VerdictOutcome::Pass
+            );
+            assert_eq!(
+                check_tier0(&command, &CheckContext::new(turn.path()))
+                    .await
+                    .unwrap()
+                    .outcome,
+                VerdictOutcome::Fail
+            );
+        }
     }
 
     #[tokio::test]

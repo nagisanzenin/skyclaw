@@ -121,8 +121,8 @@ pub(crate) fn estimate_request_tokens(request: &CompletionRequest) -> usize {
 pub(crate) fn finalize_context(
     request: &mut CompletionRequest,
     configured_input_limit: usize,
+    window: usize,
 ) -> Result<(), temm1e_core::types::error::Temm1eError> {
-    let (window, _) = model_registry::model_limits(&request.model);
     let input_limit =
         configured_input_limit.min(window.saturating_sub(request.max_tokens.unwrap_or(0) as usize));
     // Leave 10% for tokenizer/wire estimation error. This is not a guarantee
@@ -1167,7 +1167,7 @@ mod tests {
             current,
         ]);
         request.append_system_volatile(&"late runtime instructions ".repeat(20));
-        finalize_context(&mut request, 600).unwrap();
+        finalize_context(&mut request, 600, 128_000).unwrap();
         assert!(estimate_request_tokens(&request) <= 540);
         assert_eq!(request.messages.len(), 1);
         assert!(
@@ -1204,14 +1204,14 @@ mod tests {
                 content: MessageContent::Text("Current".into()),
             },
         ]);
-        finalize_context(&mut request, 400).unwrap();
+        finalize_context(&mut request, 400, 128_000).unwrap();
         assert_eq!(request.messages.len(), 1);
         let mut oversized = final_request(vec![ChatMessage {
             role: Role::User,
             content: MessageContent::Text("Do not silently truncate this".repeat(500)),
         }]);
         let before = serde_json::to_string(&oversized.messages).unwrap();
-        assert!(finalize_context(&mut oversized, 400).is_err());
+        assert!(finalize_context(&mut oversized, 400, 128_000).is_err());
         assert_eq!(serde_json::to_string(&oversized.messages).unwrap(), before);
     }
 

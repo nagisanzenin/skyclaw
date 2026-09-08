@@ -219,21 +219,18 @@ impl TurnUsage {
 
     /// Format as a multi-line, messenger-agnostic usage summary.
     pub fn format_summary(&self) -> String {
+        let cost = if matches!(self.provider.as_str(), "zai-coding-plan" | "openai-codex") {
+            "Billing: subscription; actual charge and remaining quota unavailable".to_owned()
+        } else if self.total_cost_usd > 0.0 {
+            format!("Estimated API cost: ${:.4}", self.total_cost_usd)
+        } else {
+            "Estimated API cost: unavailable (zero is not proof of free usage)".to_owned()
+        };
         format!(
-            "Model: {}\n\
-             API Calls: {}\n\
-             Input Tokens: {}\n\
-             Output Tokens: {}\n\
-             Tools Used: {}\n\
-             Combined Tokens: {}\n\
-             Total Cost: ${:.4}",
-            self.model,
-            self.api_calls,
-            format_number(self.input_tokens),
-            format_number(self.output_tokens),
-            self.tools_used,
-            format_number(self.combined_tokens()),
-            self.total_cost_usd,
+            "Model: {}\nAPI Calls: {}\nInput Tokens: {}\nOutput Tokens: {}\nTools Used: {}\nCombined Tokens: {}\n{}",
+            self.model, self.api_calls, format_number(self.input_tokens),
+            format_number(self.output_tokens), self.tools_used,
+            format_number(self.combined_tokens()), cost,
         )
     }
 }
@@ -514,7 +511,7 @@ mod tests {
         assert!(summary.contains("Output Tokens: 1,823"));
         assert!(summary.contains("Tools Used: 2"));
         assert!(summary.contains("Combined Tokens: 14,273"));
-        assert!(summary.contains("Total Cost: $0.0524"));
+        assert!(summary.contains("Estimated API cost: $0.0524"));
     }
 
     #[test]

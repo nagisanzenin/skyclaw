@@ -118,44 +118,40 @@ fn render_keys_lines(state: &AppState) -> Vec<Line<'static>> {
 
 fn render_usage_lines(state: &AppState) -> Vec<Line<'static>> {
     let tc = &state.token_counter;
-    let mut lines = Vec::new();
-    lines.push(Line::from(""));
-    lines.push(section_header("Session totals", state));
-    lines.push(row(
-        "Input tokens",
-        &format_number(tc.total_input_tokens as u64),
-        state,
-    ));
-    lines.push(row(
-        "Output tokens",
-        &format_number(tc.total_output_tokens as u64),
-        state,
-    ));
-    lines.push(row(
-        "Total cost",
-        &format!("${:.4}", tc.total_cost_usd),
-        state,
-    ));
-    lines.push(Line::from(""));
-    lines.push(section_header("Current turn", state));
-    lines.push(row(
-        "Input tokens",
-        &format_number(tc.turn_input_tokens as u64),
-        state,
-    ));
-    lines.push(row(
-        "Output tokens",
-        &format_number(tc.turn_output_tokens as u64),
-        state,
-    ));
-    lines.push(row(
-        "Turn cost",
-        &format!("${:.4}", tc.turn_cost_usd),
-        state,
-    ));
-    lines.push(Line::from(""));
-    lines.push(hint("Press Esc to close", state));
-    lines
+    vec![
+        Line::from(""),
+        section_header("Session totals", state),
+        row(
+            "Input tokens",
+            &format_number(tc.total_input_tokens as u64),
+            state,
+        ),
+        row(
+            "Output tokens",
+            &format_number(tc.total_output_tokens as u64),
+            state,
+        ),
+        row(
+            "Recorded API estimate",
+            &cost_estimate(tc.total_cost_usd),
+            state,
+        ),
+        Line::from(""),
+        section_header("Current turn", state),
+        row(
+            "Input tokens",
+            &format_number(tc.turn_input_tokens as u64),
+            state,
+        ),
+        row(
+            "Output tokens",
+            &format_number(tc.turn_output_tokens as u64),
+            state,
+        ),
+        row("Turn API estimate", &cost_estimate(tc.turn_cost_usd), state),
+        Line::from(""),
+        hint("Press Esc to close", state),
+    ]
 }
 
 fn render_status_lines(state: &AppState) -> Vec<Line<'static>> {
@@ -205,8 +201,8 @@ fn render_status_lines(state: &AppState) -> Vec<Line<'static>> {
         state,
     ));
     lines.push(row(
-        "Total cost",
-        &format!("${:.4}", state.token_counter.total_cost_usd),
+        "Recorded API estimate",
+        &cost_estimate(state.token_counter.total_cost_usd),
         state,
     ));
     if let Some(ref git) = state.git_info {
@@ -305,4 +301,12 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.left() + (area.width.saturating_sub(width)) / 2;
     let y = area.top() + (area.height.saturating_sub(height)) / 2;
     Rect::new(x, y, width.min(area.width), height.min(area.height))
+}
+
+fn cost_estimate(value: f64) -> String {
+    if value > 0.0 {
+        format!("${value:.4} (not a subscription bill)")
+    } else {
+        "unavailable".into()
+    }
 }

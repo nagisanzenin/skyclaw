@@ -25,12 +25,17 @@ Rules for a valid Oath (the Spec Reviewer will reject violations):
 1. At least ONE postcondition must be a deterministic Tier 0 predicate
    (FileExists, GrepPresent, CommandExits, etc.) — not AspectVerifier
    or AdversarialJudge.
-2. For code-producing tasks, include:
-   - A wiring check: GrepCountAtLeast with n >= 2 over the touched files.
-   - An anti-stub check: GrepAbsent with a pattern like
-     "todo!|unimplemented!|NotImplementedError|pass\\s*#.*TODO".
-3. Keep the postcondition count between 2 and 8 for the Root Oath.
-4. Reference real file paths, real commands, real patterns — not placeholders.
+2. For code-producing tasks, prefer a CommandExits check that imports/runs the
+   actual implementation and asserts the user-requested behavior. A command
+   that merely exits successfully is not a meaningful behavioral test.
+   Add a wiring check only when the user requested integration into an existing
+   call path; symbol occurrence counts alone do not prove integration.
+   Use an anti-stub check when relevant, as supplementary evidence.
+3. Use only postconditions entailed by the user's request. Do not invent layout
+   requirements: tests may live in a separate file or an inline command unless
+   the user explicitly required tests inside the implementation file.
+4. Use 1 to 8 relevant predicates. Commands with cwd=null run in the task
+   workspace. Reference real paths and commands, never placeholders.
 5. Reply ONLY as JSON matching the schema below. No prose, no markdown fences.
 
 Schema:

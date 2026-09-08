@@ -123,7 +123,11 @@ pub async fn check_tier0(
                 cmd,
                 args,
                 *expected_code,
-                cwd.as_deref().map(|p| resolve(p, ctx)).as_deref(),
+                Some(
+                    &cwd.as_deref()
+                        .map(|p| resolve(p, ctx))
+                        .unwrap_or_else(|| ctx.workspace_root.clone()),
+                ),
                 *timeout_ms,
             )
             .await
@@ -141,7 +145,11 @@ pub async fn check_tier0(
                 args,
                 regex,
                 *stream,
-                cwd.as_deref().map(|p| resolve(p, ctx)).as_deref(),
+                Some(
+                    &cwd.as_deref()
+                        .map(|p| resolve(p, ctx))
+                        .unwrap_or_else(|| ctx.workspace_root.clone()),
+                ),
                 *timeout_ms,
             )
             .await
@@ -159,7 +167,11 @@ pub async fn check_tier0(
                 args,
                 regex,
                 *stream,
-                cwd.as_deref().map(|p| resolve(p, ctx)).as_deref(),
+                Some(
+                    &cwd.as_deref()
+                        .map(|p| resolve(p, ctx))
+                        .unwrap_or_else(|| ctx.workspace_root.clone()),
+                ),
                 *timeout_ms,
             )
             .await
@@ -174,7 +186,11 @@ pub async fn check_tier0(
                 cmd,
                 args,
                 *max_ms,
-                cwd.as_deref().map(|p| resolve(p, ctx)).as_deref(),
+                Some(
+                    &cwd.as_deref()
+                        .map(|p| resolve(p, ctx))
+                        .unwrap_or_else(|| ctx.workspace_root.clone()),
+                ),
             )
             .await
         }

@@ -11,6 +11,7 @@ pub mod context;
 pub mod delegation;
 pub mod done_criteria;
 pub mod engram;
+pub mod execution_journal;
 pub mod executor;
 pub mod history_pruning;
 pub mod lambda_memory;

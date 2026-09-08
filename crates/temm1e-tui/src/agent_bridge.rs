@@ -482,6 +482,7 @@ pub async fn spawn_agent(
         setup.config.agent.max_task_duration_secs,
         setup.config.agent.max_spend_usd,
     )
+    .with_durable_execution()
     .with_v2_optimizations(setup.config.agent.v2_optimizations)
     .with_self_audit_enabled(setup.config.agent.self_audit_enabled)
     .with_parallel_phases(setup.config.agent.parallel_phases)
@@ -635,7 +636,7 @@ pub async fn spawn_agent(
                     None,                             // pending
                     Some(early_tx),                   // reply_tx (early replies)
                     Some(status_tx.clone()),          // status_tx (real-time phase updates)
-                    None,                             // cancel (reserved for v4.9.0)
+                    None,                             // legacy interrupt is also observed in flight
                 )
                 .await;
 
@@ -649,23 +650,6 @@ pub async fn spawn_agent(
                         output_tokens: usage.output_tokens,
                         cost_usd: usage.total_cost_usd,
                     }));
-
-                    // Update history
-                    let mut hist = history_clone.lock().await;
-                    *hist = session.history;
-
-                    // Persist conversation history
-                    if let Ok(json) = serde_json::to_string(&*hist) {
-                        let entry = temm1e_core::MemoryEntry {
-                            id: cli_history_key.clone(),
-                            content: json,
-                            metadata: serde_json::json!({"chat_id": "tui"}),
-                            timestamp: chrono::Utc::now(),
-                            session_id: Some("tui".to_string()),
-                            entry_type: temm1e_core::MemoryEntryType::Conversation,
-                        };
-                        let _ = memory_clone.store(entry).await;
-                    }
                 }
                 Err(e) => {
                     // Send error to TUI as a system message
@@ -682,6 +666,24 @@ pub async fn spawn_agent(
                         cost_usd: 0.0,
                     }));
                 }
+            }
+            // Persist progress and uncertain tool outcomes even when a turn
+            // ends with cancellation or an error.
+            // Update history
+            let mut hist = history_clone.lock().await;
+            *hist = session.history;
+
+            // Persist conversation history
+            if let Ok(json) = serde_json::to_string(&*hist) {
+                let entry = temm1e_core::MemoryEntry {
+                    id: cli_history_key.clone(),
+                    content: json,
+                    metadata: serde_json::json!({"chat_id": "tui"}),
+                    timestamp: chrono::Utc::now(),
+                    session_id: Some("tui".to_string()),
+                    entry_type: temm1e_core::MemoryEntryType::Conversation,
+                };
+                let _ = memory_clone.store(entry).await;
             }
         }
     });

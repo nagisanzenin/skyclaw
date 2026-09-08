@@ -68,7 +68,8 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         "openrouter" => {
@@ -79,7 +80,8 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         "minimax" => {
@@ -90,7 +92,8 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         "stepfun" => {
@@ -101,7 +104,8 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         "zai-coding-plan" => {
@@ -137,7 +141,8 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         "ollama" => {
@@ -148,7 +153,8 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         "lmstudio" | "lm-studio" => {
@@ -166,13 +172,15 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         _ => {
             let mut provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             if let Some(ref base_url) = config.base_url {
                 provider = provider.with_base_url(base_url.clone());
             }
@@ -206,31 +214,31 @@ mod tests {
     #[test]
     fn create_openai_provider() {
         let provider = create_provider(&config_with_name("openai")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "openai");
     }
 
     #[test]
     fn create_grok_provider() {
         let provider = create_provider(&config_with_name("grok")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "grok");
     }
 
     #[test]
     fn create_xai_provider() {
         let provider = create_provider(&config_with_name("xai")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "xai");
     }
 
     #[test]
     fn create_openrouter_provider() {
         let provider = create_provider(&config_with_name("openrouter")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "openrouter");
     }
 
     #[test]
     fn create_minimax_provider() {
         let provider = create_provider(&config_with_name("minimax")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "minimax");
     }
 
     #[test]
@@ -245,37 +253,37 @@ mod tests {
     #[test]
     fn create_zai_provider() {
         let provider = create_provider(&config_with_name("zai")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "zai");
     }
 
     #[test]
     fn create_zhipu_provider() {
         let provider = create_provider(&config_with_name("zhipu")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "zhipu");
     }
 
     #[test]
     fn create_stepfun_provider() {
         let provider = create_provider(&config_with_name("stepfun")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "stepfun");
     }
 
     #[test]
     fn create_ollama_provider() {
         let provider = create_provider(&config_with_name("ollama")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "ollama");
     }
 
     #[test]
     fn create_lmstudio_provider() {
         let provider = create_provider(&config_with_name("lmstudio")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "lmstudio");
     }
 
     #[test]
     fn create_lmstudio_provider_dashed_alias() {
         let provider = create_provider(&config_with_name("lm-studio")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "lm-studio");
     }
 
     #[test]

@@ -177,6 +177,12 @@ fn lookup(model: &str) -> Option<ModelLimits> {
         },
 
         // ── Z.ai (Zhipu AI) ──────────────────────────────────────────
+        // Z.ai model API guide, verified 2026-09-08:
+        // https://docs.z.ai/guides/vlm/glm-5.3-flash (1M context, 128K output).
+        "glm-5.3-flash" => ModelLimits {
+            context_window: 1_000_000,
+            max_output_tokens: 128_000,
+        },
         "glm-4.7-flash" => ModelLimits {
             context_window: 200_000,
             max_output_tokens: 131_072,
@@ -499,7 +505,10 @@ pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
 
 /// Quick vision check for model display.
 pub fn is_vision_model(model: &str) -> bool {
-    let m = model.to_lowercase();
+    let m = model.rsplit('/').next().unwrap_or(model).to_lowercase();
+    if m == "glm-5.3-flash" {
+        return true;
+    }
     if m.starts_with("glm-") {
         return m.contains('v') && !m.starts_with("glm-5");
     }

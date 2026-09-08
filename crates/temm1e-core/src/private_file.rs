@@ -31,9 +31,56 @@ pub fn write_private_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// An advisory lock on a stable sidecar inode. The sidecar must never be
+/// deleted or atomically replaced while clients may be using it.
+/// Closing the descriptor releases the OS lock, including after process exit.
+pub struct PrivateFileLock(std::fs::File);
+impl PrivateFileLock {
+    pub fn try_exclusive(path: &Path) -> io::Result<Option<Self>> {
+        let parent = path.parent().unwrap_or(Path::new("."));
+        let mut directory = std::fs::DirBuilder::new();
+        directory.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            directory.mode(0o700);
+        }
+        directory.create(parent)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(path)?;
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => Ok(Some(Self(file))),
+            Err(e) if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}
+impl Drop for PrivateFileLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn independent_handles_contend_and_release_without_deleting_sidecar() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("credential.lock");
+        let first = PrivateFileLock::try_exclusive(&path).unwrap().unwrap();
+        assert!(PrivateFileLock::try_exclusive(&path).unwrap().is_none());
+        drop(first);
+        assert!(path.exists());
+        assert!(PrivateFileLock::try_exclusive(&path).unwrap().is_some());
+    }
+
     #[test]
     fn replaces_complete_contents_and_leaves_no_temporary_file() {
         let dir = tempfile::tempdir().unwrap();

@@ -20,6 +20,35 @@ use temm1e_core::types::session::SessionContext;
 use temm1e_core::{Memory, Provider, Tool};
 use tracing::{debug, info, warn};
 
+/// Preserve incomplete tool calls as uncertainty, instead of silently stripping
+/// their intent from history or claiming their effects were rolled back.
+fn record_interrupted_tool_results(history: &mut Vec<ChatMessage>) {
+    let mut pending: Vec<String> = Vec::new();
+    for message in history.iter() {
+        if let MessageContent::Parts(parts) = &message.content {
+            for part in parts {
+                match part {
+                    ContentPart::ToolUse { id, .. } => pending.push(id.clone()),
+                    ContentPart::ToolResult { tool_use_id, .. } => {
+                        pending.retain(|id| id != tool_use_id)
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if !pending.is_empty() {
+        history.push(ChatMessage {
+            role: Role::Tool,
+            content: MessageContent::Parts(pending.into_iter().map(|id| ContentPart::ToolResult {
+                tool_use_id: id,
+                content: "Interrupted before a confirmed result was recorded. This call may not have started, or its effects may already have occurred. Outcome unknown: inspect external state before retrying.".into(),
+                is_error: true,
+            }).collect()),
+        });
+    }
+}
+
 /// Image MIME types that vision-capable models can process.
 const IMAGE_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
 
@@ -215,6 +244,8 @@ pub struct AgentRuntime {
     max_consecutive_failures: usize,
     /// Optional persistent task queue for checkpointing (None = no persistence).
     task_queue: Option<Arc<TaskQueue>>,
+    durable_execution: bool,
+    journal: tokio::sync::OnceCell<Arc<crate::execution_journal::ExecutionJournal>>,
     tool_observer: Option<Arc<dyn Fn(crate::agent_task_status::AgentToolEvent) + Send + Sync>>,
     /// Per-session budget tracker (Arc-wrapped for sharing with TemDOS cores).
     budget: Arc<BudgetTracker>,
@@ -317,7 +348,7 @@ impl AgentRuntime {
         model: String,
         system_prompt: Option<String>,
     ) -> Self {
-        let model_pricing = budget::get_pricing(&model);
+        let model_pricing = budget::get_pricing_with_custom(provider.name(), &model);
         Self {
             provider,
             memory,
@@ -337,6 +368,8 @@ impl AgentRuntime {
             verification_enabled: true,
             max_consecutive_failures: 2,
             task_queue: None,
+            durable_execution: false,
+            journal: tokio::sync::OnceCell::new(),
             tool_observer: None,
             budget: Arc::new(BudgetTracker::new(0.0)),
             hive_enabled: false,
@@ -479,7 +512,7 @@ impl AgentRuntime {
         max_task_duration_secs: u64,
         max_spend_usd: f64,
     ) -> Self {
-        let model_pricing = budget::get_pricing(&model);
+        let model_pricing = budget::get_pricing_with_custom(provider.name(), &model);
 
         // Cap max_context_tokens to the model's actual context window minus
         // output token headroom. This prevents trying to fill 30K tokens of
@@ -487,7 +520,9 @@ impl AgentRuntime {
         // A 10% safety margin absorbs token estimation errors (estimate_tokens()
         // uses len/4 which can underestimate by ~20% on code/CJK text).
         // Floor at context_window/2 for models where output == context (e.g. phi-4).
-        let (model_ctx_window, model_max_output) = model_registry::model_limits(&model);
+        let (model_ctx_window, model_max_output) =
+            model_registry::model_limits_with_custom(provider.name(), &model);
+        let model_max_output = model_max_output.min(model_ctx_window / 2);
         let raw_input_budget = model_ctx_window.saturating_sub(model_max_output);
         let min_input_budget = model_ctx_window / 2;
         let model_input_budget = raw_input_budget.max(min_input_budget) * 9 / 10;
@@ -518,6 +553,8 @@ impl AgentRuntime {
             verification_enabled: true,
             max_consecutive_failures: 2,
             task_queue: None,
+            durable_execution: false,
+            journal: tokio::sync::OnceCell::new(),
             tool_observer: None,
             budget: Arc::new(BudgetTracker::new(max_spend_usd)),
             hive_enabled: false,
@@ -618,6 +655,21 @@ impl AgentRuntime {
     }
 
     /// Set the persistent task queue for checkpointing.
+    pub fn with_durable_execution(mut self) -> Self {
+        self.durable_execution = true;
+        self
+    }
+
+    /// Supply an isolated journal (e.g. an embedded host or integration test).
+    pub fn with_execution_journal(
+        mut self,
+        journal: Arc<crate::execution_journal::ExecutionJournal>,
+    ) -> Self {
+        self.durable_execution = true;
+        self.journal = tokio::sync::OnceCell::from(journal);
+        self
+    }
+
     pub fn with_task_queue(mut self, task_queue: Arc<TaskQueue>) -> Self {
         self.task_queue = Some(task_queue);
         self
@@ -707,9 +759,9 @@ impl AgentRuntime {
     ///   result each round so the LLM sees them without extra API calls.
     /// - `status_tx`: optional `watch` channel for real-time task status emission.
     ///   If `None`, no status is emitted (zero overhead). `send_modify` is infallible.
-    /// - `cancel`: optional `CancellationToken` for future mid-stream cancellation.
-    ///   Phase 1: created and cancelled alongside `interrupt`, but not yet awaited
-    ///   in the loop. Phase 2 will add `tokio::select!` on provider calls.
+    /// - `cancel`: interrupts in-flight provider/tool futures. Legacy interrupt
+    ///   flags are also observed while waiting. External effects may already
+    ///   have occurred; interrupted calls require reconciliation before replay.
     #[allow(clippy::too_many_arguments)]
     pub async fn process_message(
         &self,
@@ -720,6 +772,99 @@ impl AgentRuntime {
         reply_tx: Option<tokio::sync::mpsc::UnboundedSender<OutboundMessage>>,
         status_tx: Option<tokio::sync::watch::Sender<AgentTaskStatus>>,
         cancel: Option<CancellationToken>,
+    ) -> Result<(OutboundMessage, TurnUsage), Temm1eError> {
+        let journal = if self.durable_execution {
+            Some(
+                self.journal
+                    .get_or_try_init(|| async {
+                        crate::execution_journal::ExecutionJournal::open_profile()
+                            .await
+                            .map(Arc::new)
+                    })
+                    .await?
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        let execution = if let Some(journal) = &journal {
+            Some(journal.begin(msg, session).await?)
+        } else {
+            None
+        };
+        let stopped = async {
+            loop {
+                if interrupt
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::Relaxed))
+                {
+                    break;
+                }
+                tokio::select! {
+                    _ = async {
+                        if let Some(token) = &cancel { token.cancelled().await; }
+                        else { std::future::pending::<()>().await; }
+                    } => break,
+                    _ = tokio::time::sleep(Duration::from_millis(25)), if interrupt.is_some() => {},
+                }
+            }
+        };
+        let outcome = tokio::select! {
+            biased;
+            _ = stopped => None,
+            result = self.process_message_inner(msg, session, interrupt.clone(), pending, reply_tx, status_tx.clone(), journal.as_deref().zip(execution.as_deref())) => Some(result),
+        };
+        if let Some(result) = outcome {
+            if result.is_err() {
+                record_interrupted_tool_results(&mut session.history);
+            }
+            if let (Some(journal), Some(id)) = (&journal, &execution) {
+                journal
+                    .finish(
+                        id,
+                        if result.is_ok() {
+                            "reply_returned"
+                        } else {
+                            "failed"
+                        },
+                        &session.history,
+                        result.as_ref().ok().map(|(reply, _)| reply.text.as_str()),
+                    )
+                    .await?;
+            }
+            return result;
+        }
+        record_interrupted_tool_results(&mut session.history);
+        if let (Some(journal), Some(id)) = (&journal, &execution) {
+            journal
+                .finish(id, "interrupted", &session.history, None)
+                .await?;
+        }
+        if let Some(tx) = status_tx {
+            tx.send_modify(|status| {
+                let round = match status.phase {
+                    AgentTaskPhase::CallingProvider { round }
+                    | AgentTaskPhase::ExecutingTool { round, .. }
+                    | AgentTaskPhase::ToolCompleted { round, .. }
+                    | AgentTaskPhase::Interrupted { round } => round,
+                    _ => 0,
+                };
+                status.phase = AgentTaskPhase::Interrupted { round };
+            });
+        }
+        Err(Temm1eError::Tool("Task stopped. Interrupted operations may already have taken effect; inspect them before retrying. Usage from an interrupted provider request may be unavailable.".into()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn process_message_inner(
+        &self,
+        msg: &InboundMessage,
+        session: &mut SessionContext,
+        interrupt: Option<Arc<AtomicBool>>,
+        pending: Option<PendingMessages>,
+        reply_tx: Option<tokio::sync::mpsc::UnboundedSender<OutboundMessage>>,
+        status_tx: Option<tokio::sync::watch::Sender<AgentTaskStatus>>,
+        execution: Option<(&crate::execution_journal::ExecutionJournal, &str)>,
     ) -> Result<(OutboundMessage, TurnUsage), Temm1eError> {
         info!(
             channel = %msg.channel,
@@ -747,9 +892,13 @@ impl AgentRuntime {
         // prevents orphan Oaths (from e.g. HiveRoute early-returns, or
         // Planner-sealed turns whose workspace state was mutated by a
         // sibling session) from being applied to unrelated replies.
+        let turn_witness = self
+            .witness
+            .as_ref()
+            .map(|witness| Arc::new(witness.for_workspace(session.workspace_path.clone())));
         let mut oath_sealed_this_turn: Option<temm1e_witness::types::Oath> = None;
         if self.auto_seal_planner_oath {
-            if let Some(ref witness) = self.witness {
+            if let Some(ref witness) = turn_witness {
                 let user_text = msg.text.as_deref().unwrap_or("");
                 if !user_text.trim().is_empty() {
                     // Complexity gate (Phase 4.5): fire the Planner LLM only
@@ -806,8 +955,6 @@ impl AgentRuntime {
         // ── Status emission helper ──────────────────────────────
         // Infallible: send_modify never panics, never allocates.
         // If status_tx is None, the closure is a no-op (zero overhead).
-        // We capture `cancel` here only for future Phase 2 use.
-        let _cancel = cancel; // bind to suppress unused-variable warning
 
         // Per-turn usage accumulators
         let mut turn_api_calls: u32 = 0;
@@ -1589,7 +1736,15 @@ impl AgentRuntime {
                 );
             }
 
-            crate::context::finalize_context(&mut request, self.max_context_tokens)?;
+            let (context_window, output_limit) =
+                model_registry::model_limits_with_custom(self.provider.name(), &self.model);
+            request.max_tokens =
+                Some(output_limit.min(context_window / 2).min(u32::MAX as usize) as u32);
+            crate::context::finalize_context(
+                &mut request,
+                self.max_context_tokens,
+                context_window,
+            )?;
 
             debug!(
                 round = rounds,
@@ -2134,8 +2289,8 @@ impl AgentRuntime {
                 // were available AND this is the first audit this turn:
                 // run one verification round. The same model is asked
                 // to confirm completion ("[DONE]") or commit to the tool
-                // call it skipped. Anything else fails open — exits
-                // with the original text, identical to v5.5.5 baseline.
+                // call it skipped, or provide a corrected answer. A correction
+                // must not be discarded in favor of the original claim.
                 let should_audit = self.self_audit_enabled
                     && audits_used_this_turn == 0
                     && pending_audit_pre_text.is_none()
@@ -2204,10 +2359,19 @@ impl AgentRuntime {
                             tracing::debug!(error = %e, "audit telemetry record failed");
                         }
                     });
-                    // Always serve the pre-audit text — never leak the
-                    // [DONE] token or the audit's malformed response.
-                    text_parts.clear();
-                    text_parts.push(pre_text);
+                    // Exact confirmation preserves the prior answer. Otherwise
+                    // keep the model's correction; never hide a retraction by
+                    // restoring the unsupported claim it just corrected.
+                    if outcome == crate::self_audit::AuditOutcome::Done {
+                        text_parts = vec![pre_text];
+                    } else {
+                        for text in &mut text_parts {
+                            *text = text.replace(crate::self_audit::AUDIT_DONE_TOKEN, "");
+                        }
+                        if text_parts.iter().all(|text| text.trim().is_empty()) {
+                            text_parts = vec!["I could not confirm the preceding answer. The requested outcome remains unverified.".into()];
+                        }
+                    }
                 }
 
                 // P5: log outcome-derived difficulty alongside intent-based label.
@@ -2259,7 +2423,7 @@ impl AgentRuntime {
                 // files are never mutated. Witness only controls the
                 // narrative.
                 if let (Some(witness), Some(oath)) =
-                    (self.witness.as_ref(), oath_sealed_this_turn.as_ref())
+                    (turn_witness.as_ref(), oath_sealed_this_turn.as_ref())
                 {
                     match witness.verify_oath(oath).await {
                         Ok(verdict) => {
@@ -2317,8 +2481,16 @@ impl AgentRuntime {
                             tracing::warn!(
                                 session_id = %session.session_id,
                                 error = %e,
-                                "witness verification error; reply unchanged (Law 5)"
+                                "witness verification unavailable"
                             );
+                            use temm1e_witness::config::WitnessStrictness;
+                            match self.witness_strictness {
+                                WitnessStrictness::Observe => {},
+                                WitnessStrictness::Warn => reply_text.push_str("\n\nWitness verification was unavailable. The requested outcome is not independently verified."),
+                                WitnessStrictness::Block | WitnessStrictness::BlockWithRetry => {
+                                    reply_text = "Witness verification was unavailable, so I cannot confirm completion. Any work already performed remains in place; inspect it before retrying.".into();
+                                }
+                            }
                         }
                     }
                 }
@@ -2600,6 +2772,7 @@ impl AgentRuntime {
                             if content.is_empty() {
                                 continue;
                             }
+                            let scope = temm1e_core::MemoryScope::User(user_id.clone());
                             let existing = match cf.subject_key.as_deref() {
                                 Some(sk) => memory
                                     .engram_by_subject(sk, &user_id, &chat_id)
@@ -2607,7 +2780,10 @@ impl AgentRuntime {
                                     .ok()
                                     .flatten(),
                                 None => None,
-                            };
+                            }
+                            .filter(|fact| fact.scope == scope);
+                            // Only update this user's own fact. A visible shared
+                            // fact is not authority to overwrite global memory.
                             // Trust boundary: never overwrite a user pin.
                             if existing
                                 .as_ref()
@@ -2630,11 +2806,12 @@ impl AgentRuntime {
                             let id = existing.as_ref().map(|e| e.id.clone()).unwrap_or_else(|| {
                                 use std::hash::{Hash, Hasher};
                                 let mut h = std::collections::hash_map::DefaultHasher::new();
-                                format!(
-                                    "global|curator|{}",
-                                    cf.subject_key.as_deref().unwrap_or(&content)
+                                (
+                                    "user-curator",
+                                    &user_id,
+                                    cf.subject_key.as_deref().unwrap_or(&content),
                                 )
-                                .hash(&mut h);
+                                    .hash(&mut h);
                                 format!("eg{:016x}", h.finish())
                             });
                             let fact_type = match cf.fact_type.as_str() {
@@ -2663,7 +2840,7 @@ impl AgentRuntime {
                                 summary,
                                 essence,
                                 fact_type,
-                                scope: temm1e_core::MemoryScope::Global,
+                                scope,
                                 pinned_by: temm1e_core::PinnedBy::Agent,
                                 subject_key: cf.subject_key.clone(),
                                 importance: 4.0,
@@ -2674,7 +2851,7 @@ impl AgentRuntime {
                             };
                             match memory.engram_store(fact).await {
                                 Ok(()) => {
-                                    info!(content = %content, "Engram curator captured a durable fact")
+                                    info!("Engram curator captured a user-scoped durable fact")
                                 }
                                 Err(e) => warn!(error = %e, "Engram curator store failed"),
                             }
@@ -2944,7 +3121,27 @@ impl AgentRuntime {
                     });
                 }
 
+                if let Some((journal, turn_id)) = execution {
+                    journal
+                        .intent(
+                            turn_id,
+                            &execution_id,
+                            tool_name,
+                            arguments,
+                            &session.history,
+                        )
+                        .await?;
+                }
                 let result = execute_tool(tool_name, arguments.clone(), &self.tools, session).await;
+                if let Some((journal, turn_id)) = execution {
+                    let (text, is_error) = match &result {
+                        Ok(output) => (output.content.clone(), output.is_error),
+                        Err(error) => (error.to_string(), true),
+                    };
+                    journal
+                        .result(turn_id, &execution_id, &text, is_error)
+                        .await?;
+                }
                 let tool_duration_ms = tool_started.elapsed().as_millis() as u64;
 
                 // ── Status: ToolCompleted (v4.8.0 — new variant) ─
@@ -3793,40 +3990,7 @@ async fn run_social_evaluation(
 /// `false` for models known to be text-only.  Unknown models default
 /// to `true` so we never accidentally strip images from a capable model.
 pub fn model_supports_vision(model: &str) -> bool {
-    let m = model.to_lowercase();
-
-    // ── Known text-only models (deny-list) ──────────────────────
-
-    // Z.ai / Zhipu: only V-suffix models have vision.
-    // glm-4.6v, glm-4.6v-flash, glm-4.6v-flashx, glm-4.5v → vision
-    // glm-4.7-flash, glm-4.7, glm-5, glm-5-code, glm-4.5-flash → text-only
-    if m.starts_with("glm-") {
-        return m.contains('v') && !m.starts_with("glm-5");
-    }
-
-    // MiniMax: M2 text-only, M2.5 limited multimodal — not reliable
-    // through OpenAI-compat endpoint. Treat as text-only.
-    if m.starts_with("minimax") {
-        return false;
-    }
-
-    // Legacy OpenAI: GPT-3.5 has no vision support.
-    if m.starts_with("gpt-3") {
-        return false;
-    }
-
-    // ── Known vision-capable families ───────────────────────────
-
-    // Anthropic: all Claude models support vision.
-    // OpenAI: GPT-4o, GPT-4.1, GPT-5.x, o1/o3/o4-mini all support vision.
-    // Gemini: all main models are natively multimodal.
-    // Grok: grok-3, grok-4 support vision; grok-2-vision-* explicitly.
-    // OpenRouter: depends on underlying model — allow by default.
-
-    // Default: allow images through. Most modern models support vision,
-    // and if they don't the provider returns a clear error which is
-    // better than silently stripping images from a capable model.
-    true
+    model_registry::is_vision_model(model)
 }
 
 #[cfg(test)]

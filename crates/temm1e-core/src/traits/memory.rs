@@ -458,8 +458,8 @@ pub enum AuditOutcomeKind {
     /// Audit prompted the model to emit the tool call it had previously
     /// promised but skipped — the loop continues.
     ToolCallTriggered,
-    /// Audit response was malformed (no [DONE], no tool call). Fail-open:
-    /// loop exits with the original text. No worse than baseline.
+    /// Audit did not produce an exact [DONE] or tool call. Modern runtimes
+    /// preserve corrections; the legacy variant name remains for telemetry.
     FailedOpen,
     /// Audit was eligible but skipped (cost cap, hard cap reached, etc.).
     Skipped,

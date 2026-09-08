@@ -24,6 +24,7 @@ dirs.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 tempfile = "3"
+fs2 = "0.4.3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

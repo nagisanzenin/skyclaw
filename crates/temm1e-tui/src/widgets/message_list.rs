@@ -175,10 +175,14 @@ impl MessageList {
                 if let Some(usage) = &msg.usage {
                     lines.push(Line::from(Span::styled(
                         format!(
-                            "  [{} in / {} out | ${:.4} | {:.1}s]",
+                            "  [{} in / {} out | {} | {:.1}s]",
                             usage.input_tokens,
                             usage.output_tokens,
-                            usage.cost_usd,
+                            if usage.cost_usd > 0.0 {
+                                format!("API est. ${:.4}", usage.cost_usd)
+                            } else {
+                                "cost unavailable".into()
+                            },
                             usage.elapsed_ms as f64 / 1000.0,
                         ),
                         secondary_style,
