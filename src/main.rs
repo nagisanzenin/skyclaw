@@ -8120,6 +8120,14 @@ Just type a message to chat with the AI agent.",
             if let Some(perpetuum) = cli_perp_instance.read().await.as_ref() {
                 perpetuum.shutdown();
             }
+            if let Some(agent) = agent_opt.as_ref() {
+                let drained = agent
+                    .shutdown_background(std::time::Duration::from_secs(5))
+                    .await;
+                if !drained {
+                    tracing::warn!("CLI background drain deadline reached; cancelled work may have unknown usage");
+                }
+            }
             println!("\nTEMM1E chat ended.");
         }
         Commands::Status => {

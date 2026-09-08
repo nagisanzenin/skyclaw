@@ -2,6 +2,7 @@
 //! through AI providers with tool execution support.
 
 pub mod agent_task_status;
+pub mod background;
 pub mod blueprint;
 pub mod budget;
 pub mod circuit_breaker;

@@ -229,6 +229,7 @@ pub type PendingMessages = Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>;
 /// and registered tools.
 pub struct AgentRuntime {
     provider: Arc<dyn Provider>,
+    background: crate::background::BackgroundTasks,
     memory: Arc<dyn Memory>,
     tools: Vec<Arc<dyn Tool>>,
     model: String,
@@ -296,7 +297,7 @@ pub struct AgentRuntime {
     /// Social intelligence: concurrent evaluation guard to prevent overlapping evals.
     social_evaluating: Arc<AtomicBool>,
     /// Eigen-Tune self-tuning distillation engine. None = disabled (default).
-    /// All hooks are fire-and-forget — never blocks the user reply path.
+    /// Hooks use owned, bounded background work without awaiting results on the reply path.
     /// Default-config users (engine=None) see zero new code paths exercised.
     eigen_tune: Option<Arc<EigenTuneEngine>>,
     /// Whether local routing of distilled models is enabled. The double opt-in
@@ -370,6 +371,7 @@ impl AgentRuntime {
             task_queue: None,
             durable_execution: false,
             journal: tokio::sync::OnceCell::new(),
+            background: crate::background::BackgroundTasks::default(),
             tool_observer: None,
             budget: Arc::new(BudgetTracker::new(0.0)),
             hive_enabled: false,
@@ -555,6 +557,7 @@ impl AgentRuntime {
             task_queue: None,
             durable_execution: false,
             journal: tokio::sync::OnceCell::new(),
+            background: crate::background::BackgroundTasks::default(),
             tool_observer: None,
             budget: Arc::new(BudgetTracker::new(max_spend_usd)),
             hive_enabled: false,
@@ -792,6 +795,8 @@ impl AgentRuntime {
         } else {
             None
         };
+        let background = self.background.scope();
+        let mut background_guard = background.cancel_on_drop();
         let stopped = async {
             loop {
                 if interrupt
@@ -821,10 +826,11 @@ impl AgentRuntime {
             biased;
             _ = stopped => None,
             _ = deadline => { deadline_expired = true; None },
-            result = self.process_message_inner(msg, session, interrupt.clone(), pending, reply_tx, status_tx.clone(), journal.as_deref().zip(execution.as_deref())) => Some(result),
+            result = self.process_message_inner(msg, session, interrupt.clone(), pending, reply_tx, status_tx.clone(), journal.as_deref().zip(execution.as_deref()), &background) => Some(result),
         };
         if let Some(result) = outcome {
             if result.is_err() {
+                background.cancel();
                 record_interrupted_tool_results(&mut session.history);
             }
             if let (Some(journal), Some(id)) = (&journal, &execution) {
@@ -841,8 +847,12 @@ impl AgentRuntime {
                     )
                     .await?;
             }
+            if result.is_ok() {
+                background_guard.release();
+            }
             return result;
         }
+        background.cancel();
         record_interrupted_tool_results(&mut session.history);
         if let (Some(journal), Some(id)) = (&journal, &execution) {
             journal
@@ -879,6 +889,7 @@ impl AgentRuntime {
         reply_tx: Option<tokio::sync::mpsc::UnboundedSender<OutboundMessage>>,
         status_tx: Option<tokio::sync::watch::Sender<AgentTaskStatus>>,
         execution: Option<(&crate::execution_journal::ExecutionJournal, &str)>,
+        background: &crate::background::BackgroundScope,
     ) -> Result<(OutboundMessage, TurnUsage), Temm1eError> {
         info!(
             channel = %msg.channel,
@@ -1143,7 +1154,7 @@ impl AgentRuntime {
                 };
                 let engine = et.clone();
                 let chat_id = msg.chat_id.clone();
-                tokio::spawn(async move {
+                background.spawn("eigentune_signal", async move {
                     engine.on_signal(&chat_id, signal).await;
                 });
             }
@@ -1193,7 +1204,7 @@ impl AgentRuntime {
                 let turn = turn_facts.turn_number;
                 let facts_clone = turn_facts.clone();
                 let text_clone = user_text.clone();
-                tokio::spawn(async move {
+                background.spawn("social_facts", async move {
                     if let Err(e) = social_storage
                         .buffer_facts(&social_user_id, turn, &facts_clone, &text_clone)
                         .await
@@ -1982,7 +1993,7 @@ impl AgentRuntime {
                                     &eigentune_complexity,
                                 );
                                 let local_text = response_to_text(&local_resp);
-                                tokio::spawn(async move {
+                                background.spawn("eigentune_cloud_shadow", async move {
                                     if let Ok(Ok(cloud_resp)) = tokio::time::timeout(
                                         std::time::Duration::from_secs(30),
                                         cloud_provider.complete(request),
@@ -2041,7 +2052,7 @@ impl AgentRuntime {
                         let tier =
                             temm1e_distill::types::EigenTier::from_str(&eigentune_complexity);
                         let cloud_text = response_to_text(&cloud_resp);
-                        tokio::spawn(async move {
+                        background.spawn("eigentune_local_shadow", async move {
                             let local_provider =
                                 temm1e_providers::OpenAICompatProvider::new(String::new())
                                     .with_base_url(endpoint_clone.base_url.clone());
@@ -2088,7 +2099,7 @@ impl AgentRuntime {
                     tokens_out: Some(response.usage.output_tokens),
                     cost_usd: None, // call_cost is computed in the next block
                 };
-                tokio::spawn(async move {
+                background.spawn("eigentune_completion", async move {
                     engine.on_completion(pair_data).await;
                 });
             }
@@ -2365,7 +2376,7 @@ impl AgentRuntime {
                     let provider_name = self.provider.name().to_string();
                     let model_name = self.model.clone();
                     let outcome_kind = outcome.to_kind();
-                    tokio::spawn(async move {
+                    background.spawn("audit_telemetry", async move {
                         if let Err(e) = mem
                             .record_audit_outcome(&provider_name, &model_name, outcome_kind, true)
                             .await
@@ -2637,7 +2648,7 @@ impl AgentRuntime {
                         let notice_chat_id = msg.chat_id.clone();
                         let notice_reply_to = msg.id.clone();
 
-                        tokio::spawn(async move {
+                        background.spawn("blueprint_author", async move {
                             match author_blueprint(provider.as_ref(), &model, &prompt, &user_id)
                                 .await
                             {
@@ -2703,7 +2714,7 @@ impl AgentRuntime {
                             let notice_reply_to = msg.id.clone();
                             let notice_name = updated_bp.name.clone();
 
-                            tokio::spawn(async move {
+                            background.spawn("blueprint_refine", async move {
                                 match refine_blueprint(
                                     provider.as_ref(),
                                     &model,
@@ -2758,7 +2769,7 @@ impl AgentRuntime {
                 // ── Engram curator: auto-capture durable facts (gated, background) ──
                 // After a substantive turn, one bounded LLM call extracts durable
                 // facts and stores them as Agent-pinned Engram facts. Best-effort
-                // and detached so it never blocks the reply. User pins are never
+                // and owned by the background pool without awaiting results on the reply path. User pins are never
                 // overwritten; subject_key dedups/supersedes.
                 if self.engram_config.enabled
                     && self.engram_config.curator == "substantive"
@@ -2775,7 +2786,7 @@ impl AgentRuntime {
                     let user_id = msg.user_id.clone();
                     let chat_id = msg.chat_id.clone();
                     let cap = self.engram_config.max_facts.min(3);
-                    tokio::spawn(async move {
+                    background.spawn("engram_curator", async move {
                         let facts = curate_engram_facts(provider.as_ref(), &model, &digest).await;
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -2966,7 +2977,9 @@ impl AgentRuntime {
                                 .unwrap_or_else(|| "Tem".to_string());
                             let evaluating = self.social_evaluating.clone();
                             evaluating.store(true, Ordering::Relaxed);
-                            tokio::spawn(async move {
+                            let evaluation_guard = crate::background::ResetFlag(evaluating.clone());
+                            background.spawn("social_evaluation", async move {
+                                let _evaluation_guard = evaluation_guard;
                                 let result = tokio::time::timeout(
                                     std::time::Duration::from_secs(30),
                                     run_social_evaluation(
@@ -3055,7 +3068,7 @@ impl AgentRuntime {
                 let provider_name = self.provider.name().to_string();
                 let model_name = self.model.clone();
                 let outcome_kind = outcome.to_kind();
-                tokio::spawn(async move {
+                background.spawn("audit_telemetry", async move {
                     if let Err(e) = mem
                         .record_audit_outcome(&provider_name, &model_name, outcome_kind, true)
                         .await
@@ -3255,7 +3268,7 @@ impl AgentRuntime {
                     } else {
                         temm1e_distill::types::QualitySignal::ToolCallSucceeded
                     };
-                    tokio::spawn(async move {
+                    background.spawn("eigentune_tool_signal", async move {
                         engine.on_signal(&chat_id, signal).await;
                     });
                 }
@@ -3607,13 +3620,21 @@ impl AgentRuntime {
     }
 
     /// Get the maximum task duration.
+    pub fn background_stats(&self) -> crate::background::BackgroundStats {
+        self.background.stats()
+    }
+
+    pub async fn shutdown_background(&self, budget: Duration) -> bool {
+        self.background.shutdown(budget).await
+    }
+
     pub fn max_task_duration(&self) -> Duration {
         self.max_task_duration
     }
 }
 
 // ---------------------------------------------------------------------------
-// Blueprint authoring / refinement helpers (fire-and-forget from tokio::spawn)
+// Blueprint authoring / refinement helpers (owned background tasks)
 // ---------------------------------------------------------------------------
 
 /// Make a single LLM call to author a Blueprint. Parses the response into a

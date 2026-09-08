@@ -28,6 +28,20 @@ impl Meter {
         std::fs::write(&self.path, serde_json::to_vec_pretty(&*records).unwrap()).unwrap();
     }
 }
+struct RequestGuard<'a> {
+    meter: &'a Meter,
+    call: usize,
+    finished: bool,
+}
+impl Drop for RequestGuard<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.meter.record(
+                serde_json::json!({"event":"request_cancelled","call":self.call,"usage":"unknown"}),
+            );
+        }
+    }
+}
 #[async_trait]
 impl Provider for Meter {
     fn name(&self) -> &str {
@@ -48,11 +62,17 @@ impl Provider for Meter {
         request.temperature = Some(1.0);
         let start = Instant::now();
         self.record(serde_json::json!({"event":"request_started","call":call,"request":request}));
+        let mut guard = RequestGuard {
+            meter: self,
+            call,
+            finished: false,
+        };
         let result = self.inner.complete(request).await;
         match &result {
             Ok(response) => self.record(serde_json::json!({"event":"request_finished","call":call,"elapsed_ms":start.elapsed().as_millis(),"response":response})),
             Err(error) => self.record(serde_json::json!({"event":"request_failed","call":call,"elapsed_ms":start.elapsed().as_millis(),"error":error.to_string()})),
         }
+        guard.finished = true;
         result
     }
     async fn stream(
@@ -128,6 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime.process_message(&message, &mut session, None, None, None, None, None),
     )
     .await;
+    let foreground_ms = start.elapsed().as_millis();
     let outcome = match result {
         Ok(Ok((reply, usage))) => {
             serde_json::json!({"status":"returned","reply":reply.text,"turn_usage":usage})
@@ -137,7 +158,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             serde_json::json!({"status":"timeout","error":"245 second independent wall deadline"})
         }
     };
-    let report = serde_json::json!({"task":input["id"],"elapsed_ms":start.elapsed().as_millis(),"outcome":outcome,"history":session.history,"requests_started":meter.calls.load(Ordering::SeqCst)});
+    // Identical bounded observation in both versions; no baseline runtime fix.
+    let drain_start = Instant::now();
+    let mut idle_since = None;
+    let mut pending_requests;
+    loop {
+        pending_requests = {
+            let records = meter.records.lock().unwrap();
+            let started = records
+                .iter()
+                .filter(|r| r["event"] == "request_started")
+                .count();
+            let terminal = records
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        r["event"].as_str(),
+                        Some("request_finished" | "request_failed" | "request_cancelled")
+                    )
+                })
+                .count();
+            started.saturating_sub(terminal)
+        };
+        if pending_requests == 0 {
+            let since = idle_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_secs(1) {
+                break;
+            }
+        } else {
+            idle_since = None;
+        }
+        if drain_start.elapsed() >= Duration::from_secs(125) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let report = serde_json::json!({"task":input["id"],"foreground_ms":foreground_ms,"elapsed_ms":start.elapsed().as_millis(),"drain_ms":drain_start.elapsed().as_millis(),"pending_requests_at_report":pending_requests,"outcome":outcome,"history":session.history,"requests_started":meter.calls.load(Ordering::SeqCst).min(40)});
     std::fs::write(output, serde_json::to_vec_pretty(&report)?)?;
     println!(
         "task={} status={} elapsed_ms={}",

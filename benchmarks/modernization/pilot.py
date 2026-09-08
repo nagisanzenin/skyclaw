@@ -61,7 +61,7 @@ def main():
     orders = [['A','B'], ['B','A'], ['A','B'], ['B','A']]
     rng.shuffle(orders)
     binaries = {'A':args.baseline.resolve(), 'B':args.modern.resolve()}
-    manifest = {'purpose':'development pilot; four independent coding scenarios, one run per version; not a release comparison', 'baseline_commit':args.baseline_commit, 'modern_commit':args.modern_commit, 'binary_sha256':{k:digest(v) for k,v in binaries.items()}, 'instrumentation_sha256':digest(Path(__file__)), 'tasks':TASKS, 'order':orders, 'provider_cache':'uncontrolled/shared; interleaving can warm either version', 'model':'glm-5.3-flash', 'endpoint':'https://api.z.ai/api/coding/paas/v4', 'temperature':1.0, 'output_cap_per_call':4096, 'input_budget':30000, 'tool_rounds':8, 'request_limit':40, 'runtime_deadline_seconds':240, 'outer_deadline_seconds':245, 'tools':['shell','file_read','file_write'], 'v2_classifier':False, 'witness':False, 'self_audit':True}
+    manifest = {'purpose':'development pilot; four independent coding scenarios, one run per version; not a release comparison', 'baseline_commit':args.baseline_commit, 'modern_commit':args.modern_commit, 'binary_sha256':{k:digest(v) for k,v in binaries.items()}, 'instrumentation_sha256':digest(Path(__file__)), 'tasks':TASKS, 'order':orders, 'provider_cache':'uncontrolled/shared; interleaving can warm either version', 'model':'glm-5.3-flash', 'endpoint':'https://api.z.ai/api/coding/paas/v4', 'temperature':1.0, 'output_cap_per_call':4096, 'input_budget':30000, 'tool_rounds':8, 'request_limit':40, 'runtime_deadline_seconds':240, 'outer_deadline_seconds':245, 'post_turn_drain_seconds':125, 'quiescent_interval_seconds':1, 'tools':['shell','file_read','file_write'], 'v2_classifier':False, 'witness':False, 'self_audit':True}
     (root/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     results=[]
     for task, order in zip(TASKS, orders):
@@ -80,12 +80,14 @@ def main():
             start=time.monotonic()
             with (run/'stdout.log').open('w') as out, (run/'stderr.log').open('w') as err:
                 try:
-                    result=subprocess.run([str(binaries[version]),str(prompt),str(workspace),str(run/'result.json')],cwd=workspace,env=env,stdout=out,stderr=err,timeout=255)
+                    result=subprocess.run([str(binaries[version]),str(prompt),str(workspace),str(run/'result.json')],cwd=workspace,env=env,stdout=out,stderr=err,timeout=380)
                     status=result.returncode
                 except subprocess.TimeoutExpired: status='process_timeout'
+            foreground=None
+            if (run/'result.json').exists(): foreground=json.loads((run/'result.json').read_text()).get('foreground_ms')
             check=subprocess.run(['python3','-c',task['check']],cwd=workspace,capture_output=True,text=True,timeout=10)
             unchanged=all((workspace/name).is_file() and digest(workspace/name)==sha for name,sha in protected.items())
-            record={'task':task['id'],'version':version,'process_status':status,'wall_seconds':time.monotonic()-start,'verified':check.returncode==0 and unchanged,'check_exit':check.returncode,'check_stdout':check.stdout,'check_stderr':check.stderr,'protected_unchanged':unchanged}
+            record={'task':task['id'],'version':version,'process_status':status,'wall_seconds':time.monotonic()-start,'foreground_ms':foreground,'verified':check.returncode==0 and unchanged,'check_exit':check.returncode,'check_stdout':check.stdout,'check_stderr':check.stderr,'protected_unchanged':unchanged}
             results.append(record);(root/'scorecard.json').write_text(json.dumps(results,indent=2)+'\n')
             print(json.dumps(record),flush=True)
     print('Pilot complete. Four tasks cannot establish release superiority.',flush=True)
