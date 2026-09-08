@@ -9,6 +9,9 @@ pub(crate) trait Protocol: Send + 'static {
     fn pop(&mut self) -> Option<StreamChunk>;
     fn done(&self) -> bool;
     fn finish(&self) -> Result<(), Temm1eError>;
+    fn end(&mut self) -> Result<(), Temm1eError> {
+        self.finish()
+    }
 }
 pub(crate) fn stream<D: Protocol>(
     response: reqwest::Response,
@@ -25,13 +28,10 @@ pub(crate) fn stream<D: Protocol>(
         state,
         |(mut bytes, mut sse, mut decoder, mut total, mut ended)| async move {
             loop {
-                if ended {
-                    return None;
-                }
                 if let Some(chunk) = decoder.pop() {
                     return Some((Ok(chunk), (bytes, sse, decoder, total, ended)));
                 }
-                if decoder.done() {
+                if ended || decoder.done() {
                     return None;
                 }
                 let result = match bytes.next().await {
@@ -70,10 +70,13 @@ pub(crate) fn stream<D: Protocol>(
                     ))),
                     None => {
                         ended = true;
-                        sse.finish().and_then(|_| decoder.finish())
+                        sse.finish().and_then(|_| decoder.end())
                     }
                 };
                 if let Err(e) = result {
+                    // Never expose queued output after a failed batch. EOF can
+                    // enqueue final chunks only when validation succeeded.
+                    while decoder.pop().is_some() {}
                     ended = true;
                     return Some((Err(e), (bytes, sse, decoder, total, ended)));
                 }

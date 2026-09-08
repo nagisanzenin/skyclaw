@@ -18,6 +18,8 @@ mod anthropic_native;
 mod anthropic_stream;
 pub mod chat_stream;
 pub mod gemini;
+mod gemini_native;
+mod gemini_stream;
 pub mod openai_compat;
 pub mod rate_limit;
 pub mod responses;
@@ -62,7 +64,10 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
         }
         "gemini" => {
             // Native Gemini API — properly handles systemInstruction.
-            let provider = GeminiProvider::new(api_key);
+            let mut provider = GeminiProvider::new(api_key);
+            if let Some(ref base_url) = config.base_url {
+                provider = provider.with_base_url(base_url.clone());
+            }
             Ok(Box::new(provider))
         }
         "grok" | "xai" => {
