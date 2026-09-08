@@ -1,6 +1,6 @@
 # TUI modernization audit and implementation specification
 
-Status: proposed design. Creator requested modernization; creator selected the compact transcript layout. Preserve Tem's palette, recognizable voice and keyboard-first operation. The current ratatui/TEA implementation is a useful foundation, not a reason for a framework rewrite.
+Status: original audit/design, followed by implemented checkpoints in IMPLEMENTATION-STATUS. Connection identity and model-switch implementation: [checkpoint 35](TUI-CONNECTION-IMPLEMENTATION.md). Creator requested modernization; creator selected the compact transcript layout. Preserve Tem's palette, recognizable voice and keyboard-first operation. The current ratatui/TEA implementation is a useful foundation, not a reason for a framework rewrite.
 
 ## Observed baseline
 

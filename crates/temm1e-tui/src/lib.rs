@@ -18,6 +18,7 @@ pub mod agent_bridge;
 pub mod app;
 pub mod channel;
 pub mod commands;
+mod connection;
 pub mod event;
 pub mod input;
 pub mod onboarding;
@@ -43,9 +44,7 @@ use ratatui::Terminal;
 use tokio::sync::mpsc;
 
 use temm1e_agent::agent_task_status::AgentTaskStatus;
-use temm1e_core::config::credentials::{
-    load_active_provider_keys, load_credentials_file, load_saved_credentials, save_credentials,
-};
+use temm1e_core::config::credentials::{load_credentials_file, save_credentials};
 use temm1e_core::types::config::Temm1eConfig;
 use temm1e_core::types::model_registry::default_model;
 
@@ -127,49 +126,13 @@ pub async fn launch_tui(config: Temm1eConfig) -> anyhow::Result<()> {
     // Priority: temm1e.toml [provider] > saved credentials > onboarding.
     // Mirrors the `start` / `chat` command logic (src/main.rs:1987-2007)
     // so the TUI honors the same config the other commands do.
-    let resolved: Option<(String, String, String, Option<String>)> = {
-        let config_creds: Option<(String, String, String, Option<String>)> = config
-            .provider
-            .api_key
-            .as_ref()
-            .filter(|k| !k.is_empty() && !k.starts_with("${"))
-            .map(|key| {
-                let name = config
-                    .provider
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| "anthropic".to_string());
-                let model = config
-                    .provider
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| default_model(&name).to_string());
-                (name, key.clone(), model, config.provider.base_url.clone())
-            });
+    let saved = load_credentials_file();
+    let resolved = AgentSetup::resolve(&config, saved.as_ref());
 
-        config_creds.or_else(|| {
-            load_saved_credentials().map(|(p, k, m)| {
-                let burl = load_active_provider_keys().and_then(|(_, _, _, b)| b);
-                (p, k, m, burl)
-            })
-        })
-    };
-
-    let mut state = if let Some((provider, key, model, base_url)) = resolved {
-        // Try to spawn agent with resolved credentials
-        match agent_bridge::spawn_agent(
-            AgentSetup {
-                provider_name: provider.clone(),
-                api_key: key,
-                model: model.clone(),
-                base_url,
-                config: config.clone(),
-                mode: None, // Use default when loading saved credentials
-            },
-            event_tx.clone(),
-        )
-        .await
-        {
+    let mut state = if let Some(setup) = resolved {
+        let provider = setup.provider_name.clone();
+        let model = setup.model.clone();
+        match agent_bridge::spawn_agent(setup, event_tx.clone()).await {
             Ok(handle) => {
                 agent_handle = Some(handle);
                 AppState::new().with_chat(provider, model)
@@ -314,7 +277,7 @@ pub async fn launch_tui(config: Temm1eConfig) -> anyhow::Result<()> {
         // and spawn a new one with the new model. Only runs while
         // idle (the command handler rejects mid-turn switches).
         if let Some(new_model) = state.pending_model_switch.take() {
-            handle_model_switch(&mut state, &mut agent_handle, &event_tx, &config, new_model).await;
+            handle_model_switch(&mut state, &mut agent_handle, &event_tx, new_model).await;
         }
 
         // Handle user message submission → send to agent
@@ -459,6 +422,12 @@ async fn handle_onboarding_async(
                             AgentSetup {
                                 provider_name: provider.clone(),
                                 api_key: api_key.clone(),
+                                keys: connection::onboarding_keys(
+                                    load_credentials_file().as_ref(),
+                                    provider,
+                                    &base_url,
+                                    api_key,
+                                ),
                                 model: model.clone(),
                                 base_url: base_url.clone(),
                                 config: config.clone(),
@@ -573,93 +542,97 @@ fn whoami() -> String {
 /// when `state.pending_model_switch` is set. Drops the old agent
 /// handle (its task exits when the sender is dropped), spawns a new
 /// agent with the new model, saves the new model to credentials.toml
-/// so the next launch uses it, and updates `state.current_model`.
+/// only when its saved connection still matches; updates `state.current_model`.
 async fn handle_model_switch(
     state: &mut AppState,
     agent_handle: &mut Option<AgentHandle>,
     event_tx: &mpsc::UnboundedSender<Event>,
-    config: &Temm1eConfig,
     new_model: String,
 ) {
     use temm1e_core::types::model_registry::available_models_for_provider;
-
-    let Some(provider) = state.current_provider.clone() else {
+    let Some(current) = agent_handle.as_ref() else {
         push_system_line_via_tx(
             event_tx,
-            "Cannot switch model: no provider is configured.".to_string(),
+            "Cannot switch model: no active connection. Restart or reconnect first.".into(),
         );
         return;
     };
-
-    // Validate against the known list for the current provider.
-    let known = available_models_for_provider(&provider);
-    if !known.is_empty() && !known.contains(&new_model.as_str()) {
-        push_system_line_via_tx(
-            event_tx,
-            format!(
-                "Unknown model '{}' for provider '{}'. Valid: {}",
-                new_model,
-                provider,
-                known.join(", ")
-            ),
-        );
+    let previous = current.setup.clone();
+    let provider = &previous.provider_name;
+    let known = available_models_for_provider(provider);
+    let registered =
+        temm1e_core::config::custom_models::lookup_custom_model(provider, &new_model).is_some();
+    if new_model.trim().is_empty()
+        || (!known.is_empty()
+            && !known.contains(&new_model.as_str())
+            && !registered
+            && previous.base_url.is_none()
+            && provider != "openrouter")
+    {
+        push_system_line_via_tx(event_tx, format!("Unknown model '{new_model}' for provider '{provider}'. Register a custom model or choose a listed suggestion: {}", known.join(", ")));
         return;
     }
-
-    // Read the current credentials to recover the API key + base_url.
-    let Some((_name, keys, _model, base_url)) = load_active_provider_keys() else {
-        push_system_line_via_tx(
-            event_tx,
-            "Cannot switch model: no saved credentials for the active provider.".to_string(),
-        );
-        return;
-    };
-    let Some(api_key) = keys.into_iter().next() else {
-        push_system_line_via_tx(
-            event_tx,
-            "Cannot switch model: no API key found for the active provider.".to_string(),
-        );
-        return;
-    };
-
-    // Wait for the old bridge's final persistence before opening the same
-    // conversation in a replacement runtime.
+    let mut replacement = previous.clone();
+    replacement.model.clone_from(&new_model);
+    replacement.mode.clone_from(&state.selected_mode);
     if let Some(old) = agent_handle.take() {
-        if !old
-            .shutdown(std::time::Duration::from_secs(6))
-            .await
-            .loop_joined
-        {
-            tracing::warn!("Previous TUI runtime did not fully drain during model switch");
+        let report = old.shutdown(std::time::Duration::from_secs(6)).await;
+        if !report.loop_joined || !report.background_drained {
+            push_system_line_via_tx(event_tx, "Model switch stopped: previous runtime did not fully drain. Restart before sending another message.".into());
+            return;
         }
     }
-
-    match agent_bridge::spawn_agent(
-        AgentSetup {
-            provider_name: provider.clone(),
-            api_key: api_key.clone(),
-            model: new_model.clone(),
-            base_url: base_url.clone(),
-            config: config.clone(),
-            mode: state.selected_mode.clone(),
-        },
-        event_tx.clone(),
-    )
-    .await
-    {
+    match agent_bridge::spawn_agent(replacement.clone(), event_tx.clone()).await {
         Ok(handle) => {
             *agent_handle = Some(handle);
+            state.current_provider = Some(replacement.provider_name.clone());
             state.current_model = Some(new_model.clone());
-            // Persist so the next launch uses the new model
-            if let Err(e) =
-                save_credentials(&provider, &api_key, &new_model, base_url.as_deref()).await
-            {
-                tracing::warn!(error = %e, "Failed to persist model switch");
-            }
-            push_system_line_via_tx(event_tx, format!("✓ Switched to model '{new_model}'"));
+            let persisted = (|| -> Result<bool, temm1e_core::types::error::Temm1eError> {
+                let Some(mut saved) = load_credentials_file() else {
+                    return Ok(false);
+                };
+                if !connection::update_saved_model(&replacement, &mut saved) {
+                    return Ok(false);
+                }
+                let content = toml::to_string_pretty(&saved).map_err(|_| {
+                    temm1e_core::types::error::Temm1eError::Config(
+                        "Could not encode model selection".into(),
+                    )
+                })?;
+                temm1e_core::private_file::write_private_atomic(
+                    &temm1e_core::config::credentials::credentials_path(),
+                    content.as_bytes(),
+                )?;
+                Ok(true)
+            })();
+            let suffix = match persisted {
+                Ok(true) => " (saved)",
+                Ok(false) => " (this session; configured or saved connection differs)",
+                Err(error) => {
+                    tracing::warn!(%error, "Model selection could not be persisted");
+                    " (this session; saving failed)"
+                }
+            };
+            push_system_line_via_tx(
+                event_tx,
+                format!("✓ Switched to model '{new_model}'{suffix}"),
+            );
         }
-        Err(e) => {
-            push_system_line_via_tx(event_tx, format!("✗ Model switch failed: {e}"));
+        Err(error) => {
+            tracing::warn!(%error, "TUI replacement runtime failed; restoring previous connection");
+            match agent_bridge::spawn_agent(previous, event_tx.clone()).await {
+                Ok(handle) => {
+                    *agent_handle = Some(handle);
+                    push_system_line_via_tx(
+                        event_tx,
+                        "Model switch failed; previous model restored.".into(),
+                    );
+                }
+                Err(restore_error) => {
+                    tracing::warn!(%restore_error, "Previous TUI runtime could not be restored");
+                    push_system_line_via_tx(event_tx, "Model switch failed and the previous runtime could not restart. Reconnect before sending messages.".into());
+                }
+            }
         }
     }
 }

@@ -47,23 +47,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(error) => return Err(error.into()),
     };
 
-    // Resolve credentials from saved creds (mirrors TUI onboarding's fallback).
-    let (provider_name, api_key, model) = match credentials::load_saved_credentials() {
-        Some(t) => t,
-        None => {
-            eprintln!("[SMOKE FAIL] No saved credentials in the selected profile");
-            std::process::exit(2);
-        }
-    };
-
-    let setup = AgentSetup {
-        provider_name: provider_name.clone(),
-        api_key,
-        model: model.clone(),
-        base_url: None,
-        config,
-        mode: None,
-    };
+    let saved = credentials::load_credentials_file();
+    let setup = AgentSetup::resolve(&config, saved.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("No configured connection in selected profile"))?;
+    let provider_name = setup.provider_name.clone();
+    let model = setup.model.clone();
 
     // Event channel — spawn_agent pushes AgentResponseEvent via this.
     // Read bridge events here; rendering and keyboard behavior need separate tests.

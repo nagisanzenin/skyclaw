@@ -84,6 +84,7 @@ pub struct AgentHandle {
     /// Reset to false at the start of each new message.
     pub interrupt_flag: Arc<AtomicBool>,
     task: tokio::task::JoinHandle<bool>,
+    pub(crate) setup: AgentSetup,
 }
 
 #[derive(Debug)]
@@ -121,14 +122,27 @@ impl AgentHandle {
 }
 
 /// Configuration for agent setup.
+#[derive(Clone)]
 pub struct AgentSetup {
     pub provider_name: String,
     pub api_key: String,
+    /// Captured keys for this exact provider/endpoint.
+    pub keys: Vec<String>,
     pub model: String,
     pub base_url: Option<String>,
     pub config: Temm1eConfig,
     /// Selected personality mode (auto/play/work/pro).
     pub mode: Option<String>,
+}
+
+impl AgentSetup {
+    /// Resolve a single immutable connection snapshot; this method performs no I/O.
+    pub fn resolve(
+        config: &Temm1eConfig,
+        saved: Option<&credentials::CredentialsFile>,
+    ) -> Option<Self> {
+        crate::connection::resolve(config, saved)
+    }
 }
 
 /// Create the agent runtime from credentials and spawn the processing loop.
@@ -138,36 +152,9 @@ pub async fn spawn_agent(
     setup: AgentSetup,
     event_tx: mpsc::UnboundedSender<Event>,
 ) -> Result<AgentHandle, Temm1eError> {
-    // 1. Create provider
-    let (all_keys, saved_base_url) = credentials::load_active_provider_keys()
-        .map(|(_, keys, _, burl)| {
-            // Proxy providers use lenient placeholder check so short LM Studio /
-            // Ollama keys survive TUI agent spawn.
-            let has_custom = burl.is_some();
-            let valid: Vec<String> = keys
-                .into_iter()
-                .filter(|k| {
-                    if has_custom {
-                        !credentials::is_placeholder_key_lenient(k)
-                    } else {
-                        !credentials::is_placeholder_key(k)
-                    }
-                })
-                .collect();
-            (valid, burl)
-        })
-        .unwrap_or_else(|| (vec![setup.api_key.clone()], None));
-
-    let effective_base_url = saved_base_url.or(setup.config.provider.base_url.clone());
-
-    let provider_config = temm1e_core::types::config::ProviderConfig {
-        name: Some(setup.provider_name.clone()),
-        api_key: Some(setup.api_key.clone()),
-        keys: all_keys,
-        model: Some(setup.model.clone()),
-        base_url: effective_base_url,
-        extra_headers: setup.config.provider.extra_headers.clone(),
-    };
+    // 1. Construct only from the captured connection. Never reread a possibly
+    // unrelated active provider or redirect to a saved endpoint here.
+    let provider_config = crate::connection::provider_config(&setup);
 
     let provider: Arc<dyn temm1e_core::Provider> = {
         #[cfg(feature = "codex-oauth")]
@@ -903,6 +890,7 @@ pub async fn spawn_agent(
         status_rx,
         interrupt_flag,
         task,
+        setup,
     })
 }
 
@@ -1009,6 +997,18 @@ fn build_tui_system_prompt() -> String {
 mod lifecycle_tests {
     use super::*;
     use std::time::Duration;
+    fn test_setup() -> AgentSetup {
+        AgentSetup {
+            provider_name: "test".into(),
+            api_key: String::new(),
+            keys: vec![],
+            model: "test".into(),
+            base_url: None,
+            config: Temm1eConfig::default(),
+            mode: None,
+        }
+    }
+
     #[tokio::test]
     async fn shutdown_waits_for_finalization_after_input_closes() {
         let (inbound_tx, mut inbound_rx) = mpsc::channel(1);
@@ -1029,6 +1029,7 @@ mod lifecycle_tests {
             status_rx,
             interrupt_flag,
             task,
+            setup: test_setup(),
         };
         let shutdown = tokio::spawn(handle.shutdown(Duration::from_secs(1)));
         notified.await.unwrap();
@@ -1061,6 +1062,7 @@ mod lifecycle_tests {
             status_rx,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             task,
+            setup: test_setup(),
         };
         assert!(!handle.shutdown(Duration::from_millis(1)).await.loop_joined);
         assert!(dropped.load(Ordering::SeqCst));

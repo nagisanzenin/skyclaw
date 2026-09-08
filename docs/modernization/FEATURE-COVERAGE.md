@@ -2,7 +2,7 @@
 
 Every original FEATURES.md entry is mapped below, followed by later feature families and the complete source/document inventory. Coverage means design/source audit and a defined acceptance path; it does not mean every native platform, external account, integration or mathematical claim was experimentally validated. The baseline workspace library tests ran, but binary/integration/feature-flag tests and live services have separate limits in VALIDATION. No feature is declared healthy merely because no defect was found.
 
-## Implementation evidence through checkpoint 34
+## Implementation evidence through checkpoint 35
 
 The tables below preserve the initial baseline audit. They are not the current implementation status. Use the linked implementation documents and checkpoint log for repairs and remaining limits:
 
@@ -100,3 +100,5 @@ Vision source: `FEATURES.md` and `docs/TEMM1E_VISION.md`; newer `VISION.md` can 
 The generated [source inventory](evidence/source-inventory.tsv) lists every production Rust source file by crate, and [document inventory](evidence/document-inventory.tsv) lists repository Markdown headings. These inventories make omissions visible; inventory inclusion is NOT a claim that every line received manual review. Feature-family assessments above are the broad audit. High-confidence defects have exact symbols/lines in the findings register; less deeply exercised areas have explicit acceptance work. Live services, native OS behavior, all feature flags, binary targets and historical benchmark replications remain unverified.
 
 Preservation rule: an implementing model may repair/deprecate an unused module only after mapping its advertised behavior to a tested replacement. A library-only feature is not automatically unwanted; cloud tenancy and identity remain part of the original vision until the creator retires them.
+
+TUI connection identity/model-switch acceptance: `TUI-CONNECTION-IMPLEMENTATION.md` (checkpoint35). Spending continuity across replacement remains the next task.
