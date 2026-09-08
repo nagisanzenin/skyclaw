@@ -179,7 +179,7 @@ impl MessageList {
                             usage.input_tokens,
                             usage.output_tokens,
                             if usage.cost_usd > 0.0 {
-                                format!("API est. ${:.4}", usage.cost_usd)
+                                format!("Token est. ${:.4}", usage.cost_usd)
                             } else {
                                 "cost unavailable".into()
                             },

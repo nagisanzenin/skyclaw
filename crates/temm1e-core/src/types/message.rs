@@ -248,7 +248,7 @@ pub struct TurnUsage {
 impl TurnUsage {
     /// Combined (input + output) token count.
     pub fn combined_tokens(&self) -> u32 {
-        self.input_tokens + self.output_tokens
+        self.input_tokens.saturating_add(self.output_tokens)
     }
 
     /// Format as a multi-line, messenger-agnostic usage summary.
@@ -256,9 +256,9 @@ impl TurnUsage {
         let cost = if matches!(self.provider.as_str(), "zai-coding-plan" | "openai-codex") {
             "Billing: subscription; actual charge and remaining quota unavailable".to_owned()
         } else if self.total_cost_usd > 0.0 {
-            format!("Estimated API cost: ${:.4}", self.total_cost_usd)
+            format!("Recorded token estimate: ${:.4}", self.total_cost_usd)
         } else {
-            "Estimated API cost: unavailable (zero is not proof of free usage)".to_owned()
+            "Token estimate: unavailable (zero is not proof of free usage)".to_owned()
         };
         format!(
             "Model: {}\nAPI Calls: {}\nInput Tokens: {}\nOutput Tokens: {}\nTools Used: {}\nCombined Tokens: {}\n{}",
@@ -545,7 +545,7 @@ mod tests {
         assert!(summary.contains("Output Tokens: 1,823"));
         assert!(summary.contains("Tools Used: 2"));
         assert!(summary.contains("Combined Tokens: 14,273"));
-        assert!(summary.contains("Estimated API cost: $0.0524"));
+        assert!(summary.contains("Recorded token estimate: $0.0524"));
     }
 
     #[test]

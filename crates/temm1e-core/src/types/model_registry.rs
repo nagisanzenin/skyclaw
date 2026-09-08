@@ -69,6 +69,17 @@ pub fn model_limits_with_custom(provider: &str, model: &str) -> (usize, usize) {
 }
 
 fn lookup(model: &str) -> Option<ModelLimits> {
+    // Current, source-dated facts supersede the legacy compatibility bank.
+    if let Some(limits) = super::model_catalog::CATALOG
+        .iter()
+        .find(|row| row.model == model || row.aliases.iter().any(|alias| alias == model))
+        .and_then(|row| row.limits)
+    {
+        return Some(ModelLimits {
+            context_window: limits.context_window,
+            max_output_tokens: limits.max_output_tokens,
+        });
+    }
     Some(match model {
         // ── Anthropic ─────────────────────────────────────────────────
         "claude-sonnet-4-6" | "claude-sonnet-4-20250514" | "claude-sonnet-4-0" => ModelLimits {

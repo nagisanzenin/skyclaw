@@ -19,6 +19,7 @@ pub struct ConsciousnessUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub cost_usd: f64,
+    pub estimate: budget::CostEstimate,
 }
 
 /// Pre-LLM observation context.
@@ -46,7 +47,7 @@ pub struct ConsciousnessEngine {
 
 impl ConsciousnessEngine {
     pub fn new(config: ConsciousnessConfig, provider: Arc<dyn Provider>, model: String) -> Self {
-        let model_pricing = budget::get_pricing(&model);
+        let model_pricing = budget::get_pricing_with_custom(provider.name(), &model);
         tracing::info!(
             enabled = config.enabled,
             model = %model,
@@ -171,14 +172,12 @@ impl ConsciousnessEngine {
 
         match self.provider.complete(request).await {
             Ok(response) => {
+                let estimate = self.model_pricing.estimate(&response.usage);
                 let usage = ConsciousnessUsage {
                     input_tokens: response.usage.input_tokens,
                     output_tokens: response.usage.output_tokens,
-                    cost_usd: budget::calculate_cost(
-                        response.usage.input_tokens,
-                        response.usage.output_tokens,
-                        &self.model_pricing,
-                    ),
+                    cost_usd: estimate.upper_usd().unwrap_or(0.0),
+                    estimate,
                 };
 
                 let raw: String = response
@@ -290,14 +289,12 @@ impl ConsciousnessEngine {
 
         match self.provider.complete(request).await {
             Ok(response) => {
+                let estimate = self.model_pricing.estimate(&response.usage);
                 let usage = ConsciousnessUsage {
                     input_tokens: response.usage.input_tokens,
                     output_tokens: response.usage.output_tokens,
-                    cost_usd: budget::calculate_cost(
-                        response.usage.input_tokens,
-                        response.usage.output_tokens,
-                        &self.model_pricing,
-                    ),
+                    cost_usd: estimate.upper_usd().unwrap_or(0.0),
+                    estimate,
                 };
 
                 let raw: String = response

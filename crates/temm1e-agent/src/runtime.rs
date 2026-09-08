@@ -777,6 +777,10 @@ impl AgentRuntime {
         status_tx: Option<tokio::sync::watch::Sender<AgentTaskStatus>>,
         cancel: Option<CancellationToken>,
     ) -> Result<(OutboundMessage, TurnUsage), Temm1eError> {
+        self.budget
+            .check_model_budget(&self.model_pricing)
+            .map_err(Temm1eError::Provider)?;
+
         let journal = if self.durable_execution {
             Some(
                 self.journal
@@ -1290,22 +1294,17 @@ impl AgentRuntime {
             match unwrapped {
                 Ok((classification, classify_usage)) => {
                     // Record classification call in per-turn accumulators
-                    let classify_cost = crate::budget::calculate_cost(
-                        classify_usage.input_tokens,
-                        classify_usage.output_tokens,
-                        &self.model_pricing,
-                    );
+                    let classify_cost = self
+                        .budget
+                        .record_model_usage(&classify_usage, &self.model_pricing)
+                        .upper_usd()
+                        .unwrap_or(0.0);
                     turn_api_calls = turn_api_calls.saturating_add(1);
                     turn_input_tokens =
                         turn_input_tokens.saturating_add(classify_usage.input_tokens);
                     turn_output_tokens =
                         turn_output_tokens.saturating_add(classify_usage.output_tokens);
                     turn_cost_usd += classify_cost;
-                    self.budget.record_usage(
-                        classify_usage.input_tokens,
-                        classify_usage.output_tokens,
-                        classify_cost,
-                    );
 
                     info!(
                         category = ?classification.category,
@@ -1680,20 +1679,17 @@ impl AgentRuntime {
                                     self.max_context_tokens,
                                     window,
                                 )?;
-                                self.budget.check_budget().map_err(Temm1eError::Provider)?;
+                                self.budget
+                                    .check_model_budget(&self.model_pricing)
+                                    .map_err(Temm1eError::Provider)?;
                                 tracing::info!(source_messages=cutoff, "Generating source-grounded context handoff; raw history remains intact");
                                 let response =
                                     self.provider.complete(summary_request.clone()).await?;
-                                let cost = budget::calculate_cost(
-                                    response.usage.input_tokens,
-                                    response.usage.output_tokens,
-                                    &self.model_pricing,
-                                );
-                                self.budget.record_usage(
-                                    response.usage.input_tokens,
-                                    response.usage.output_tokens,
-                                    cost,
-                                );
+                                let cost = self
+                                    .budget
+                                    .record_model_usage(&response.usage, &self.model_pricing)
+                                    .upper_usd()
+                                    .unwrap_or(0.0);
                                 turn_api_calls = turn_api_calls.saturating_add(1);
                                 turn_input_tokens =
                                     turn_input_tokens.saturating_add(response.usage.input_tokens);
@@ -1910,7 +1906,7 @@ impl AgentRuntime {
                     turn_output_tokens = turn_output_tokens.saturating_add(cu.output_tokens);
                     turn_cost_usd += cu.cost_usd;
                     self.budget
-                        .record_usage(cu.input_tokens, cu.output_tokens, cu.cost_usd);
+                        .record_estimate(cu.input_tokens, cu.output_tokens, &cu.estimate);
                 }
                 if let Some(injection) = injection {
                     had_whisper = true;
@@ -1976,7 +1972,7 @@ impl AgentRuntime {
             );
 
             // Check budget before calling provider
-            if let Err(budget_err) = self.budget.check_budget() {
+            if let Err(budget_err) = self.budget.check_model_budget(&self.model_pricing) {
                 return Ok((
                     OutboundMessage {
                         chat_id: msg.chat_id.clone(),
@@ -2317,16 +2313,11 @@ impl AgentRuntime {
             }
 
             // Record usage and cost
-            let call_cost = budget::calculate_cost(
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-                &self.model_pricing,
-            );
-            self.budget.record_usage(
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-                call_cost,
-            );
+            let call_cost = self
+                .budget
+                .record_model_usage(&response.usage, &self.model_pricing)
+                .upper_usd()
+                .unwrap_or(0.0);
 
             // Accumulate per-turn metrics
             turn_api_calls = turn_api_calls.saturating_add(1);
@@ -3141,8 +3132,11 @@ impl AgentRuntime {
                         turn_input_tokens = turn_input_tokens.saturating_add(cu.input_tokens);
                         turn_output_tokens = turn_output_tokens.saturating_add(cu.output_tokens);
                         turn_cost_usd += cu.cost_usd;
-                        self.budget
-                            .record_usage(cu.input_tokens, cu.output_tokens, cu.cost_usd);
+                        self.budget.record_estimate(
+                            cu.input_tokens,
+                            cu.output_tokens,
+                            &cu.estimate,
+                        );
                     }
                 }
 

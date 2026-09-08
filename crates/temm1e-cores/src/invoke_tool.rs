@@ -344,10 +344,7 @@ mod tests {
             provider: Arc::new(MockProvider),
             all_tools,
             budget: Arc::new(BudgetTracker::new(10.0)),
-            model_pricing: ModelPricing {
-                input_per_million: 3.0,
-                output_per_million: 15.0,
-            },
+            model_pricing: ModelPricing::custom(3.0, 15.0),
             model: "test".to_string(),
             max_context_tokens: 30_000,
             memory: Arc::new(MockMemory),

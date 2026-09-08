@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use temm1e_agent::budget::{self, BudgetTracker, ModelPricing};
+use temm1e_agent::budget::{BudgetTracker, ModelPricing};
 use temm1e_agent::executor::execute_tool;
 use temm1e_agent::self_correction::FailureTracker;
 use temm1e_core::types::error::Temm1eError;
@@ -136,9 +136,11 @@ impl CoreRuntime {
 
         loop {
             // Budget gate — check shared budget before every LLM call
-            self.budget.check_budget().map_err(|e| {
-                Temm1eError::Tool(format!("[{}] Budget exhausted: {}", self.core_name, e))
-            })?;
+            self.budget
+                .check_model_budget(&self.model_pricing)
+                .map_err(|e| {
+                    Temm1eError::Tool(format!("[{}] Budget exhausted: {}", self.core_name, e))
+                })?;
 
             // Build request with pruned history
             let messages = self.prune_history(&session.history);
@@ -158,16 +160,11 @@ impl CoreRuntime {
             })?;
 
             // Record cost in shared budget
-            let cost = budget::calculate_cost(
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-                &self.model_pricing,
-            );
-            self.budget.record_usage(
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-                cost,
-            );
+            let cost = self
+                .budget
+                .record_model_usage(&response.usage, &self.model_pricing)
+                .upper_usd()
+                .unwrap_or(0.0);
             total_input_tokens = total_input_tokens.saturating_add(response.usage.input_tokens);
             total_output_tokens = total_output_tokens.saturating_add(response.usage.output_tokens);
             total_cost += cost;
@@ -367,10 +364,7 @@ mod tests {
             provider: Arc::new(MockProvider),
             tools: Vec::new(),
             budget: Arc::new(BudgetTracker::new(10.0)),
-            model_pricing: ModelPricing {
-                input_per_million: 3.0,
-                output_per_million: 15.0,
-            },
+            model_pricing: ModelPricing::custom(3.0, 15.0),
             model: "test".to_string(),
             max_context_tokens: 30_000,
             core_name: "test".to_string(),

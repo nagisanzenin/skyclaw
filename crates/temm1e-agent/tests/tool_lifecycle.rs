@@ -322,3 +322,39 @@ fn legacy_plan_filter_preserves_user_content_and_unmatched_custom_system_message
     assert!(matches!(&view[2].content, MessageContent::Text(text) if text == &unmatched));
     assert_eq!(serde_json::to_string(&raw).unwrap(), original);
 }
+
+#[tokio::test]
+async fn usd_limit_with_unknown_tariff_stops_before_any_provider_call() {
+    let provider = Arc::new(QueuedMockProvider::with_responses(vec![
+        QueuedMockProvider::text_response("This call must not happen"),
+    ]));
+    let runtime = AgentRuntime::with_limits(
+        provider.clone(),
+        Arc::new(MockMemory::new()),
+        vec![],
+        "unknown-model".into(),
+        None,
+        10,
+        30_000,
+        8,
+        60,
+        1.0,
+    );
+    let mut session = make_session();
+    let before = serde_json::to_value(&session.history).unwrap();
+    let error = runtime
+        .process_message(
+            &make_inbound_msg("Hello"),
+            &mut session,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("USD budget cannot be enforced"));
+    assert_eq!(*provider.call_count.lock().await, 0);
+    assert_eq!(serde_json::to_value(&session.history).unwrap(), before);
+}

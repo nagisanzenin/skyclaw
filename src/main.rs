@@ -1125,6 +1125,8 @@ fn handle_addmodel_command(args: &str) -> String {
     let mut max_output_tokens: Option<usize> = None;
     let mut input_price_per_1m: f64 = 0.0;
     let mut output_price_per_1m: f64 = 0.0;
+    let mut input_price_set = false;
+    let mut output_price_set = false;
 
     for token in tokens {
         let Some((k, v)) = token.split_once(':') else {
@@ -1144,7 +1146,10 @@ fn handle_addmodel_command(args: &str) -> String {
                 Err(_) => return format!("Invalid output value `{}` — expected integer.", v),
             },
             "input_price" | "input_price_per_1m" | "in_price" => match v.parse::<f64>() {
-                Ok(p) if p >= 0.0 => input_price_per_1m = p,
+                Ok(p) if p.is_finite() && p >= 0.0 => {
+                    input_price_per_1m = p;
+                    input_price_set = true;
+                }
                 _ => {
                     return format!(
                         "Invalid input_price value `{}` — expected non-negative float.",
@@ -1153,7 +1158,10 @@ fn handle_addmodel_command(args: &str) -> String {
                 }
             },
             "output_price" | "output_price_per_1m" | "out_price" => match v.parse::<f64>() {
-                Ok(p) if p >= 0.0 => output_price_per_1m = p,
+                Ok(p) if p.is_finite() && p >= 0.0 => {
+                    output_price_per_1m = p;
+                    output_price_set = true;
+                }
                 _ => {
                     return format!(
                         "Invalid output_price value `{}` — expected non-negative float.",
@@ -1186,6 +1194,10 @@ fn handle_addmodel_command(args: &str) -> String {
         }
     };
 
+    if input_price_set != output_price_set {
+        return "Specify both input_price: and output_price: so an omitted price is not treated as zero.".into();
+    }
+    let pricing_verified = input_price_set && output_price_set;
     let model = CustomModel {
         provider: active_provider.clone(),
         name: name.clone(),
@@ -1193,12 +1205,13 @@ fn handle_addmodel_command(args: &str) -> String {
         max_output_tokens,
         input_price_per_1m,
         output_price_per_1m,
+        pricing_verified,
     };
 
     match upsert_custom_model(model) {
         Ok(()) => {
-            let price_note = if input_price_per_1m == 0.0 && output_price_per_1m == 0.0 {
-                " (free / local inference)".to_string()
+            let price_note = if !pricing_verified {
+                " (custom pricing not specified; published tariff or unknown)".to_string()
             } else {
                 format!(
                     " (pricing: ${:.2}/1M in · ${:.2}/1M out)",
@@ -2755,7 +2768,7 @@ async fn main() -> Result<()> {
                     if !core_registry.read().await.is_empty() {
                         // Custom-model aware pricing lookup — tries the active
                         // provider's custom_models.toml first, falls back to
-                        // hardcoded substring pricing.
+                        // exact provider-scoped published rates.
                         let model_pricing =
                             temm1e_agent::budget::get_pricing_with_custom(pname, model);
                         let invoke_core = temm1e_cores::InvokeCoreTool::new(

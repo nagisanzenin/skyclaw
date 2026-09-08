@@ -43,12 +43,16 @@ pub struct CustomModel {
     pub context_window: usize,
     /// Maximum output tokens the model can generate.
     pub max_output_tokens: usize,
-    /// USD per 1M input tokens (default 0.0 for free/local inference).
+    /// USD per 1M input tokens. Legacy omitted/zero rates are not proof of free usage.
     #[serde(default)]
     pub input_price_per_1m: f64,
-    /// USD per 1M output tokens (default 0.0 for free/local inference).
+    /// USD per 1M output tokens.
     #[serde(default)]
     pub output_price_per_1m: f64,
+    /// Explicitly attest both configured rates, including a deliberate zero tariff.
+    /// Existing nonzero rates remain effective without this migration flag.
+    #[serde(default)]
+    pub pricing_verified: bool,
 }
 
 /// Top-level file layout — a flat array of `CustomModel` entries.
@@ -179,6 +183,7 @@ mod tests {
                 max_output_tokens: 65536,
                 input_price_per_1m: 0.0,
                 output_price_per_1m: 0.0,
+                pricing_verified: false,
             }],
         };
         let toml_str = toml::to_string_pretty(&file).unwrap();
@@ -251,6 +256,7 @@ mod tests {
                     max_output_tokens: 65536,
                     input_price_per_1m: 0.0,
                     output_price_per_1m: 0.0,
+                    pricing_verified: false,
                 },
                 CustomModel {
                     provider: "openai".into(),
@@ -259,6 +265,7 @@ mod tests {
                     max_output_tokens: 16384,
                     input_price_per_1m: 0.0,
                     output_price_per_1m: 0.0,
+                    pricing_verified: false,
                 },
                 CustomModel {
                     provider: "anthropic".into(),
@@ -267,6 +274,7 @@ mod tests {
                     max_output_tokens: 64000,
                     input_price_per_1m: 3.0,
                     output_price_per_1m: 15.0,
+                    pricing_verified: false,
                 },
             ],
         }
@@ -322,6 +330,7 @@ mod tests {
             max_output_tokens: 100_000,
             input_price_per_1m: 0.0,
             output_price_per_1m: 0.0,
+            pricing_verified: false,
         };
         // Simulate upsert logic locally
         if let Some(existing) = file
@@ -348,6 +357,7 @@ mod tests {
             max_output_tokens: 16_000,
             input_price_per_1m: 0.0,
             output_price_per_1m: 0.0,
+            pricing_verified: false,
         };
         if let Some(existing) = file
             .models
