@@ -1,7 +1,7 @@
 //! Centralized file logger — daily rotating log at ~/.temm1e/logs/.
 //!
-//! Always on, local only, zero privacy risk. Provides a persistent log
-//! file that users can attach to bug reports.
+//! Local diagnostic logs stored inside the selected application profile.
+//! Contents can include user data; locality is not a privacy guarantee.
 
 use std::path::PathBuf;
 use tracing_appender::rolling::RollingFileAppender;
@@ -9,15 +9,8 @@ use tracing_appender::rolling::RollingFileAppender;
 /// Maximum total log directory size in bytes (100 MB).
 const MAX_LOG_DIR_BYTES: u64 = 100 * 1024 * 1024;
 
-/// Log directory: ~/.temm1e/logs/ (Unix) or %LOCALAPPDATA%\temm1e\logs\ (Windows).
+/// Logs remain inside the selected profile on every platform.
 pub fn log_dir() -> PathBuf {
-    #[cfg(windows)]
-    let base = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("temm1e")
-        .join("logs");
-
-    #[cfg(not(windows))]
     let base = temm1e_core::config::data_dir().join("logs");
 
     std::fs::create_dir_all(&base).ok();
