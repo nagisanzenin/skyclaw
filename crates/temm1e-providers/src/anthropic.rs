@@ -204,53 +204,6 @@ impl From<AnthropicUsage> for Usage {
     }
 }
 
-// SSE event types
-#[derive(Debug, Deserialize)]
-struct AnthropicSseMessageStart {
-    message: AnthropicSseMessageMeta,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnthropicSseMessageMeta {
-    id: String,
-    usage: Option<AnthropicUsage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnthropicSseContentBlockStart {
-    index: usize,
-    content_block: AnthropicContentBlock,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnthropicSseContentBlockDelta {
-    index: usize,
-    delta: AnthropicDelta,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-enum AnthropicDelta {
-    #[serde(rename = "text_delta")]
-    TextDelta { text: String },
-    #[serde(rename = "input_json_delta")]
-    InputJsonDelta { partial_json: String },
-    /// Catch-all for delta types we don't handle (e.g. `thinking_delta`).
-    #[serde(other)]
-    Unknown,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnthropicSseMessageDelta {
-    delta: AnthropicMessageDeltaBody,
-    usage: Option<AnthropicUsage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnthropicMessageDeltaBody {
-    stop_reason: Option<String>,
-}
-
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
@@ -530,46 +483,15 @@ impl Provider for AnthropicProvider {
             unreachable!("rate-limit retry loop must exit via return or break")
         };
 
-        // Track state across SSE events for tool_use accumulation
-        let byte_stream = response.bytes_stream();
+        Ok(crate::anthropic_stream::stream(response))
+    }
 
-        let event_stream = futures::stream::unfold(
-            (
-                byte_stream,
-                String::new(), // buffer for incomplete lines
-                Vec::<(String, String, serde_json::Value)>::new(), // active tool_use blocks: (id, name, partial_json)
-            ),
-            |(mut byte_stream, mut buffer, mut tool_blocks)| async move {
-                use futures::StreamExt;
-
-                loop {
-                    // Try to extract a complete SSE event from the buffer
-                    if let Some(event) = extract_sse_event(&mut buffer, &mut tool_blocks) {
-                        return Some((event, (byte_stream, buffer, tool_blocks)));
-                    }
-
-                    // Need more data
-                    match byte_stream.next().await {
-                        Some(Ok(bytes)) => {
-                            let text = String::from_utf8_lossy(&bytes);
-                            buffer.push_str(&text);
-                        }
-                        Some(Err(e)) => {
-                            return Some((
-                                Err(Temm1eError::Provider(format!("Stream read error: {e}"))),
-                                (byte_stream, buffer, tool_blocks),
-                            ));
-                        }
-                        None => {
-                            // Stream ended
-                            return None;
-                        }
-                    }
-                }
-            },
-        );
-
-        Ok(Box::pin(event_stream))
+    async fn complete_with_observer(
+        &self,
+        request: CompletionRequest,
+        observer: temm1e_core::streaming::TextObserver,
+    ) -> Result<CompletionResponse, Temm1eError> {
+        temm1e_core::streaming::collect_completion(self.stream(request).await?, observer).await
     }
 
     async fn health_check(&self) -> Result<bool, Temm1eError> {
@@ -594,163 +516,6 @@ impl Provider for AnthropicProvider {
             "claude-3-5-sonnet-20241022".to_string(),
             "claude-3-5-haiku-20241022".to_string(),
         ])
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SSE parsing helpers
-// ---------------------------------------------------------------------------
-
-// Make the SSE parsing function visible to tests
-/// Try to extract and parse the next complete SSE event from the buffer.
-/// Returns `Some(Result<StreamChunk>)` if an event was parsed, `None` if more data is needed.
-fn extract_sse_event(
-    buffer: &mut String,
-    tool_blocks: &mut Vec<(String, String, serde_json::Value)>,
-) -> Option<Result<StreamChunk, Temm1eError>> {
-    // SSE events are terminated by a blank line (\n\n)
-    loop {
-        let double_newline = buffer.find("\n\n")?;
-        let event_text: String = buffer.drain(..=double_newline + 1).collect();
-
-        let mut event_type = String::new();
-        let mut data_parts = Vec::new();
-
-        for line in event_text.lines() {
-            if let Some(rest) = line.strip_prefix("event: ") {
-                event_type = rest.trim().to_string();
-            } else if let Some(rest) = line.strip_prefix("data: ") {
-                data_parts.push(rest.to_string());
-            } else if let Some(rest) = line.strip_prefix("data:") {
-                // "data:" with no space
-                data_parts.push(rest.to_string());
-            }
-        }
-
-        let data = data_parts.join("\n");
-        if data.is_empty() && event_type.is_empty() {
-            // Empty event (keep-alive), skip
-            continue;
-        }
-
-        match event_type.as_str() {
-            "message_start" => {
-                // Contains the message id; we don't emit a chunk for this
-                continue;
-            }
-            "content_block_start" => {
-                if let Ok(parsed) = serde_json::from_str::<AnthropicSseContentBlockStart>(&data) {
-                    match parsed.content_block {
-                        AnthropicContentBlock::ToolUse { id, name, .. } => {
-                            // Start accumulating a tool_use block
-                            tool_blocks.push((id, name, serde_json::Value::Null));
-                        }
-                        AnthropicContentBlock::Text { .. } => {
-                            // Text block start, no content yet
-                        }
-                        AnthropicContentBlock::Unknown => {
-                            tracing::debug!(
-                                "Skipping unknown Anthropic content block type in SSE stream"
-                            );
-                        }
-                    }
-                }
-                continue;
-            }
-            "content_block_delta" => {
-                if let Ok(parsed) = serde_json::from_str::<AnthropicSseContentBlockDelta>(&data) {
-                    match parsed.delta {
-                        AnthropicDelta::TextDelta { text } => {
-                            return Some(Ok(StreamChunk {
-                                usage: None,
-                                response_id: None,
-                                delta: Some(text),
-                                tool_use: None,
-                                stop_reason: None,
-                            }));
-                        }
-                        AnthropicDelta::InputJsonDelta { partial_json } => {
-                            // Accumulate partial JSON for the current tool_use block
-                            if let Some(tb) = tool_blocks.last_mut() {
-                                match &mut tb.2 {
-                                    serde_json::Value::Null => {
-                                        tb.2 = serde_json::Value::String(partial_json);
-                                    }
-                                    serde_json::Value::String(ref mut s) => {
-                                        s.push_str(&partial_json);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            continue;
-                        }
-                        AnthropicDelta::Unknown => {
-                            tracing::debug!("Skipping unknown Anthropic delta type in SSE stream");
-                            continue;
-                        }
-                    }
-                } else {
-                    continue;
-                }
-            }
-            "content_block_stop" => {
-                // If there is a completed tool_use block, emit it
-                if let Some((id, name, raw_input)) = tool_blocks.pop() {
-                    let input = match raw_input {
-                        serde_json::Value::String(s) => serde_json::from_str(&s)
-                            .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
-                        serde_json::Value::Null => {
-                            serde_json::Value::Object(serde_json::Map::new())
-                        }
-                        other => other,
-                    };
-                    return Some(Ok(StreamChunk {
-                        usage: None,
-                        response_id: None,
-                        delta: None,
-                        tool_use: Some(ContentPart::ToolUse {
-                            id,
-                            name,
-                            input,
-                            thought_signature: None,
-                        }),
-                        stop_reason: None,
-                    }));
-                }
-                continue;
-            }
-            "message_delta" => {
-                if let Ok(parsed) = serde_json::from_str::<AnthropicSseMessageDelta>(&data) {
-                    if parsed.delta.stop_reason.is_some() {
-                        return Some(Ok(StreamChunk {
-                            usage: None,
-                            response_id: None,
-                            delta: None,
-                            tool_use: None,
-                            stop_reason: parsed.delta.stop_reason,
-                        }));
-                    }
-                }
-                continue;
-            }
-            "message_stop" => {
-                // Final event
-                return None;
-            }
-            "ping" => {
-                continue;
-            }
-            "error" => {
-                return Some(Err(Temm1eError::Provider(format!(
-                    "Anthropic stream error: {data}"
-                ))));
-            }
-            _ => {
-                // Unknown event type, skip
-                debug!(event_type = %event_type, "Unknown Anthropic SSE event type");
-                continue;
-            }
-        }
     }
 }
 
@@ -946,49 +711,6 @@ mod tests {
         assert_eq!(json["name"], "browser");
         assert_eq!(json["description"], "Browse the web");
         assert!(json["input_schema"].is_object());
-    }
-
-    #[test]
-    fn sse_text_delta_event() {
-        let mut buffer = "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n".to_string();
-        let mut tool_blocks = Vec::new();
-
-        let result = extract_sse_event(&mut buffer, &mut tool_blocks);
-        assert!(result.is_some());
-        let chunk = result.unwrap().unwrap();
-        assert_eq!(chunk.delta.as_deref(), Some("Hello"));
-    }
-
-    #[test]
-    fn sse_message_delta_stop() {
-        let mut buffer = "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":20}}\n\n".to_string();
-        let mut tool_blocks = Vec::new();
-
-        let result = extract_sse_event(&mut buffer, &mut tool_blocks);
-        assert!(result.is_some());
-        let chunk = result.unwrap().unwrap();
-        assert_eq!(chunk.stop_reason.as_deref(), Some("end_turn"));
-    }
-
-    #[test]
-    fn sse_ping_event_skipped() {
-        let mut buffer = "event: ping\ndata: {}\n\nevent: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n".to_string();
-        let mut tool_blocks = Vec::new();
-
-        let result = extract_sse_event(&mut buffer, &mut tool_blocks);
-        assert!(result.is_some());
-        let chunk = result.unwrap().unwrap();
-        assert_eq!(chunk.delta.as_deref(), Some("Hi"));
-    }
-
-    #[test]
-    fn sse_error_event() {
-        let mut buffer = "event: error\ndata: {\"type\":\"overloaded_error\"}\n\n".to_string();
-        let mut tool_blocks = Vec::new();
-
-        let result = extract_sse_event(&mut buffer, &mut tool_blocks);
-        assert!(result.is_some());
-        assert!(result.unwrap().is_err());
     }
 
     #[test]

@@ -123,3 +123,85 @@ async fn truncated_or_malformed_wire_response_never_returns_a_completed_tool_cal
         server.await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn native_anthropic_transport_requires_message_stop_and_merges_usage() {
+    for complete in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut headers = Vec::new();
+            loop {
+                let mut b = [0];
+                socket.read_exact(&mut b).await.unwrap();
+                headers.push(b[0]);
+                if headers.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+                assert!(headers.len() < 65_536);
+            }
+            let headers = String::from_utf8_lossy(&headers).to_ascii_lowercase();
+            assert!(headers.starts_with("post /v1/messages "));
+            let n: usize = headers
+                .lines()
+                .find_map(|s| s.strip_prefix("content-length:"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            socket.read_exact(&mut vec![0; n]).await.unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").await.unwrap();
+            let events = [
+                serde_json::json!({"type":"message_start","message":{"id":"m1","usage":{"input_tokens":11,"output_tokens":1,"cache_read_input_tokens":4}}}),
+                serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+                serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"café 🐈"}}),
+                serde_json::json!({"type":"content_block_stop","index":0}),
+                serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}),
+            ];
+            for value in events {
+                let event = format!(
+                    "event: {}\r\ndata: {}\r\n\r\n",
+                    value["type"].as_str().unwrap(),
+                    value
+                );
+                for byte in event.as_bytes() {
+                    socket.write_all(&[*byte]).await.unwrap();
+                }
+            }
+            if complete {
+                socket
+                    .write_all(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+                    .await
+                    .unwrap();
+            }
+        });
+        let provider = temm1e_providers::AnthropicProvider::new("fixture".into())
+            .with_base_url(format!("http://{address}"));
+        let seen = Arc::new(std::sync::Mutex::new(String::new()));
+        let target = seen.clone();
+        let response = tokio::time::timeout(
+            Duration::from_secs(3),
+            provider.complete_with_observer(
+                request(),
+                Arc::new(move |s| target.lock().unwrap().push_str(s)),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(*seen.lock().unwrap(), "café 🐈");
+        if complete {
+            let response = response.unwrap();
+            assert_eq!(response.id, "m1");
+            assert_eq!(response.usage.input_tokens, 15);
+            assert_eq!(response.usage.output_tokens, 7);
+            assert_eq!(response.usage.cache_read_tokens, Some(4));
+        } else {
+            assert!(
+                response.is_err(),
+                "a stop reason alone does not confirm message_stop or final usage"
+            );
+        }
+        server.await.unwrap();
+    }
+}

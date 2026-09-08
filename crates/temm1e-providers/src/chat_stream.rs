@@ -1,11 +1,8 @@
 //! Incremental Chat Completions decoder. Tool arguments are committed only
 //! after the entire call validates; malformed or truncated calls never become {}.
-use futures::{stream::BoxStream, StreamExt};
+use futures::stream::BoxStream;
 use std::collections::{BTreeMap, VecDeque};
-use temm1e_core::{
-    sse::SseDecoder,
-    types::{error::Temm1eError, message::*},
-};
+use temm1e_core::types::{error::Temm1eError, message::*};
 
 fn error(message: &str) -> Temm1eError {
     Temm1eError::Provider(format!("Chat stream: {message}"))
@@ -198,75 +195,28 @@ impl Decoder {
     }
 }
 
+impl crate::sse_transport::Protocol for Decoder {
+    fn accept(&mut self, event: temm1e_core::sse::SseEvent) -> Result<(), Temm1eError> {
+        self.accept(&event.data)
+    }
+    fn pop(&mut self) -> Option<StreamChunk> {
+        self.queue.pop_front()
+    }
+    fn done(&self) -> bool {
+        self.done
+    }
+    fn finish(&self) -> Result<(), Temm1eError> {
+        if self.finished {
+            Ok(())
+        } else {
+            Err(error("connection ended before completion"))
+        }
+    }
+}
 pub(crate) fn stream(
     response: reqwest::Response,
 ) -> BoxStream<'static, Result<StreamChunk, Temm1eError>> {
-    let bytes = Box::pin(response.bytes_stream());
-    let state = (
-        bytes,
-        SseDecoder::new(2 * 1024 * 1024),
-        Decoder::default(),
-        0usize,
-        false,
-    );
-    Box::pin(futures::stream::unfold(
-        state,
-        |(mut bytes, mut sse, mut decoder, mut total, mut ended)| async move {
-            loop {
-                if let Some(chunk) = decoder.queue.pop_front() {
-                    return Some((Ok(chunk), (bytes, sse, decoder, total, ended)));
-                }
-                if ended || decoder.done {
-                    return None;
-                }
-                let result = match bytes.next().await {
-                    Some(Ok(chunk)) => {
-                        total = total.saturating_add(chunk.len());
-                        if total > 64 * 1024 * 1024 {
-                            Err(error("wire response exceeds 64 MiB limit"))
-                        } else {
-                            let mut result = Ok(());
-                            for byte in chunk {
-                                match sse.push(byte) {
-                                    Ok(Some(event)) => {
-                                        if let Err(e) = decoder.accept(&event.data) {
-                                            result = Err(e);
-                                            break;
-                                        }
-                                    }
-                                    Ok(None) => {}
-                                    Err(e) => {
-                                        result = Err(e);
-                                        break;
-                                    }
-                                }
-                            }
-                            result
-                        }
-                    }
-                    Some(Err(e)) => Err(Temm1eError::Provider(format!(
-                        "Stream read failed: {}",
-                        e.without_url()
-                    ))),
-                    None => {
-                        ended = true;
-                        sse.finish().and_then(|_| {
-                            if decoder.finished {
-                                Ok(())
-                            } else {
-                                Err(error("connection ended before completion"))
-                            }
-                        })
-                    }
-                };
-                if let Err(e) = result {
-                    decoder.queue.clear();
-                    ended = true;
-                    return Some((Err(e), (bytes, sse, decoder, total, ended)));
-                }
-            }
-        },
-    ))
+    crate::sse_transport::stream(response, Decoder::default())
 }
 
 #[cfg(test)]
