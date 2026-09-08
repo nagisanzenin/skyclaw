@@ -14,17 +14,14 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use crate::browser_observation::{self, ObservationTier};
-use crate::credential_scrub;
 
 use async_trait::async_trait;
 use chromiumoxide::browser::{Browser, BrowserConfig};
-use chromiumoxide::cdp::browser_protocol::accessibility::AxNode;
 use chromiumoxide::cdp::browser_protocol::input::{
     DispatchMouseEventParams, DispatchMouseEventType, MouseButton,
 };
@@ -216,44 +213,13 @@ pub struct BrowserTool {
     browser_started_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     /// Domains visited during this browser session — for `/browser` status.
     active_domains: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    profile: Mutex<Option<crate::browser_profile::BrowserProfile>>,
+    action_lock: Mutex<()>,
 }
 
 impl Default for BrowserTool {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Returns a per-process Chrome user-data-dir path.
-///
-/// The PID suffix prevents two concurrent Temm1e instances — or a crashed
-/// prior run leaving a stale `SingletonLock` — from colliding on Chrome's
-/// singleton check. Without this, chromiumoxide 0.7 falls back to a shared
-/// default under `%TEMP%/chromiumoxide-runner`, which reproducibly triggers
-/// Chrome exit code 21 (`RESULT_CODE_PROFILE_IN_USE`) on every platform,
-/// reported most visibly on Windows 11 (GH-50).
-pub(crate) fn per_process_profile(subname: &str) -> std::path::PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("temm1e")
-        .join(format!("{subname}-{}", std::process::id()))
-}
-
-/// Remove Chromium singleton-lock files from a single profile dir.
-///
-/// Narrow-scope, idempotent companion to `BrowserTool::cleanup_singleton_locks`
-/// (which also cleans the user's real Chrome profile on shutdown). This
-/// variant only touches the path it is given and is safe to call before every
-/// launch — graceful shutdown is never guaranteed (panic / SIGKILL / OS
-/// reboot), so stale locks may persist and block the next cold start.
-pub(crate) fn clear_singleton_locks_at(profile: &std::path::Path) {
-    for name in &[
-        "SingletonLock",
-        "SingletonSocket",
-        "SingletonCookie",
-        "lockfile",
-    ] {
-        let _ = std::fs::remove_file(profile.join(name));
     }
 }
 
@@ -324,6 +290,8 @@ impl BrowserTool {
         };
 
         Self {
+            profile: Mutex::new(None),
+            action_lock: Mutex::new(()),
             browser,
             page,
             last_used,
@@ -347,87 +315,6 @@ impl BrowserTool {
     }
 
     // ── Public API for /browser command ──────────────────────────────
-
-    /// Check if the browser is currently running.
-    /// Clean up SingletonLock/Socket/Cookie files from BOTH the work profile
-    /// and the real Chrome profile. This prevents Tem from blocking the user's
-    /// real Chrome from opening after Tem's browser closes.
-    fn cleanup_singleton_locks() {
-        let work_profile = dirs::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("temm1e")
-            .join("browser-profile");
-
-        // Clean work profile locks
-        for lock_file in &["SingletonLock", "SingletonSocket", "SingletonCookie"] {
-            let path = work_profile.join(lock_file);
-            if path.exists() {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-
-        // Clean real Chrome profile locks (in case Chrome inherited our lock)
-        if let Some(real_default) = Self::find_chrome_profile() {
-            if let Some(real_root) = real_default.parent() {
-                for lock_file in &["SingletonLock", "SingletonSocket", "SingletonCookie"] {
-                    let path = real_root.join(lock_file);
-                    if path.exists() {
-                        let _ = std::fs::remove_file(&path);
-                    }
-                }
-            }
-        }
-
-        // Clean chromiumoxide runner locks
-        let runner_dir = std::env::temp_dir().join("chromiumoxide-runner");
-        if runner_dir.exists() {
-            let _ = std::fs::remove_file(runner_dir.join("SingletonLock"));
-        }
-
-        tracing::debug!("Cleaned up Chrome SingletonLock files");
-    }
-
-    /// Find the user's real Chrome/Chromium profile directory (cross-platform).
-    fn find_chrome_profile() -> Option<std::path::PathBuf> {
-        let home = dirs::home_dir()?;
-
-        // Platform-specific Chrome profile locations
-        let candidates: Vec<std::path::PathBuf> = if cfg!(target_os = "macos") {
-            vec![
-                home.join("Library/Application Support/Google/Chrome/Default"),
-                home.join("Library/Application Support/Chromium/Default"),
-            ]
-        } else if cfg!(target_os = "windows") {
-            vec![
-                home.join("AppData/Local/Google/Chrome/User Data/Default"),
-                home.join("AppData/Local/Chromium/User Data/Default"),
-            ]
-        } else {
-            // Linux
-            vec![
-                home.join(".config/google-chrome/Default"),
-                home.join(".config/chromium/Default"),
-            ]
-        };
-
-        candidates.into_iter().find(|p| p.join("Cookies").exists())
-    }
-
-    /// Recursively copy a directory.
-    fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dest)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            let src_path = entry.path();
-            let dest_path = dest.join(entry.file_name());
-            if src_path.is_dir() {
-                Self::copy_dir_recursive(&src_path, &dest_path)?;
-            } else {
-                std::fs::copy(&src_path, &dest_path)?;
-            }
-        }
-        Ok(())
-    }
 
     pub fn is_running(&self) -> bool {
         self.browser
@@ -714,10 +601,22 @@ impl BrowserTool {
     async fn close_browser(&self) -> String {
         let mut browser_guard = self.browser.lock().await;
         let mut page_guard = self.page.lock().await;
-        if browser_guard.is_some() {
+        if let Some(mut browser) = browser_guard.take() {
             let pid = self.chrome_pid.swap(0, Ordering::Relaxed);
             *page_guard = None;
-            *browser_guard = None;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                browser.close().await?;
+                browser
+                    .wait()
+                    .await
+                    .map_err(chromiumoxide::error::CdpError::Io)
+            })
+            .await;
+            // Only target descendants while the owned child is still running.
+            if pid > 0 && matches!(browser.try_wait(), Ok(None)) {
+                kill_chrome_children(pid);
+            }
+            drop(browser);
             // Abort the CDP handler task so it doesn't linger after the browser exits.
             if let Some(handle) = self.cdp_handle.lock().await.take() {
                 handle.abort();
@@ -730,14 +629,7 @@ impl BrowserTool {
             if let Ok(mut domains) = self.active_domains.lock() {
                 domains.clear();
             }
-            // Kill any orphaned Chrome child processes (renderer, GPU, utility).
-            if pid > 0 {
-                kill_chrome_children(pid);
-            }
-            // CRITICAL: Clean up SingletonLock files so the user's real Chrome
-            // can still open. The cloned work profile leaves locks that block
-            // the real Chrome from launching.
-            Self::cleanup_singleton_locks();
+            self.profile.lock().await.take();
             tracing::info!("Browser closed by agent");
             "Browser closed.".to_string()
         } else {
@@ -817,67 +709,21 @@ impl BrowserTool {
             .arg("--disable-dev-shm-usage");
 
         // ── Profile Strategy ──────────────────────────────────────────
-        // Clone the user's real Chrome profile (cookies, localStorage, sessions)
-        // into a working directory so we get: real sessions + debug port.
-        // Chrome blocks debug port on the real profile (SingletonLock), but a
-        // cloned profile works perfectly — sites see real cookies, no blank pages.
-        //
-        // Override: TEMM1E_CLEAN_BROWSER=1 forces a clean profile (no cookies).
-        let clean_browser = std::env::var("TEMM1E_CLEAN_BROWSER").unwrap_or_default() == "1";
-
-        let work_profile = dirs::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("temm1e")
-            .join("browser-profile");
-
-        if clean_browser {
-            // Clean profile — no cookies, fresh start
-            let _ = std::fs::remove_dir_all(&work_profile);
-            let _ = std::fs::create_dir_all(&work_profile);
-            tracing::info!(profile = %work_profile.display(), "Browser: clean profile");
+        // A fresh owned profile cannot collide with another instance or remove
+        // personal Chrome locks. Session continuity uses Tem's vault captures.
+        let import = if std::env::var("TEMM1E_CLEAN_BROWSER").as_deref() == Ok("1") {
+            None
         } else {
-            // Clone user's real Chrome profile if we haven't already
-            let default_subdir = work_profile.join("Default");
-            if !default_subdir.join("Cookies").exists() {
-                let _ = std::fs::create_dir_all(&default_subdir);
-                // Find the real Chrome profile
-                let real_profile = Self::find_chrome_profile();
-                if let Some(ref real) = real_profile {
-                    // Copy essential session files (NOT the whole profile — just auth data)
-                    for item in &["Cookies", "Cookies-journal"] {
-                        let src = real.join(item);
-                        if src.exists() {
-                            let _ = std::fs::copy(&src, default_subdir.join(item));
-                        }
-                    }
-                    // Copy Local Storage and Session Storage dirs
-                    for dir_name in &["Local Storage", "Session Storage"] {
-                        let src = real.join(dir_name);
-                        if src.is_dir() {
-                            let dest = default_subdir.join(dir_name);
-                            let _ = Self::copy_dir_recursive(&src, &dest);
-                        }
-                    }
-                    tracing::info!(
-                        from = %real.display(),
-                        to = %work_profile.display(),
-                        "Browser: cloned user's Chrome profile (cookies + storage)"
-                    );
-                } else {
-                    tracing::info!("Browser: no Chrome profile found, using fresh profile");
-                }
-            } else {
-                tracing::info!(profile = %work_profile.display(), "Browser: reusing existing work profile");
-            }
-        }
-
-        // Remove any stale singleton-lock files from the work profile before
-        // Chrome starts. A crashed prior run leaves these behind and the next
-        // launch dies with exit code 21 (RESULT_CODE_PROFILE_IN_USE). See GH-50.
-        clear_singleton_locks_at(&work_profile);
+            std::env::var_os("TEMM1E_BROWSER_IMPORT_FROM").map(std::path::PathBuf::from)
+        };
+        let profile = crate::browser_profile::BrowserProfile::create("browser", import).await?;
+        let work_profile = profile.path().to_path_buf();
+        *self.profile.lock().await = Some(profile);
 
         builder = builder
             .user_data_dir(&work_profile)
+            .arg("--disk-cache-size=67108864")
+            .arg("--media-cache-size=16777216")
             .arg("--no-first-run")
             .arg("--no-default-browser-check");
 
@@ -1169,188 +1015,6 @@ fn sanitize_session_name(name: &str) -> String {
     }
 }
 
-// ── Accessibility tree roles ────────────────────────────────────────
-
-/// Interactive roles worth surfacing to the agent (buttons, inputs, links, etc.).
-const INTERACTIVE_ROLES: &[&str] = &[
-    "button",
-    "link",
-    "textbox",
-    "combobox",
-    "checkbox",
-    "radio",
-    "slider",
-    "spinbutton",
-    "switch",
-    "tab",
-    "menuitem",
-    "option",
-    "searchbox",
-    "textarea",
-];
-
-/// Semantic/structural roles that provide meaningful page context.
-const SEMANTIC_ROLES: &[&str] = &[
-    "heading",
-    "navigation",
-    "main",
-    "form",
-    "list",
-    "listitem",
-    "table",
-    "row",
-    "cell",
-    "img",
-    "alert",
-    "dialog",
-];
-
-/// AX property names we include in the formatted output.
-const AX_KEY_PROPERTIES: &[&str] = &[
-    "focused", "disabled", "expanded", "checked", "required", "level",
-];
-
-/// Format a flat accessibility tree from CDP `AxNode` list into a numbered,
-/// indented, filtered text representation suitable for LLM consumption.
-///
-/// Only interactive and semantic roles are included; generic containers (div,
-/// span, group, paragraph, StaticText) are silently traversed but not emitted.
-/// Each emitted node is assigned a sequential index for stable cross-turn
-/// references.
-fn format_ax_tree(nodes: &[chromiumoxide::cdp::browser_protocol::accessibility::AxNode]) -> String {
-    use chromiumoxide::cdp::browser_protocol::accessibility::AxNode;
-
-    if nodes.is_empty() {
-        return "(empty accessibility tree)".to_string();
-    }
-    // Build a lookup: node_id → &AxNode
-    let node_map: HashMap<&str, &AxNode> = nodes.iter().map(|n| (n.node_id.as_ref(), n)).collect();
-
-    // Build parent → ordered children map
-    let mut children_map: HashMap<&str, Vec<&str>> = HashMap::new();
-    for node in nodes {
-        if let Some(ref child_ids) = node.child_ids {
-            let ids: Vec<&str> = child_ids.iter().map(|id| id.as_ref()).collect();
-            children_map.insert(node.node_id.as_ref(), ids);
-        }
-    }
-
-    let mut output = String::new();
-    let mut index: usize = 1;
-
-    // Recursive walker. Returns true if this subtree produced any output.
-    fn walk(
-        node_id: &str,
-        depth: usize,
-        index: &mut usize,
-        output: &mut String,
-        node_map: &HashMap<&str, &chromiumoxide::cdp::browser_protocol::accessibility::AxNode>,
-        children_map: &HashMap<&str, Vec<&str>>,
-    ) {
-        let Some(node) = node_map.get(node_id) else {
-            return;
-        };
-
-        // Skip ignored nodes entirely
-        if node.ignored {
-            return;
-        }
-
-        let role = node
-            .role
-            .as_ref()
-            .and_then(|v| v.value.as_ref())
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        let name = node
-            .name
-            .as_ref()
-            .and_then(|v| v.value.as_ref())
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        let is_interactive = INTERACTIVE_ROLES.contains(&role);
-        let is_semantic = SEMANTIC_ROLES.contains(&role);
-
-        if is_interactive || is_semantic {
-            let indent = "  ".repeat(depth);
-            let _ = write!(output, "{indent}[{idx}] {role}", idx = *index);
-
-            // Include name if non-empty
-            if !name.is_empty() {
-                let _ = write!(output, " \"{}\"", name);
-            }
-
-            // Include value for input elements
-            if let Some(ref val) = node.value {
-                if let Some(ref v) = val.value {
-                    let val_str = match v {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    };
-                    if !val_str.is_empty() {
-                        let _ = write!(output, " value=\"{}\"", val_str);
-                    }
-                }
-            }
-
-            // Include key properties (focused, disabled, expanded, checked, required, level)
-            if let Some(ref props) = node.properties {
-                for prop in props {
-                    let prop_name = prop.name.as_ref();
-                    if AX_KEY_PROPERTIES.contains(&prop_name) {
-                        if let Some(ref v) = prop.value.value {
-                            let val_str = match v {
-                                serde_json::Value::String(s) => s.clone(),
-                                serde_json::Value::Bool(b) => b.to_string(),
-                                serde_json::Value::Number(n) => n.to_string(),
-                                other => other.to_string(),
-                            };
-                            let _ = write!(output, " {}={}", prop_name, val_str);
-                        }
-                    }
-                }
-            }
-
-            let _ = writeln!(output);
-            *index += 1;
-
-            // Recurse into children at deeper indent
-            if let Some(child_ids) = children_map.get(node_id) {
-                for child_id in child_ids {
-                    walk(child_id, depth + 1, index, output, node_map, children_map);
-                }
-            }
-        } else {
-            // Not a role we emit — still recurse into children at SAME depth
-            // (transparent passthrough for generic containers)
-            if let Some(child_ids) = children_map.get(node_id) {
-                for child_id in child_ids {
-                    walk(child_id, depth, index, output, node_map, children_map);
-                }
-            }
-        }
-    }
-
-    // The first node in the array is the root
-    let root_id = nodes[0].node_id.as_ref();
-    walk(
-        root_id,
-        0,
-        &mut index,
-        &mut output,
-        &node_map,
-        &children_map,
-    );
-
-    if output.is_empty() {
-        "(no interactive or semantic elements found)".to_string()
-    } else {
-        output
-    }
-}
-
 // ── QR code detection ────────────────────────────────────────────
 
 /// Run heuristic QR code detection on a page via JavaScript.
@@ -1409,83 +1073,61 @@ async fn auto_screenshot_for_qr(
 
 // ── Login form detection ─────────────────────────────────────────
 
-fn detect_login_form(nodes: &[AxNode]) -> Option<(String, String, String)> {
-    let mut username_id = None;
-    let mut password_id = None;
-    let mut submit_id = None;
-
-    for node in nodes {
-        if node.ignored {
-            continue;
+/// Select a single visible standard form. Ambiguous/non-standard forms use the
+/// interactive login flow rather than guessing where to insert credentials.
+async fn mark_login_form(page: &Page) -> Result<(), Temm1eError> {
+    let found = page.evaluate(r#"(() => {
+        const visible = e => !e.disabled && e.getClientRects().length > 0;
+        const candidates = [];
+        if (document.forms.length > 32) return false;
+        for (const form of document.forms) {
+            if (form.elements.length > 100) continue;
+            const fields = Array.from(form.elements).filter(visible);
+            const passwords = fields.filter(e => e.tagName === 'INPUT' && e.type === 'password');
+            const users = fields.filter(e => e.tagName === 'INPUT' && e.type !== 'password' &&
+                (e.type === 'email' || e.autocomplete.split(/\s+/).includes('username') || /^(username|user|email|login|identifier)$/i.test(e.name)));
+            const submits = fields.filter(e => (e.tagName === 'BUTTON' || e.tagName === 'INPUT') && e.type === 'submit');
+            if (passwords.length === 1 && users.length === 1 && submits.length === 1)
+                candidates.push([users[0], passwords[0], submits[0]]);
         }
-        let role = node
-            .role
-            .as_ref()
-            .and_then(|v| v.value.as_ref())
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let name = node
-            .name
-            .as_ref()
-            .and_then(|v| v.value.as_ref())
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        if role == "textbox" {
-            let is_protected = node
-                .properties
-                .as_ref()
-                .map(|props| {
-                    props.iter().any(|p| {
-                        p.name.as_ref() == "protected"
-                            && p.value.value.as_ref().and_then(|v| v.as_bool()) == Some(true)
-                    })
-                })
-                .unwrap_or(false);
-
-            if is_protected {
-                password_id = Some(node.node_id.as_ref().to_string());
-            } else if username_id.is_none()
-                && (name.contains("email")
-                    || name.contains("user")
-                    || name.contains("login")
-                    || name.contains("phone")
-                    || name.contains("account")
-                    || name.is_empty())
-            {
-                username_id = Some(node.node_id.as_ref().to_string());
-            }
-        }
-
-        if (role == "button" || role == "link")
-            && submit_id.is_none()
-            && (name.contains("sign in")
-                || name.contains("log in")
-                || name.contains("login")
-                || name.contains("submit")
-                || name.contains("continue")
-                || name.contains("next"))
-        {
-            submit_id = Some(node.node_id.as_ref().to_string());
-        }
+        if (candidates.length !== 1) return false;
+        for (const old of document.querySelectorAll('[data-temm1e-auth]')) old.removeAttribute('data-temm1e-auth');
+        candidates[0].forEach((e, i) => e.setAttribute('data-temm1e-auth', ['user','password','submit'][i]));
+        return true;
+    })()"#).await.map_err(|_| Temm1eError::Tool("Could not inspect login form".into()))?
+      .into_value::<bool>().map_err(|_| Temm1eError::Tool("Invalid login form response".into()))?;
+    if !found {
+        return Err(Temm1eError::Tool(
+            "No unambiguous standard login form; use the interactive /login flow".into(),
+        ));
     }
-
-    match (username_id, password_id, submit_id) {
-        (Some(u), Some(p), Some(s)) => Some((u, p, s)),
-        _ => None,
-    }
+    Ok(())
 }
 
-fn find_ax_node_by_id<'a>(nodes: &'a [AxNode], id: &str) -> Option<&'a AxNode> {
-    nodes.iter().find(|n| n.node_id.as_ref() == id)
+async fn authorize_credential_form(page: &Page, saved: &str) -> Result<(), Temm1eError> {
+    authorize_credential_page(page, saved).await?;
+    let action = page.evaluate(r#"(() => {
+        const button = document.querySelector('[data-temm1e-auth="submit"]');
+        return button && button.form ? (button.hasAttribute('formaction') ? button.formAction : button.form.action) : '';
+    })()"#).await.map_err(|_| Temm1eError::Tool("Could not verify login form destination".into()))?
+      .into_value::<String>().map_err(|_| Temm1eError::Tool("Invalid login form destination".into()))?;
+    crate::browser_auth::authorize_origin(&action, saved)
+}
+
+async fn authorize_credential_page(page: &Page, saved_url: &str) -> Result<(), Temm1eError> {
+    let current = page
+        .url()
+        .await
+        .map_err(|_| Temm1eError::Tool("Could not verify credential destination".into()))?
+        .ok_or_else(|| Temm1eError::Tool("Credential destination has no URL".into()))?;
+    crate::browser_auth::authorize_origin(&current, saved_url)
 }
 
 async fn cdp_insert_text(page: &Page, text: &str) -> Result<(), Temm1eError> {
     use chromiumoxide::cdp::browser_protocol::input::InsertTextParams;
     page.execute(InsertTextParams::new(text))
         .await
-        .map_err(|e| Temm1eError::Tool(format!("insertText failed: {}", e)))?;
+        .map_err(|_| Temm1eError::Tool("Credential text insertion failed; submission outcome must be checked before retrying".into()))?;
     Ok(())
 }
 
@@ -1637,7 +1279,13 @@ impl Drop for BrowserTool {
         // zero and Drop will fire later, but we lose the guarantee of immediate
         // cleanup.
         if let Ok(mut guard) = self.browser.try_lock() {
-            let _ = guard.take(); // Browser::drop -> kill_on_drop fires here
+            let pid = self.chrome_pid.swap(0, Ordering::Relaxed);
+            if let Some(browser) = guard.as_mut() {
+                if pid > 0 && matches!(browser.try_wait(), Ok(None)) {
+                    kill_chrome_children(pid);
+                }
+            }
+            let _ = guard.take();
         }
         if let Ok(mut guard) = self.page.try_lock() {
             let _ = guard.take();
@@ -1655,18 +1303,6 @@ impl Drop for BrowserTool {
         if let Ok(mut domains) = self.active_domains.lock() {
             domains.clear();
         }
-
-        // Kill orphaned Chrome child processes (renderer, GPU, utility).
-        // The main Chrome process is killed by kill_on_drop above, but its
-        // children (spawned as separate processes) survive on macOS/Linux
-        // because SIGKILL does not propagate to children.
-        let pid = self.chrome_pid.swap(0, Ordering::Relaxed);
-        if pid > 0 {
-            kill_chrome_children(pid);
-        }
-
-        // CRITICAL: Clean up SingletonLock files so user's real Chrome can open.
-        Self::cleanup_singleton_locks();
     }
 }
 
@@ -1804,6 +1440,7 @@ impl Tool for BrowserTool {
         input: ToolInput,
         ctx: &ToolContext,
     ) -> Result<ToolOutput, Temm1eError> {
+        let _action = self.action_lock.lock().await;
         let action = input
             .arguments
             .get("action")
@@ -2779,53 +2416,41 @@ impl Tool for BrowserTool {
                 let cred: WebCredential = serde_json::from_slice(&zeroizing)
                     .map_err(|e| Temm1eError::Tool(format!("Credential parse error: {}", e)))?;
 
-                use chromiumoxide::cdp::browser_protocol::accessibility::GetFullAxTreeParams;
-                let ax_result = page.execute(GetFullAxTreeParams::default()).await
-                    .map_err(|e| Temm1eError::Tool(format!("Auth: ax tree failed: {}", e)))?;
-
-                let (user_id, pass_id, submit_id) = detect_login_form(&ax_result.result.nodes)
-                    .ok_or_else(|| Temm1eError::Tool("Could not detect login form on this page".into()))?;
-
-                tracing::debug!(username_node = %user_id, password_node = %pass_id, submit_node = %submit_id, "Login form detected");
-
-                let user_node = find_ax_node_by_id(&ax_result.result.nodes, &user_id)
-                    .ok_or_else(|| Temm1eError::Tool("Username AX node not found".into()))?;
-                let pass_node = find_ax_node_by_id(&ax_result.result.nodes, &pass_id)
-                    .ok_or_else(|| Temm1eError::Tool("Password AX node not found".into()))?;
-                let submit_node = find_ax_node_by_id(&ax_result.result.nodes, &submit_id)
-                    .ok_or_else(|| Temm1eError::Tool("Submit AX node not found".into()))?;
-
-                let user_backend_id = user_node.backend_dom_node_id
-                    .ok_or_else(|| Temm1eError::Tool("Username AX node has no DOM backing".into()))?;
-                let pass_backend_id = pass_node.backend_dom_node_id
-                    .ok_or_else(|| Temm1eError::Tool("Password AX node has no DOM backing".into()))?;
-                let submit_backend_id = submit_node.backend_dom_node_id
-                    .ok_or_else(|| Temm1eError::Tool("Submit AX node has no DOM backing".into()))?;
+                authorize_credential_page(&page, &cred.service_url).await?;
+                mark_login_form(&page).await?;
+                authorize_credential_form(&page, &cred.service_url).await?;
+                let user_backend_id = page.find_element("[data-temm1e-auth='user']").await
+                    .map_err(|_| Temm1eError::Tool("Login username field changed".into()))?.backend_node_id;
+                let pass_backend_id = page.find_element("[data-temm1e-auth='password']").await
+                    .map_err(|_| Temm1eError::Tool("Login password field changed".into()))?.backend_node_id;
+                let submit_backend_id = page.find_element("[data-temm1e-auth='submit']").await
+                    .map_err(|_| Temm1eError::Tool("Login submit control changed".into()))?.backend_node_id;
 
                 cdp_clear_field(&page, user_backend_id).await?;
                 cdp_focus_backend_node(&page, user_backend_id).await?;
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                authorize_credential_form(&page, &cred.service_url).await?;
                 cdp_insert_text(&page, &cred.username).await?;
 
                 cdp_clear_field(&page, pass_backend_id).await?;
                 cdp_focus_backend_node(&page, pass_backend_id).await?;
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                authorize_credential_form(&page, &cred.service_url).await?;
                 cdp_insert_text(&page, &cred.password).await?;
 
-                drop(cred);
-
+                authorize_credential_form(&page, &cred.service_url).await?;
                 cdp_click_backend_node(&page, submit_backend_id).await?;
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-                let post_ax = page.execute(GetFullAxTreeParams::default()).await
-                    .map_err(|e| Temm1eError::Tool(format!("Auth: post-login tree failed: {}", e)))?;
-                let post_tree = format_ax_tree(&post_ax.result.nodes);
-                let scrubbed = credential_scrub::scrub(&post_tree, &[service]);
-
-                tracing::info!(service = %service, "Authentication flow completed");
+                let post_tree = page.evaluate("document.body ? document.body.innerText.slice(0, 32768) : ''").await
+                    .map_err(|_| Temm1eError::Tool("Form submitted; post-submit observation unavailable, outcome unknown".into()))?
+                    .into_value::<String>().map_err(|_| Temm1eError::Tool("Form submitted; invalid post-submit observation, outcome unknown".into()))?;
+                let report = crate::browser_auth::submission_report(service, &post_tree, &cred.username, &cred.password);
+                drop(cred);
+                tracing::info!(service = %service, "Login form submitted; authentication requires verification");
 
                 Ok(ToolOutput {
-                    content: format!("Authenticated to '{}'. Post-login page:\n{}", service, scrubbed),
+                    content: report,
                     is_error: false,
                 })
             }
@@ -2846,7 +2471,7 @@ impl Tool for BrowserTool {
                 if session_alive {
                     Ok(ToolOutput {
                         content: format!(
-                            "Session restored for '{}'. Current page:\n{}",
+                            "Session data restored for '{}'; no login prompt was detected, but authentication is not verified. Check positive account evidence. Current page:\n{}",
                             service, tree_text
                         ),
                         is_error: false,
@@ -3678,199 +3303,10 @@ mod tests {
         });
     }
 
-    // ── Accessibility tree formatting tests ─────────────────────────
-
-    mod ax_tree_tests {
+    // The old typed-AX formatter served only the removed login path. Keep
+    // schema acceptance tests; current login is exercised with real Chrome.
+    mod browser_schema_tests {
         use super::*;
-        use chromiumoxide::cdp::browser_protocol::accessibility::{
-            AxNode, AxNodeId, AxValue, AxValueType,
-        };
-
-        /// Helper: create a minimal AxNode with role and name.
-        fn make_node(
-            id: &str,
-            role: &str,
-            name: &str,
-            parent_id: Option<&str>,
-            child_ids: Option<Vec<&str>>,
-        ) -> AxNode {
-            let mut node = AxNode::new(AxNodeId::new(id), false);
-            node.role = Some(AxValue {
-                r#type: AxValueType::Role,
-                value: Some(serde_json::Value::String(role.to_string())),
-                related_nodes: None,
-                sources: None,
-            });
-            node.name = Some(AxValue {
-                r#type: AxValueType::String,
-                value: Some(serde_json::Value::String(name.to_string())),
-                related_nodes: None,
-                sources: None,
-            });
-            node.parent_id = parent_id.map(AxNodeId::new);
-            node.child_ids = child_ids.map(|ids| ids.iter().map(|i| AxNodeId::new(*i)).collect());
-            node
-        }
-
-        /// Helper: create an ignored AxNode.
-        fn make_ignored_node(id: &str, parent_id: Option<&str>) -> AxNode {
-            let mut node = AxNode::new(AxNodeId::new(id), true);
-            node.parent_id = parent_id.map(AxNodeId::new);
-            node
-        }
-
-        /// Helper: create a generic container node (not interactive, not semantic).
-        fn make_generic_node(
-            id: &str,
-            parent_id: Option<&str>,
-            child_ids: Option<Vec<&str>>,
-        ) -> AxNode {
-            let mut node = AxNode::new(AxNodeId::new(id), false);
-            node.role = Some(AxValue {
-                r#type: AxValueType::Role,
-                value: Some(serde_json::Value::String("generic".to_string())),
-                related_nodes: None,
-                sources: None,
-            });
-            node.parent_id = parent_id.map(AxNodeId::new);
-            node.child_ids = child_ids.map(|ids| ids.iter().map(|i| AxNodeId::new(*i)).collect());
-            node
-        }
-
-        #[test]
-        fn empty_nodes_returns_placeholder() {
-            let result = format_ax_tree(&[]);
-            assert_eq!(result, "(empty accessibility tree)");
-        }
-
-        #[test]
-        fn single_button_node() {
-            let nodes = vec![make_node("1", "button", "Submit", None, None)];
-            let result = format_ax_tree(&nodes);
-            assert!(result.contains("[1] button \"Submit\""));
-        }
-
-        #[test]
-        fn generic_container_is_skipped_but_children_shown() {
-            let nodes = vec![
-                make_generic_node("root", None, Some(vec!["btn"])),
-                make_node("btn", "button", "Click me", Some("root"), None),
-            ];
-            let result = format_ax_tree(&nodes);
-            assert!(!result.contains("generic"));
-            assert!(result.contains("[1] button \"Click me\""));
-        }
-
-        #[test]
-        fn ignored_node_is_skipped() {
-            let nodes = vec![
-                make_generic_node("root", None, Some(vec!["ign", "btn"])),
-                make_ignored_node("ign", Some("root")),
-                make_node("btn", "button", "Visible", Some("root"), None),
-            ];
-            let result = format_ax_tree(&nodes);
-            assert!(result.contains("[1] button \"Visible\""));
-            assert!(!result.contains("[2]"));
-        }
-
-        #[test]
-        fn nested_hierarchy_indentation() {
-            let nodes = vec![
-                make_node("form1", "form", "Login", None, Some(vec!["input1", "btn1"])),
-                make_node("input1", "textbox", "Username", Some("form1"), None),
-                make_node("btn1", "button", "Log In", Some("form1"), None),
-            ];
-            let result = format_ax_tree(&nodes);
-            assert!(result.contains("[1] form \"Login\""));
-            assert!(result.contains("  [2] textbox \"Username\""));
-            assert!(result.contains("  [3] button \"Log In\""));
-        }
-
-        #[test]
-        fn schema_includes_observe_action() {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                let tool = BrowserTool::new();
-                let schema = tool.parameters_schema();
-                let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
-                let action_strs: Vec<&str> = actions.iter().map(|v| v.as_str().unwrap()).collect();
-                assert!(action_strs.contains(&"observe"), "Missing observe action");
-                assert!(
-                    action_strs.contains(&"accessibility_tree"),
-                    "Missing accessibility_tree"
-                );
-                assert!(
-                    action_strs.contains(&"observe_tree"),
-                    "Missing observe_tree"
-                );
-            });
-        }
-
-        #[test]
-        fn schema_includes_hint_and_retry_parameters() {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                let tool = BrowserTool::new();
-                let schema = tool.parameters_schema();
-                assert!(
-                    schema["properties"]["hint"].is_object(),
-                    "Missing hint parameter"
-                );
-                assert!(
-                    schema["properties"]["retry"].is_object(),
-                    "Missing retry parameter"
-                );
-            });
-        }
-
-        #[test]
-        fn description_mentions_observe_action() {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                let tool = BrowserTool::new();
-                let desc = tool.description();
-                assert!(desc.contains("observe"), "Description missing observe");
-                assert!(desc.contains("Tier 1"), "Description missing Tier 1");
-                assert!(desc.contains("Tier 2"), "Description missing Tier 2");
-                assert!(desc.contains("Tier 3"), "Description missing Tier 3");
-            });
-        }
-
-        #[test]
-        fn last_tree_hash_initializes_to_none() {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                let tool = BrowserTool::new();
-                let hash = tool.last_tree_hash.lock().unwrap();
-                assert!(hash.is_none(), "last_tree_hash should start as None");
-            });
-        }
-
-        #[test]
-        fn all_interactive_roles_recognized() {
-            for role in INTERACTIVE_ROLES {
-                let nodes = vec![make_node("1", role, "test", None, None)];
-                let result = format_ax_tree(&nodes);
-                assert!(
-                    result.contains(&format!("[1] {}", role)),
-                    "Role '{}' not recognized",
-                    role
-                );
-            }
-        }
-
-        #[test]
-        fn all_semantic_roles_recognized() {
-            for role in SEMANTIC_ROLES {
-                let nodes = vec![make_node("1", role, "test", None, None)];
-                let result = format_ax_tree(&nodes);
-                assert!(
-                    result.contains(&format!("[1] {}", role)),
-                    "Role '{}' not recognized",
-                    role
-                );
-            }
-        }
 
         #[test]
         fn browser_tool_schema_lists_all_actions() {
@@ -4133,5 +3569,111 @@ mod tests {
         let (msg, saved) = tool.close_with_capture().await;
         assert_eq!(msg, "No browser was running.");
         assert!(saved.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod live_fixture_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    struct FixtureVault(Vec<u8>);
+    #[async_trait]
+    impl Vault for FixtureVault {
+        async fn store_secret(&self, _: &str, _: &[u8]) -> Result<(), Temm1eError> {
+            Ok(())
+        }
+        async fn get_secret(&self, key: &str) -> Result<Option<Vec<u8>>, Temm1eError> {
+            Ok((key == "web_cred:fixture").then(|| self.0.clone()))
+        }
+        async fn delete_secret(&self, _: &str) -> Result<(), Temm1eError> {
+            Ok(())
+        }
+        async fn list_keys(&self) -> Result<Vec<String>, Temm1eError> {
+            Ok(vec![])
+        }
+        async fn has_key(&self, key: &str) -> Result<bool, Temm1eError> {
+            Ok(key == "web_cred:fixture")
+        }
+        async fn resolve_uri(&self, _: &str) -> Result<Option<Vec<u8>>, Temm1eError> {
+            Ok(None)
+        }
+        fn backend_name(&self) -> &str {
+            "synthetic-browser-fixture"
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires installed Chrome; run with TEMM1E_HEADLESS=1 and TEMM1E_CLEAN_BROWSER=1 in an isolated profile"]
+    async fn actual_browser_auth_checks_origin_and_does_not_claim_login() {
+        assert_eq!(std::env::var("TEMM1E_CLEAN_BROWSER").as_deref(), Ok("1"));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let posts = Arc::new(AtomicU32::new(0));
+        let post_count = posts.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    if socket.read_exact(&mut byte).await.is_err() {
+                        break;
+                    }
+                    head.push(byte[0]);
+                    assert!(head.len() < 65536);
+                }
+                let headers = String::from_utf8_lossy(&head);
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|value| value.trim().parse().unwrap())
+                    })
+                    .unwrap_or(0);
+                assert!(length < 65536);
+                let mut body = vec![0; length];
+                socket.read_exact(&mut body).await.unwrap();
+                let posted = headers.starts_with("POST ");
+                if posted {
+                    post_count.fetch_add(1, Ordering::Relaxed);
+                }
+                let content = if posted {
+                    "<html><body>Challenge required. Account fixture-user value p!</body></html>"
+                } else {
+                    "<html><body><form method='post' action='/submit'><label>Username<input name='username' autocomplete='username'></label><label>Password<input name='password' type='password' autocomplete='current-password'></label><button type='submit'>Sign in</button></form></body></html>"
+                };
+                let _ = socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{content}", content.len()).as_bytes()).await;
+            }
+        });
+        let source = tempfile::tempdir().unwrap();
+        let vault = Arc::new(FixtureVault(serde_json::to_vec(&serde_json::json!({"username":"fixture-user","password":"p!","service_url":format!("http://{address}/login")})).unwrap()));
+        let browser = BrowserTool::new().with_vault(vault);
+        let ctx = ToolContext {
+            channel: "fixture".into(),
+            workspace_path: source.path().into(),
+            session_id: "fixture".into(),
+            chat_id: "fixture".into(),
+            read_tracker: None,
+        };
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(45), async {
+            browser.execute(ToolInput { name: "browser".into(), arguments: serde_json::json!({"action":"navigate","url":format!("http://localhost:{}/login", address.port())}) }, &ctx).await.unwrap();
+            assert!(browser.execute(ToolInput { name: "browser".into(), arguments: serde_json::json!({"action":"authenticate","service":"fixture"}) }, &ctx).await.is_err());
+            assert_eq!(posts.load(Ordering::Relaxed), 0);
+            browser.execute(ToolInput { name: "browser".into(), arguments: serde_json::json!({"action":"navigate","url":format!("http://{address}/login")}) }, &ctx).await.unwrap();
+            let profile = browser.profile.lock().await.as_ref().unwrap().path().to_path_buf();
+            assert!(profile.starts_with(temm1e_core::config::data_dir().join("browser-profiles")));
+            let report = browser.execute(ToolInput { name: "browser".into(), arguments: serde_json::json!({"action":"authenticate","service":"fixture"}) }, &ctx).await.unwrap();
+            assert!(report.content.contains("Authentication is not verified"));
+            assert!(!report.content.contains("fixture-user") && !report.content.contains("p!"));
+            assert_eq!(posts.load(Ordering::Relaxed), 1);
+            let page = browser.ensure_browser().await.unwrap();
+            assert!(authorize_credential_page(&page, "https://different.example/login").await.is_err());
+            profile
+        }).await;
+        browser.close_browser().await;
+        server.abort();
+        let profile = outcome.expect("browser fixture exceeded deadline");
+        assert!(!profile.exists(), "owned profile was not cleaned on close");
     }
 }

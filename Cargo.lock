@@ -7442,6 +7442,7 @@ dependencies = [
  "chromiumoxide",
  "chrono",
  "dirs",
+ "fs2",
  "futures",
  "htmd",
  "regex",

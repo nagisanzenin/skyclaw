@@ -36,6 +36,7 @@ htmd = { workspace = true, optional = true }
 temm1e-gaze = { path = "../temm1e-gaze", optional = true }
 
 tempfile = "3"
+fs2 = "0.4.3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

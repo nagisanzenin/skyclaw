@@ -2,6 +2,21 @@
 
 Every original FEATURES.md entry is mapped below, followed by later feature families and the complete source/document inventory. Coverage means design/source audit and a defined acceptance path; it does not mean every native platform, external account, integration or mathematical claim was experimentally validated. The baseline workspace library tests ran, but binary/integration/feature-flag tests and live services have separate limits in VALIDATION. No feature is declared healthy merely because no defect was found.
 
+## Implementation evidence through checkpoint 28
+
+The tables below preserve the initial baseline audit. They are not the current implementation status. Use the linked implementation documents and checkpoint log for repairs and remaining limits:
+
+| Feature families | Implemented evidence | Remaining acceptance boundary |
+|---|---|---|
+| Provider protocols, subscriptions and model pricing | `MODEL-CATALOG-IMPLEMENTATION.md`, `RESPONSES-IMPLEMENTATION.md`, `ANTHROPIC-NATIVE-IMPLEMENTATION.md`; checkpoints 21–22 and 26 | Model-menu completion, native Gemini streaming and live accounts other than authorized Z.ai remain separate. |
+| Context, compaction, recall and cache metadata | `CONTEXT-IMPLEMENTATION.md`; guarded final fit, provenance/source retention and knownness-aware usage | Semantic retention breadth, auxiliary-call budgets and provider cache acceptance still require broader tests. |
+| Conversation recovery, final delivery and TUI history | `SESSION-RECOVERY-IMPLEMENTATION.md`, `DELIVERY-IMPLEMENTATION.md`, `SESSION-IMPLEMENTATION.md`; checkpoints 18–19 and 28 | A committed transcript is not a completed durable goal; final outbox coverage does not include every interim/control/platform receipt. |
+| Shutdown, routing, steering and background ownership | Checkpoints 17, 20 and 25 in `IMPLEMENTATION-STATUS.md`; actual CLI/server lifecycle and typed Mission Control tests | Crash-durable intake, shared goal/effect/budget composition and real channel reconnect remain broader work. |
+| TUI presentation and input | Checkpoints 24 and 28; real Unix PTY, Unicode, resize, terminal restoration and zero-provider restart | Windows PTY and complete usability/large-history acceptance remain separate. |
+| Installer/update/container/migration | `UPDATE-DEPLOYMENT-IMPLEMENTATION.md`; checkpoints 23 and 27; fully green CI 34256450049 including Docker replacement | Final-release update/migration and target artifacts require validation on the release revision. |
+| Numerical reliability, identity and editing | Earlier math/reference checks, RBAC bootstrap, caller workspace propagation and temporary-index snapshot checkpoints | Global principal isolation, learning calibration and crash-atomic multi-file edits are not proved by these repairs. |
+| Prowl blueprints | Checkpoint 27 parses every built-in with the real production schema and corrects unsupported login instructions | Browser implementation changes are being finalized separately; no claim of 100+ verified live login services. |
+
 ## Original feature roadmap
 
 Vision source: `FEATURES.md` and `docs/TEMM1E_VISION.md`; newer `VISION.md` can supersede older routing/isolation defaults. Source locations below are crate-relative unless main.rs.

@@ -136,6 +136,18 @@ pub struct InteractiveBrowseSession {
     click_coords: HashMap<usize, (i32, i32)>,
     /// Hold the Browser to prevent Chrome from being killed when dropped.
     _browser: Option<Browser>,
+    _profile: Option<crate::browser_profile::BrowserProfile>,
+    cdp_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for InteractiveBrowseSession {
+    fn drop(&mut self) {
+        if let Some(handle) = self.cdp_handle.take() {
+            handle.abort();
+        }
+        // Browser owns its child; the profile is removed only within Tem's directory.
+        self._browser.take();
+    }
 }
 
 impl InteractiveBrowseSession {
@@ -168,6 +180,8 @@ impl InteractiveBrowseSession {
             element_map: HashMap::new(),
             click_coords: HashMap::new(),
             _browser: None,
+            _profile: None,
+            cdp_handle: None,
         })
     }
 
@@ -196,28 +210,13 @@ impl InteractiveBrowseSession {
             .arg("--disable-blink-features=AutomationControlled")
             .arg("--window-size=1280,900");
 
-        // Use the same cloned profile as BrowserTool for session continuity
-        let work_profile = dirs::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("temm1e")
-            .join("browser-profile");
-        if work_profile.exists() {
-            // Wipe any stale singleton locks from a crashed prior run — otherwise
-            // the launch dies with exit code 21 (RESULT_CODE_PROFILE_IN_USE).
-            // See GH-50.
-            crate::browser::clear_singleton_locks_at(&work_profile);
-            builder = builder
-                .user_data_dir(&work_profile)
-                .arg("--no-first-run")
-                .arg("--no-default-browser-check");
-        }
-
-        if std::env::var("TEMM1E_CLEAN_BROWSER").unwrap_or_default() == "1" {
-            let tp = std::env::temp_dir().join(format!("temm1e-login-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&tp);
-            let _ = std::fs::create_dir_all(&tp);
-            builder = builder.user_data_dir(&tp).arg("--incognito");
-        }
+        let profile = crate::browser_profile::BrowserProfile::create("login", None).await?;
+        builder = builder
+            .user_data_dir(profile.path())
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            .arg("--disk-cache-size=67108864")
+            .arg("--media-cache-size=16777216");
 
         let config = builder
             .build()
@@ -228,10 +227,17 @@ impl InteractiveBrowseSession {
             .map_err(|e| Temm1eError::Tool(format!("Browser launch: {}", e)))?;
 
         // CDP handler — continue on WS errors (chromiumoxide 0.7 compat)
-        tokio::spawn(async move { while handler.next().await.is_some() {} });
-
-        let mut session = Self::new(&browser, service, url).await?;
-        session._browser = Some(browser); // Keep browser alive
+        let cdp_handle = tokio::spawn(async move { while handler.next().await.is_some() {} });
+        let mut session = match Self::new(&browser, service, url).await {
+            Ok(session) => session,
+            Err(error) => {
+                cdp_handle.abort();
+                return Err(error);
+            }
+        };
+        session._browser = Some(browser);
+        session._profile = Some(profile);
+        session.cdp_handle = Some(cdp_handle);
         Ok(session)
     }
 

@@ -56,6 +56,7 @@ pub struct BrowserPool {
     _cdp_handle: tokio::task::JoinHandle<()>,
     /// PID of the Chrome main process — used to kill child processes on shutdown.
     chrome_pid: AtomicU32,
+    _profile: crate::browser_profile::BrowserProfile,
 }
 
 impl BrowserPool {
@@ -77,14 +78,8 @@ impl BrowserPool {
             || cfg!(target_os = "windows");
         let use_headless = force_headless || !has_display;
 
-        // Per-process user-data-dir — mandatory. chromiumoxide 0.7's default
-        // falls back to a shared `%TEMP%/chromiumoxide-runner`, which
-        // reproducibly triggers Chrome exit code 21 when a prior run left a
-        // stale SingletonLock (most visible on Windows — GH-50). The PID
-        // suffix isolates every Temm1e instance from itself and from others.
-        let pool_profile = crate::browser::per_process_profile("pool");
-        let _ = std::fs::create_dir_all(&pool_profile);
-        crate::browser::clear_singleton_locks_at(&pool_profile);
+        let profile = crate::browser_profile::BrowserProfile::create("pool", None).await?;
+        let pool_profile = profile.path().to_path_buf();
 
         let mut builder = BrowserConfig::builder();
         if use_headless {
@@ -92,6 +87,8 @@ impl BrowserPool {
         }
         let config = builder
             .user_data_dir(&pool_profile)
+            .arg("--disk-cache-size=67108864")
+            .arg("--media-cache-size=16777216")
             .arg("--no-first-run")
             .arg("--no-default-browser-check")
             .arg("--disable-gpu")
@@ -165,6 +162,7 @@ impl BrowserPool {
             max_size,
             _cdp_handle: cdp_handle,
             chrome_pid: AtomicU32::new(chrome_pid_val),
+            _profile: profile,
         })
     }
 
@@ -311,13 +309,8 @@ impl Drop for BrowserPool {
         if pid > 0 {
             crate::browser::kill_chrome_children(pid);
         }
-        // Remove the per-process profile dir so temp dirs don't accumulate
-        // across runs. Best-effort — deterministic path since per_process_profile
-        // returns the same value within a single process.
-        let pool_profile = crate::browser::per_process_profile("pool");
-        let _ = std::fs::remove_dir_all(&pool_profile);
         debug!(
-            "BrowserPool dropped — CDP handler aborted, Chrome children killed, profile removed"
+            "BrowserPool dropped — CDP handler aborted; owned profile cleanup follows browser drop"
         );
     }
 }

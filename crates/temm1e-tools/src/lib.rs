@@ -2,10 +2,14 @@
 
 #[cfg(feature = "browser")]
 mod browser;
+#[cfg(any(feature = "browser", test))]
+mod browser_auth;
 #[cfg(feature = "browser")]
 pub mod browser_observation;
 #[cfg(feature = "browser")]
 pub mod browser_pool;
+#[cfg(feature = "browser")]
+mod browser_profile;
 #[cfg(feature = "browser")]
 pub mod browser_session;
 mod channel_target;
