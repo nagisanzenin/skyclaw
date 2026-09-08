@@ -184,6 +184,15 @@ impl ExecutionJournal {
     pub(crate) async fn hydrate_records(
         &self,
         scope: &str,
+        records: Vec<ExecutionRecord>,
+    ) -> Result<Vec<ExecutionRecord>, Temm1eError> {
+        let mut connection = self.pool.acquire().await.map_err(error)?;
+        Self::hydrate_records_on(&mut connection, scope, records).await
+    }
+
+    pub(crate) async fn hydrate_records_on(
+        connection: &mut sqlx::SqliteConnection,
+        scope: &str,
         mut records: Vec<ExecutionRecord>,
     ) -> Result<Vec<ExecutionRecord>, Temm1eError> {
         let mut total_bytes = 0usize;
@@ -205,7 +214,7 @@ impl ExecutionJournal {
                     return Err(error("unsupported history checkpoint version"));
                 }
                 let rows: Vec<(String, String)> = sqlx::query_as("SELECT id,payload FROM execution_history_payloads WHERE scope=? AND id IN (SELECT value FROM json_each(?))")
-                    .bind(scope).bind(serde_json::to_string(&stored.message_ids).map_err(error)?).fetch_all(&self.pool).await.map_err(error)?;
+                    .bind(scope).bind(serde_json::to_string(&stored.message_ids).map_err(error)?).fetch_all(&mut *connection).await.map_err(error)?;
                 let mut messages = HashMap::new();
                 for (id, payload) in rows {
                     if hex::encode(Sha256::digest(payload.as_bytes())) != id {

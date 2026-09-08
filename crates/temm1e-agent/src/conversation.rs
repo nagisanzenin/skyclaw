@@ -87,19 +87,19 @@ impl ExecutionJournal {
             return Err(error("interrupted conversation: use /session-recover to inspect evidence or /session-new to start separately; tools were not replayed"));
         }
         // Hydration must succeed before a read failure can create a busy marker.
-        let records = self
-            .hydrate_records(
-                &scope.0,
-                vec![ExecutionRecord {
-                    id: epoch.clone(),
-                    inbound_id: String::new(),
-                    goal: String::new(),
-                    state: String::new(),
-                    checkpoint,
-                    updated_at: String::new(),
-                }],
-            )
-            .await?;
+        let records = Self::hydrate_records_on(
+            &mut tx,
+            &scope.0,
+            vec![ExecutionRecord {
+                id: epoch.clone(),
+                inbound_id: String::new(),
+                goal: String::new(),
+                state: String::new(),
+                checkpoint,
+                updated_at: String::new(),
+            }],
+        )
+        .await?;
         let history = serde_json::from_str(&records[0].checkpoint).map_err(error)?;
         sqlx::query("UPDATE conversation_heads SET busy_owner=? WHERE scope=?")
             .bind(&owner)
@@ -380,6 +380,35 @@ mod tests {
             })
             .collect()
     }
+    #[tokio::test]
+    async fn admission_does_not_wait_for_a_second_pool_connection() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("executions.db");
+        let mut journal = ExecutionJournal::open(&path).await.unwrap();
+        journal.pool.close().await;
+        journal.pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+            .await
+            .unwrap();
+        let journal = Arc::new(journal);
+        let scope = ConversationScope::new(directory.path(), "fixture", "chat", "owner").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            journal
+                .acquire_conversation(&scope)
+                .await
+                .unwrap()
+                .commit(&messages(3))
+                .await
+                .unwrap();
+            let turn = journal.acquire_conversation(&scope).await.unwrap();
+            assert_eq!(turn.history().len(), 3);
+            turn.commit(&messages(4)).await.unwrap();
+        })
+        .await
+        .expect("history hydration must reuse its admission transaction's connection");
+    }
+
     #[tokio::test]
     async fn recovery_restores_crashed_intent_without_replaying_or_claiming_success() {
         use temm1e_core::types::message::ContentPart;
