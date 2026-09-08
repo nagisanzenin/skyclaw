@@ -266,6 +266,7 @@ mod tests {
         let manager = Arc::new(McpManager::new());
         let tool = McpManageTool::new(manager);
         let ctx = ToolContext {
+            channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),
@@ -285,6 +286,7 @@ mod tests {
         let manager = Arc::new(McpManager::new());
         let tool = McpManageTool::new(manager);
         let ctx = ToolContext {
+            channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),
@@ -304,6 +306,7 @@ mod tests {
         let manager = Arc::new(McpManager::new());
         let tool = McpManageTool::new(manager);
         let ctx = ToolContext {
+            channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),

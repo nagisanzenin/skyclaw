@@ -114,7 +114,7 @@ Channel.start() -> inbound message via mpsc::channel
 ## Code style conventions
 
 - **Edition**: Rust 2021
-- **Minimum Rust version**: 1.82
+- **Minimum Rust version**: 1.91.1
 - **Async traits**: Use `#[async_trait]` from the `async_trait` crate for all async trait definitions and implementations
 - **Error handling**: All fallible operations return `Result<T, Temm1eError>`. The `Temm1eError` enum is in `crates/temm1e-core/src/types/error.rs`. Use the appropriate variant (`Config`, `Provider`, `Channel`, `Memory`, `Tool`, `FileTransfer`, etc.)
 - **Logging**: Use the `tracing` crate (`tracing::info!`, `tracing::debug!`, `tracing::error!`, `tracing::warn!`). Include structured fields (e.g., `tracing::info!(id = %entry.id, "Stored entry")`)

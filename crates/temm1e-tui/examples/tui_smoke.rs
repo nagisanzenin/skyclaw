@@ -9,8 +9,8 @@
 //!   cargo run --example tui_smoke --features tui --release
 //!
 //! Expected stdout: registration logs for every feature wired into TUI.
-//! The harness exits after 5 s so async init (Hive, Perpetuum, etc.) has
-//! time to complete and emit its logs.
+//! The harness drives a prompt through the real bridge and checks its final
+//! response and shutdown. It does not exercise ratatui rendering or keyboard IO.
 
 use std::time::Duration;
 
@@ -41,18 +41,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load the same config TUI would use at launch.
     let config_dir = temm1e_core::config::data_dir();
     let config_path = config_dir.join("config.toml");
-    let config_str = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let config: Temm1eConfig = if config_str.is_empty() {
-        Temm1eConfig::default()
-    } else {
-        toml::from_str(&config_str).unwrap_or_default()
+    let config: Temm1eConfig = match std::fs::read_to_string(&config_path) {
+        Ok(text) => toml::from_str(&text)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Temm1eConfig::default(),
+        Err(error) => return Err(error.into()),
     };
 
     // Resolve credentials from saved creds (mirrors TUI onboarding's fallback).
     let (provider_name, api_key, model) = match credentials::load_saved_credentials() {
         Some(t) => t,
         None => {
-            eprintln!("[SMOKE FAIL] No saved credentials at ~/.temm1e/credentials.toml");
+            eprintln!("[SMOKE FAIL] No saved credentials in the selected profile");
             std::process::exit(2);
         }
     };
@@ -91,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[SMOKE] waiting 3s for async init logs to drain...");
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // ── EXHAUSTIVE TEST: drive a real user message through the agent ──
+    // ── Drive one real user message through the agent ──
     // Prompt: defaults to "what can you do in 1 sentence?" but accepts a
     // --prompt "..." CLI arg so the harness can be driven through a UX
     // study or a regression battery.
@@ -195,20 +194,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("[SMOKE] AGENT RESPONDED ({} chars):", response_text.len());
     println!("{response_text}");
-    if args.iter().any(|arg| arg == "--require-stream") && streamed_deltas == 0 {
-        eprintln!("[SMOKE FAIL] no actual text deltas reached the TUI event channel");
-        std::process::exit(6);
-    }
-    if let Some(expected) = args
-        .iter()
-        .position(|a| a == "--expect")
-        .and_then(|i| args.get(i + 1))
-    {
-        if !response_text.contains(expected) {
-            eprintln!("[SMOKE FAIL] final response did not contain the expected fixture value");
-            std::process::exit(7);
-        }
-    }
     let shutdown = handle.shutdown(Duration::from_secs(6)).await;
     if !shutdown.loop_joined {
         eprintln!("[SMOKE FAIL] bridge did not finish its processing loop");
@@ -232,6 +217,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     eprintln!("[SMOKE] processing_loop_joined={} background_drained={} (canceled hooks do not establish known usage/effects)", shutdown.loop_joined, shutdown.background_drained);
+    if args.iter().any(|arg| arg == "--require-stream") && streamed_deltas == 0 {
+        eprintln!("[SMOKE FAIL] no actual text deltas reached the TUI event channel");
+        std::process::exit(6);
+    }
+    if let Some(expected) = args
+        .iter()
+        .position(|a| a == "--expect-exact")
+        .and_then(|i| args.get(i + 1))
+    {
+        if response_text.trim() != expected {
+            eprintln!(
+                "[SMOKE FAIL] final response did not exactly match the expected fixture text"
+            );
+            std::process::exit(9);
+        }
+    }
+    if let Some(expected) = args
+        .iter()
+        .position(|a| a == "--expect")
+        .and_then(|i| args.get(i + 1))
+    {
+        if !response_text.contains(expected) {
+            eprintln!("[SMOKE FAIL] final response did not contain the expected fixture value");
+            std::process::exit(7);
+        }
+    }
     eprintln!("[SMOKE] DONE — final response received; streamed_deltas={streamed_deltas}");
     Ok(())
 }

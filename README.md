@@ -27,7 +27,7 @@ temm1e tui
 
 The first-run wizard walks you through connecting a model provider. You can also download a platform binary from [GitHub Releases](https://github.com/temm1e-labs/temm1e/releases).
 
-To build the checked-out source:
+To build the checked-out source, use Rust 1.91.1 or newer:
 
 ```bash
 git clone https://github.com/temm1e-labs/temm1e.git

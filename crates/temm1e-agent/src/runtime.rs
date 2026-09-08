@@ -1,7 +1,6 @@
 //! AgentRuntime — main agent loop that processes messages through the
 //! provider, executing tool calls in a loop until a final text reply.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -109,7 +108,6 @@ use crate::agent_task_status::{AgentTaskPhase, AgentTaskStatus};
 use crate::budget::{self, BudgetTracker, ModelPricing};
 use crate::circuit_breaker::CircuitBreaker;
 use crate::context::build_context;
-use crate::done_criteria;
 use crate::executor::execute_tool;
 use crate::learning;
 use crate::prompted_tool_calling::{self, PromptedToolResult};
@@ -223,7 +221,7 @@ pub fn derive_outcome_difficulty(tool_rounds: usize) -> &'static str {
 }
 
 /// Shared pending-message queue (same type as temm1e_tools::PendingMessages).
-pub type PendingMessages = Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>;
+pub type PendingMessages = temm1e_core::types::message::PendingMessages;
 
 /// The core agent runtime. Holds references to the AI provider, memory backend,
 /// and registered tools.
@@ -1321,11 +1319,14 @@ impl AgentRuntime {
                     // Phase C (GH-62): derive compound-task flag from the
                     // classifier's difficulty rather than keyword matching.
                     // Standard or Complex ⇒ compound; Simple ⇒ not compound.
-                    classifier_compound = Some(matches!(
-                        classification.difficulty,
-                        crate::llm_classifier::TaskDifficulty::Standard
-                            | crate::llm_classifier::TaskDifficulty::Complex
-                    ));
+                    classifier_compound = Some(
+                        classification.category == crate::llm_classifier::MessageCategory::Order
+                            && matches!(
+                                classification.difficulty,
+                                crate::llm_classifier::TaskDifficulty::Standard
+                                    | crate::llm_classifier::TaskDifficulty::Complex
+                            ),
+                    );
 
                     match classification.category {
                         crate::llm_classifier::MessageCategory::Chat => {
@@ -1456,24 +1457,11 @@ impl AgentRuntime {
             None
         };
 
-        // ── DONE Definition Engine ─────────────────────────────────
-        // Detect compound tasks and inject a DONE criteria prompt so
-        // the LLM articulates verifiable completion conditions.
-        // Phase C (GH-62): prefer the LLM classifier's difficulty signal
-        // (set above for both v2 LLM path and rule-based fallback).
-        // Fall back to the keyword heuristic only when the classifier is
-        // entirely disabled (v2_optimizations = false).
-        let is_compound = classifier_compound
-            .unwrap_or_else(|| done_criteria::is_compound_task_fallback(&user_text));
-
-        if is_compound {
-            info!("Compound task detected — injecting DONE criteria prompt");
-            let done_prompt = done_criteria::format_done_prompt(&user_text);
-            session.history.push(ChatMessage {
-                role: Role::System,
-                content: MessageContent::Text(done_prompt),
-            });
-        }
+        // Difficulty is a routing hint, not proof that the user asked for a
+        // visible plan. Planning guidance belongs in the stable system policy;
+        // never persist a duplicated user request as a new System message.
+        // Unknown classification must not activate keyword-based planning.
+        let is_compound = classifier_compound.unwrap_or(false);
 
         // ── Persistent Task Queue ──────────────────────────────────
         // Create a task entry if the queue is available.
@@ -1955,6 +1943,7 @@ impl AgentRuntime {
                 );
             }
 
+            crate::context::remove_legacy_done_directives(&mut request.messages, &session.history);
             let (context_window, output_limit) =
                 model_registry::model_limits_with_custom(self.provider.name(), &self.model);
             request.max_tokens =
@@ -3627,7 +3616,10 @@ impl AgentRuntime {
             // LLM sees them without any extra API call or tool invocation.
             if let Some(ref pq) = pending {
                 if let Ok(mut map) = pq.lock() {
-                    if let Some(msgs) = map.remove(&msg.chat_id) {
+                    if let Some(msgs) = map.remove(&temm1e_core::types::message::ChatRoute::new(
+                        &msg.channel,
+                        &msg.chat_id,
+                    )) {
                         if !msgs.is_empty() {
                             info!(
                                 count = msgs.len(),
@@ -3637,11 +3629,7 @@ impl AgentRuntime {
                             let notice = format!(
                                 "\n\n---\n[PENDING MESSAGES — the user sent new message(s) while you were working. \
                                  Acknowledge with send_message and decide: finish current task or stop and respond.]\n{}",
-                                msgs.iter()
-                                    .enumerate()
-                                    .map(|(i, t)| format!("  {}. \"{}\"", i + 1, t))
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
+                                temm1e_core::types::message::format_pending(&msgs)
                             );
                             // Append to last ToolResult (not .last_mut() which
                             // could be an Image from vision injection).

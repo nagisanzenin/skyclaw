@@ -46,6 +46,8 @@ pub struct ToolOutputImage {
 
 /// Context provided to tools during execution
 pub struct ToolContext {
+    /// Authenticated transport identity, carried from the active session.
+    pub channel: String,
     pub workspace_path: std::path::PathBuf,
     pub session_id: String,
     pub chat_id: String,

@@ -1,5 +1,22 @@
 use serde::{Deserialize, Serialize};
 
+/// In-process routing identity. Channel and chat are separate fields so IDs
+/// cannot collide across transports or through delimiter concatenation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ChatRoute {
+    pub channel: String,
+    pub chat_id: String,
+}
+
+impl ChatRoute {
+    pub fn new(channel: &str, chat_id: &str) -> Self {
+        Self {
+            channel: channel.into(),
+            chat_id: chat_id.into(),
+        }
+    }
+}
+
 /// Normalized inbound message from any channel
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundMessage {
@@ -12,6 +29,15 @@ pub struct InboundMessage {
     pub attachments: Vec<AttachmentRef>,
     pub reply_to: Option<String>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+/// Shared in-process amendment queue, scoped by transport and conversation.
+pub type PendingMessages =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<ChatRoute, Vec<InboundMessage>>>>;
+
+/// Encode original sender metadata and content without delimiter ambiguity.
+pub fn format_pending(messages: &[InboundMessage]) -> String {
+    serde_json::to_string(messages).expect("inbound messages have infallible serializers")
 }
 
 /// Reference to a file attachment (platform-specific ID for lazy download)
@@ -248,7 +274,7 @@ fn format_number(n: u32) -> String {
     let s = n.to_string();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
+        if i > 0 && i.is_multiple_of(3) {
             result.push(',');
         }
         result.push(c);

@@ -317,6 +317,7 @@ async fn recall_reads_original_unicode_pages_and_rejects_wrong_scope() {
         workspace: dir.path().into(),
     };
     let mut ctx = ToolContext {
+        channel: "cli".into(),
         workspace_path: dir.path().into(),
         session_id: "s".into(),
         chat_id: "c".into(),

@@ -11,6 +11,24 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  msrv:
+    name: Minimum Rust (1.91.1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.91.1
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxkbcommon-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev libegl1-mesa-dev libgbm-dev libdrm-dev libxdo-dev
+      - name: Check all shipped features with the declared minimum toolchain
+        run: cargo check --locked --workspace --all-targets --all-features
+
   # -----------------------------------------------
   # Job 1: Code quality (fmt + clippy)
   # -----------------------------------------------

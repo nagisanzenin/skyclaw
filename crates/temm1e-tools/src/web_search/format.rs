@@ -251,7 +251,7 @@ fn format_thousands(n: u32) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::new();
     for (i, c) in chars.iter().enumerate() {
-        if i > 0 && (chars.len() - i) % 3 == 0 {
+        if i > 0 && (chars.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*c);

@@ -74,3 +74,7 @@ This is storage wiring, not full server acceptance. Actual channel dispatch/rest
 ## Final-reply delivery follow-up
 
 The final-reply outbox is wired into CLI, TUI and server success paths. See `DELIVERY-IMPLEMENTATION.md` for transaction boundaries, explicit review/resume/acknowledgement commands, process-kill evidence, and coverage limits. Earlier checkpoint lists above describe their state at the time; server history pruning and successful-final outbox wiring have since been replaced. Full event/head integration, external platform receipts, server dispatch/restart, archive UI and total-profile retention remain open.
+
+## Retired generated planning instructions
+
+Old profiles can contain an automatically generated System message requiring a DONE WHEN preamble. Removing the old producer does not neutralize these saved directives. The provider view now removes that exact retired template only when its embedded request matches native User content in the raw transcript. Raw checkpoints and compaction sources remain intact. Custom or unmatched System text and User messages are not removed. This is a narrow migration of Tem-generated instructions, not a general instruction classifier or an invitation to rewrite the creator's conversation.

@@ -24,6 +24,7 @@ async fn main() {
     let tool = DesktopTool::new(0).expect("DesktopTool::new failed (no monitor / no display?)");
 
     let ctx = ToolContext {
+        channel: "cli".into(),
         workspace_path: std::env::temp_dir(),
         session_id: "async-selftest".to_string(),
         chat_id: "async-selftest".to_string(),

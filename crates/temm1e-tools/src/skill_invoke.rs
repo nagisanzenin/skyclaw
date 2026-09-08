@@ -186,6 +186,7 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
+            channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".into(),
             chat_id: "test".into(),

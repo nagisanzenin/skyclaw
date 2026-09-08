@@ -293,6 +293,7 @@ mod tests {
 
     fn make_ctx(workspace: &std::path::Path) -> ToolContext {
         ToolContext {
+            channel: "cli".into(),
             workspace_path: workspace.to_path_buf(),
             session_id: "test-session".into(),
             chat_id: "test-chat".into(),

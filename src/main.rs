@@ -2330,13 +2330,18 @@ async fn main() -> Result<()> {
             let setup_tokens = temm1e_gateway::SetupTokenStore::new();
 
             // ── Pending raw key pastes (from /addkey unsafe) ────
-            let pending_raw_keys: Arc<Mutex<HashSet<String>>> =
+            let pending_raw_keys: Arc<Mutex<HashSet<temm1e_core::types::message::ChatRoute>>> =
                 Arc::new(Mutex::new(HashSet::new()));
 
             // ── Active login sessions (OTK Prowl — per-chat interactive browser sessions) ────
             #[cfg(feature = "browser")]
             let login_sessions: Arc<
-                Mutex<HashMap<String, temm1e_tools::browser_session::InteractiveBrowseSession>>,
+                Mutex<
+                    HashMap<
+                        temm1e_core::types::message::ChatRoute,
+                        temm1e_tools::browser_session::InteractiveBrowseSession,
+                    >,
+                >,
             > = Arc::new(Mutex::new(HashMap::new()));
 
             // ── Usage store (shares same SQLite DB as memory) ────
@@ -2446,6 +2451,38 @@ async fn main() -> Result<()> {
                 vault.clone(),
                 Some(skill_registry.clone()),
             );
+            // A single shared agent can serve several transports. Bind tool
+            // sends to session.channel instead of the first configured channel.
+            let tool_channels: HashMap<String, Arc<dyn Channel>> = channel_map
+                .iter()
+                .map(|(name, channel)| {
+                    (
+                        name.clone(),
+                        Arc::new(SecretCensorChannel {
+                            inner: channel.clone(),
+                        }) as Arc<dyn Channel>,
+                    )
+                })
+                .collect();
+            if !tool_channels.is_empty() {
+                tools.retain(|tool| !matches!(tool.name(), "send_message" | "send_file"));
+                let heartbeat = primary_channel.clone().map(|channel| {
+                    Arc::new(SecretCensorChannel { inner: channel }) as Arc<dyn Channel>
+                });
+                tools.push(Arc::new(temm1e_tools::SendMessageTool::routed(
+                    tool_channels.clone(),
+                    heartbeat.clone(),
+                )));
+                if tool_channels
+                    .values()
+                    .any(|channel| channel.file_transfer().is_some())
+                {
+                    tools.push(Arc::new(temm1e_tools::SendFileTool::routed(
+                        tool_channels,
+                        heartbeat,
+                    )));
+                }
+            }
             tracing::info!(count = tools.len(), "Tools initialized");
 
             // ── Custom script tools (user/agent-authored) ──────
@@ -3164,8 +3201,9 @@ async fn main() -> Result<()> {
                 let usage_store_clone = usage_store.clone();
                 let hive_clone = hive_instance.clone();
 
-                let chat_slots: Arc<Mutex<HashMap<String, ChatSlot>>> =
-                    Arc::new(Mutex::new(HashMap::new()));
+                let chat_slots: Arc<
+                    Mutex<HashMap<temm1e_core::types::message::ChatRoute, ChatSlot>>,
+                > = Arc::new(Mutex::new(HashMap::new()));
 
                 let msg_tx_redispatch = msg_tx.clone();
                 let dispatcher_shutdown = shutdown_token.clone();
@@ -3178,6 +3216,14 @@ async fn main() -> Result<()> {
                     } {
                         let chat_id = inbound.chat_id.clone();
                         let is_heartbeat_msg = inbound.channel == "heartbeat";
+                        // Heartbeats share the configured destination transport's slot
+                        // so a real user can preempt them. Other transports stay distinct.
+                        let route_channel = if is_heartbeat_msg {
+                            primary_fallback.as_ref().map(|channel| channel.name()).unwrap_or("heartbeat")
+                        } else {
+                            inbound.channel.as_str()
+                        };
+                        let route = temm1e_core::types::message::ChatRoute::new(route_channel, &chat_id);
 
                         // Normalize a leading slash-command: strip a Telegram-style
                         // "@botname" suffix (e.g. "/help@MyBot" -> "/help") so command
@@ -3203,7 +3249,7 @@ async fn main() -> Result<()> {
 
                         // Handle user messages while a task is active
                         if !is_heartbeat_msg {
-                            if let Some(slot) = slots.get(&chat_id) {
+                            if let Some(slot) = slots.get(&route) {
                                 if slot.is_heartbeat.load(Ordering::Relaxed) {
                                     tracing::info!(
                                         chat_id = %chat_id,
@@ -3358,6 +3404,7 @@ async fn main() -> Result<()> {
                                         .or_else(|| primary_fallback.clone())
                                         .expect("channel_map non-empty");
                                     let icpt_chat_id = chat_id.clone();
+                                    let icpt_route = route.clone();
                                     let icpt_msg_id = inbound.id.clone();
                                     let icpt_msg_text = inbound.text.clone().unwrap_or_default();
                                     let icpt_inbound = inbound.clone();
@@ -3505,9 +3552,9 @@ async fn main() -> Result<()> {
                                                     }
                                                     "amend" => {
                                                         if let Ok(mut pq) = icpt_pending.lock() {
-                                                            pq.entry(icpt_chat_id.clone())
+                                                            pq.entry(icpt_route.clone())
                                                                 .or_default()
-                                                                .push(icpt_msg_text);
+                                                                .push(icpt_inbound);
                                                         }
                                                         tracing::info!(
                                                             chat_id = %icpt_chat_id,
@@ -3526,9 +3573,9 @@ async fn main() -> Result<()> {
                                                 );
                                                 // Conservative: treat as amendment
                                                 if let Ok(mut pq) = icpt_pending.lock() {
-                                                    pq.entry(icpt_chat_id.clone())
+                                                    pq.entry(icpt_route.clone())
                                                         .or_default()
-                                                        .push(icpt_msg_text);
+                                                        .push(icpt_inbound);
                                                 }
                                                 // Send hardcoded ack
                                                 let ack = temm1e_core::types::message::OutboundMessage {
@@ -3548,7 +3595,7 @@ async fn main() -> Result<()> {
 
                         // Skip heartbeat if chat is busy
                         if is_heartbeat_msg {
-                            if let Some(slot) = slots.get(&chat_id) {
+                            if let Some(slot) = slots.get(&route) {
                                 if slot.tx.try_send(inbound).is_err() {
                                     tracing::debug!(
                                         chat_id = %chat_id,
@@ -3566,7 +3613,7 @@ async fn main() -> Result<()> {
                         let social_storage_for_worker = social_storage.clone();
                         let social_config_for_worker = social_config_captured.clone();
                         let witness_attachments_for_worker = witness_attachments.clone();
-                        let slot = slots.entry(chat_id.clone()).or_insert_with(|| {
+                        let slot = slots.entry(route.clone()).or_insert_with(|| {
                             let (chat_tx, mut chat_rx) =
                                 tokio::sync::mpsc::channel::<temm1e_core::types::message::InboundMessage>(32);
 
@@ -3629,6 +3676,7 @@ async fn main() -> Result<()> {
                             let usage_store_worker = usage_store_clone.clone();
                             let hive_worker = hive_clone.clone();
                             let worker_chat_id = chat_id.clone();
+                            let worker_route = route.clone();
 
                             let conversations = conversations.clone();
                             let worker_handle = tokio::spawn(async move {
@@ -3803,7 +3851,7 @@ async fn main() -> Result<()> {
 
                                     // /addkey github — GitHub PAT for vigil
                                     if cmd_lower == "/addkey github" {
-                                        pending_raw_keys_worker.lock().await.insert(msg.chat_id.clone());
+                                        pending_raw_keys_worker.lock().await.insert(worker_route.clone());
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
                                             text: "Paste your GitHub Personal Access Token.\n\n\
@@ -3821,7 +3869,7 @@ async fn main() -> Result<()> {
 
                                     // /addkey unsafe — raw key paste mode
                                     if cmd_lower == "/addkey unsafe" {
-                                        pending_raw_keys_worker.lock().await.insert(msg.chat_id.clone());
+                                        pending_raw_keys_worker.lock().await.insert(worker_route.clone());
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
                                             text: "Paste your API key in the next message.\n\n\
@@ -4784,7 +4832,7 @@ Just type a message to chat with the AI agent.",
 
                                                         // Store session for this chat
                                                         login_sessions_worker.lock().await.insert(
-                                                            msg.chat_id.clone(), session
+                                                            worker_route.clone(), session
                                                         );
                                                     }
                                                     Err(e) => {
@@ -4818,11 +4866,11 @@ Just type a message to chat with the AI agent.",
                                     // instead of the agent
                                     #[cfg(feature = "browser")]
                                     {
-                                        let has_session = login_sessions_worker.lock().await.contains_key(&msg.chat_id);
+                                        let has_session = login_sessions_worker.lock().await.contains_key(&worker_route);
                                         if has_session {
                                             let input = msg_text_cmd.trim();
                                             let mut sessions = login_sessions_worker.lock().await;
-                                            if let Some(session) = sessions.get_mut(&msg.chat_id) {
+                                            if let Some(session) = sessions.get_mut(&worker_route) {
                                                 match session.handle_input(input).await {
                                                     Ok(temm1e_tools::browser_session::SessionAction::Continue) => {
                                                         // Re-capture and send updated page
@@ -4853,7 +4901,7 @@ Just type a message to chat with the AI agent.",
                                                             match session.capture_session(v.as_ref()).await {
                                                                 Ok(()) => {
                                                                     let svc = session.service().to_string();
-                                                                    sessions.remove(&msg.chat_id);
+                                                                    sessions.remove(&worker_route);
                                                                     let reply = temm1e_core::types::message::OutboundMessage {
                                                                         chat_id: msg.chat_id.clone(),
                                                                         text: format!("🔒 Session for '{}' saved securely! I can now browse {} for you.", svc, svc),
@@ -4873,7 +4921,7 @@ Just type a message to chat with the AI agent.",
                                                                 }
                                                             }
                                                         } else {
-                                                            sessions.remove(&msg.chat_id);
+                                                            sessions.remove(&worker_route);
                                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                                 chat_id: msg.chat_id.clone(),
                                                                 text: "Login complete but vault not available — session not saved.".to_string(),
@@ -5170,7 +5218,7 @@ Just type a message to chat with the AI agent.",
                                                             }
                                                         }
                                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                                        if let Ok(mut pq) = pending_for_worker.lock() { pq.remove(&worker_chat_id); }
+                                                        if let Ok(mut pq) = pending_for_worker.lock() { pq.remove(&worker_route); }
                                                         return;
                                                     }
                                                     // Honor user-specified `model:` from proxy command;
@@ -5257,13 +5305,13 @@ Just type a message to chat with the AI agent.",
                                         }
                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
                                         if let Ok(mut pq) = pending_for_worker.lock() {
-                                            pq.remove(&worker_chat_id);
+                                            pq.remove(&worker_route);
                                         }
                                         return;
                                     }
 
                                     // Pending raw key paste (from /addkey unsafe)
-                                    if pending_raw_keys_worker.lock().await.remove(&msg.chat_id) {
+                                    if pending_raw_keys_worker.lock().await.remove(&worker_route) {
                                         // Treat the message as a raw API key — falls through
                                         // to the normal detect_api_key path below
                                     }
@@ -5313,7 +5361,7 @@ Just type a message to chat with the AI agent.",
                                                     }
                                                 }
                                                 is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                                if let Ok(mut pq) = pending_for_worker.lock() { pq.remove(&worker_chat_id); }
+                                                if let Ok(mut pq) = pending_for_worker.lock() { pq.remove(&worker_route); }
                                                 return;
                                             }
                                             // Honor user-specified `model:` from proxy command;
@@ -5408,7 +5456,7 @@ Just type a message to chat with the AI agent.",
                                             is_heartbeat_clone.store(false, Ordering::Relaxed);
                                             interrupt_clone.store(false, Ordering::Relaxed);
                                             if let Ok(mut pq) = pending_for_worker.lock() {
-                                                pq.remove(&worker_chat_id);
+                                                pq.remove(&worker_route);
                                             }
                                             return;
                                         }
@@ -6066,26 +6114,15 @@ Just type a message to chat with the AI agent.",
                                     // Re-queue any unconsumed pending messages as
                                     // standalone requests, then clear active state.
                                     if let Ok(mut pq) = pending_for_worker.lock() {
-                                        if let Some(pending_msgs) = pq.remove(&worker_chat_id) {
+                                        if let Some(pending_msgs) = pq.remove(&worker_route) {
                                             if !pending_msgs.is_empty() {
                                                 tracing::info!(
                                                     count = pending_msgs.len(),
                                                     chat_id = %worker_chat_id,
                                                     "Re-queuing unconsumed pending messages"
                                                 );
-                                                for text in pending_msgs {
-                                                    let synthetic = temm1e_core::types::message::InboundMessage {
-                                                        id: uuid::Uuid::new_v4().to_string(),
-                                                        channel: msg.channel.clone(),
-                                                        chat_id: worker_chat_id.clone(),
-                                                        user_id: msg.user_id.clone(),
-                                                        username: None,
-                                                        text: Some(text),
-                                                        timestamp: chrono::Utc::now(),
-                                                        reply_to: None,
-                                                        attachments: vec![],
-                                                    };
-                                                    if self_tx.try_send(synthetic).is_err() {
+                                                for original in pending_msgs {
+                                                    if self_tx.try_send(original).is_err() {
                                                         tracing::warn!(
                                                             chat_id = %worker_chat_id,
                                                             "Failed to re-queue pending message — channel full"
@@ -6154,7 +6191,7 @@ Just type a message to chat with the AI agent.",
                                         is_busy_clone.store(false, Ordering::Relaxed);
                                         interrupt_clone.store(false, Ordering::Relaxed);
                                         if let Ok(mut pq) = pending_for_worker.lock() {
-                                            pq.remove(&worker_chat_id);
+                                            pq.remove(&worker_route);
                                         }
                                     }
                                 }
@@ -6182,7 +6219,7 @@ Just type a message to chat with the AI agent.",
                                     "Chat worker dead — removing slot and re-dispatching"
                                 );
                                 let mut slots = chat_slots.lock().await;
-                                slots.remove(&chat_id);
+                                slots.remove(&route);
                                 drop(slots); // release lock before re-dispatch
                                 // Re-send through the unified channel so the
                                 // dispatcher loop creates a fresh worker for

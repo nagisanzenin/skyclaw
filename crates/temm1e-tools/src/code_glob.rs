@@ -384,6 +384,7 @@ mod tests {
 
         let tool = CodeGlobTool::new();
         let ctx = ToolContext {
+            channel: "cli".into(),
             workspace_path: base.to_path_buf(),
             session_id: "test".into(),
             chat_id: "test".into(),
@@ -431,6 +432,7 @@ mod tests {
 
         let tool = CodeGlobTool::new();
         let ctx = ToolContext {
+            channel: "cli".into(),
             workspace_path: base.to_path_buf(),
             session_id: "test".into(),
             chat_id: "test".into(),
@@ -467,6 +469,7 @@ mod tests {
 
         let tool = CodeGlobTool::new();
         let ctx = ToolContext {
+            channel: "cli".into(),
             workspace_path: base.to_path_buf(),
             session_id: "test".into(),
             chat_id: "test".into(),

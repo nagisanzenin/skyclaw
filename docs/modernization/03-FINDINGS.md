@@ -191,3 +191,9 @@ Anthropic already marks the stable base prompt cacheable; Tem is not starting fr
 ## F36 — Vigil UTF-8 truncation can panic before checking a boundary
 
 **P1 · Reproduced caught panic · P07/P13.** `perpetuum/src/bug_reporter.rs::format_issue_body` slices `body[..MAX_ISSUE_BODY]` before using char_indices to seek a safe boundary. If byte60000 falls inside a multibyte character, the slice panics first. Compute boundary on the unsliced string (or decrement until is_char_boundary), then slice. Fixture: long Unicode error/triage positioned across byte60000, report stays valid UTF-8 and within limit. Keep redaction/approval evidence tests separate; no actual external report was submitted during audit.
+
+## Transport identity follow-up (September 2026)
+
+The server's worker slots and pending amendments were keyed only by chat ID. Cross-platform ID collisions could share active state; pending messages were reduced to text and later reconstructed with a random ID and the preceding request's author. In addition, shared outbound tools were bound to the primary channel. The modernization follow-up carries structural transport/chat keys, original inbound records and session channel into tools, and resolves outgoing tools from that authenticated transport. Direct fixture coverage is recorded in `IMPLEMENTATION-STATUS.md`. Durable amendment admission, full fake-server dispatch/restart and per-user authorization of mid-turn steering remain separate requirements.
+
+The DONE preamble was also observed during a live recall request. Runtime promotion of duplicated user text into System history has been removed; proportional stable planning guidance replaces mandatory checklist formatting. A prompt or a classifier difficulty is not an independent completion proof. F03's original empty-object observation is historical; the remaining architectural requirement is typed goal evidence, not reinstating the unused object.

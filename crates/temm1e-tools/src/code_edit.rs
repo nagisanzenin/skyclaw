@@ -203,6 +203,7 @@ mod tests {
 
     fn test_ctx(workspace: PathBuf) -> ToolContext {
         ToolContext {
+            channel: "cli".into(),
             workspace_path: workspace,
             session_id: "test-session".into(),
             chat_id: "test-chat".into(),
@@ -219,6 +220,7 @@ mod tests {
         let tracker =
             std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
         let ctx = ToolContext {
+            channel: "cli".into(),
             workspace_path: workspace,
             session_id: "test-session".into(),
             chat_id: "test-chat".into(),

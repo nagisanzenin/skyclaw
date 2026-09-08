@@ -6,7 +6,7 @@ This guide walks through setting up a development environment for TEMM1E, buildi
 
 | Requirement | Version | Purpose |
 |-------------|---------|---------|
-| Rust | 1.82+ | Language toolchain |
+| Rust | 1.91.1+ | Language toolchain |
 | Cargo | (bundled with Rust) | Build system and package manager |
 | Git | 2.x+ | Version control |
 | Docker | 24.x+ | Container builds (optional) |
@@ -20,7 +20,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 
 # Verify
-rustc --version   # Should be 1.82+
+rustc --version   # Should be 1.91.1+
 cargo --version
 ```
 

@@ -229,7 +229,10 @@ impl Cortex {
 
         // 5. Schedule review (every N checks)
         let check_count = self.store.monitor_check_count(&concern.id).await?;
-        if self.review_every_n > 0 && check_count % self.review_every_n == 0 && check_count > 0 {
+        if self.review_every_n > 0
+            && check_count.is_multiple_of(self.review_every_n)
+            && check_count > 0
+        {
             self.run_schedule_review(concern, user_intent).await?;
         }
 

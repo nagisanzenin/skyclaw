@@ -548,6 +548,7 @@ mod tests {
 
     fn make_ctx(workspace: PathBuf) -> ToolContext {
         ToolContext {
+            channel: "cli".into(),
             workspace_path: workspace,
             session_id: "test-session".to_string(),
             chat_id: "test-chat".to_string(),

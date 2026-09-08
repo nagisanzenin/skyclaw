@@ -374,6 +374,7 @@ pub async fn execute_tool(
     validate_arguments(tool_name, &arguments, session)?;
 
     let ctx = ToolContext {
+        channel: session.channel.clone(),
         workspace_path: session.workspace_path.clone(),
         session_id: session.session_id.clone(),
         chat_id: session.chat_id.clone(),

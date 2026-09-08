@@ -9,7 +9,7 @@
 ## Workspace Overview
 
 TEMM1E v4.6.1 is a Cargo workspace with 22 crates plus a root binary.
-Edition: Rust 2021. Minimum Rust version: 1.82.
+Edition: Rust 2021. Minimum Rust version: 1.91.1.
 
 ---
 

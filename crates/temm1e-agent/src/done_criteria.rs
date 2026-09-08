@@ -58,18 +58,10 @@ impl Default for DoneCriteria {
     }
 }
 
-/// Heuristic detection of compound (multi-step) tasks — FALLBACK ONLY.
-///
-/// PREFERRED: derive compound-ness from the LLM classifier's `difficulty`
-/// field (`Standard` or `Complex` ⇒ compound). This keyword-based version
-/// is retained only for the path where the v2 classifier is disabled or
-/// unavailable. It violates the "no keyword matching for semantic
-/// decisions" rule (`feedback_no_keyword_matching.md`) — kept as a graceful
-/// fallback rather than a default.
-///
-/// Returns `true` if the user's message appears to request multiple distinct
-/// actions — e.g. contains "and" joining action verbs, numbered lists, or
-/// multiple imperative sentences.
+/// Legacy heuristic retained for source compatibility. Runtime does not use
+/// it to classify requests or inject planning instructions. It is not reliable
+/// semantic evidence: conjunctions, list syntax and difficulty are not proof
+/// that a user requested a visible plan or multiple independent actions.
 pub fn is_compound_task_fallback(text: &str) -> bool {
     let trimmed = text.trim();
 

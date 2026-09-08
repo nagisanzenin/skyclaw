@@ -777,6 +777,7 @@ mod tests {
         assert_eq!(tools.len(), 1);
 
         let ctx = ToolContext {
+            channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),
@@ -801,6 +802,7 @@ mod tests {
 
         let tool = SelfCreateTool::new(registry.clone());
         let ctx = ToolContext {
+            channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),
