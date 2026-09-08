@@ -46,3 +46,7 @@ Use isolated profiles and fake channels/provider fixtures, plus a live CLI/TUI c
 ## Admission checkpoint now implemented
 
 The execution journal now has a transactional inbound-claim table and an index for prior execution lookup. One caller can admit a message in a scope; duplicates are rejected before foreground provider/tool work. The migration checks old execution evidence rather than assuming a new claim table means a message is new. The reconciliation lookup returns all matching legacy records. Leases, takeover, event-backed entrypoint history, import commands and outbox delivery remain unfinished; do not treat this checkpoint as the entire recovery contract.
+
+## Execution checkpoint payloads now deduplicated
+
+New execution checkpoints use ordered references to immutable scoped message payloads. Readers reconstruct native messages and verify their hashes; legacy inline checkpoints still load. The same payload may appear repeatedly in one history without losing those repetitions. A transaction commits references together with the execution boundary. This implements the checkpoint storage portion of the contract, but entrypoint conversation selection and an append-only epoch event stream are still outstanding. Existing legacy rows are not rewritten or vacuumed automatically.

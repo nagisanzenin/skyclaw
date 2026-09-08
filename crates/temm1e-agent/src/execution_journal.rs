@@ -1,7 +1,9 @@
 //! Durable execution evidence. A returned reply is not proof that a goal was
 //! achieved. Unfinished operation rows require reconciliation, never blind replay.
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use std::collections::HashMap;
 use std::{path::Path, str::FromStr, time::Duration};
 use temm1e_core::types::{
     error::Temm1eError,
@@ -31,6 +33,15 @@ struct StoredHandoff {
     high_water: usize,
     source_ids: Vec<String>,
     summary: crate::compaction::Summary,
+}
+
+const MAX_HISTORY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_HISTORY_MESSAGES: usize = 100_000;
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredHistory {
+    version: u32,
+    message_ids: Vec<String>,
 }
 
 fn error(e: impl std::fmt::Display) -> Temm1eError {
@@ -90,6 +101,9 @@ impl ExecutionJournal {
             tool TEXT NOT NULL, arguments TEXT NOT NULL, state TEXT NOT NULL,
             output TEXT, is_error INTEGER, updated_at TEXT NOT NULL,
             PRIMARY KEY (execution_id, operation_id));
+            CREATE TABLE IF NOT EXISTS execution_history_payloads (
+                scope TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL,
+                PRIMARY KEY(scope,id));
             CREATE TABLE IF NOT EXISTS context_heads (
                 scope TEXT PRIMARY KEY, generation INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS context_handoffs (
@@ -115,6 +129,101 @@ impl ExecutionJournal {
             workspace,
         ))
         .map_err(error)
+    }
+
+    async fn store_history(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        scope: &str,
+        history: &[ChatMessage],
+    ) -> Result<String, Temm1eError> {
+        if history.len() > MAX_HISTORY_MESSAGES {
+            return Err(error(
+                "history exceeds 100000 messages; prior evidence is preserved",
+            ));
+        }
+        let raw = serde_json::to_vec(history).map_err(error)?;
+        if raw.len() > MAX_HISTORY_BYTES {
+            return Err(error("history exceeds 32 MiB; prior evidence is preserved"));
+        }
+        let mut payloads = HashMap::new();
+        let mut message_ids = Vec::with_capacity(history.len());
+        for message in history {
+            let payload = serde_json::to_string(message).map_err(error)?;
+            let id = hex::encode(Sha256::digest(payload.as_bytes()));
+            message_ids.push(id.clone());
+            payloads.insert(id, payload);
+        }
+        let rows: Vec<_> = payloads
+            .into_iter()
+            .map(|(id, payload)| serde_json::json!({"id":id,"payload":payload}))
+            .collect();
+        sqlx::query("INSERT OR IGNORE INTO execution_history_payloads(scope,id,payload) SELECT ?,json_extract(value,'$.id'),json_extract(value,'$.payload') FROM json_each(?)")
+            .bind(scope).bind(serde_json::to_string(&rows).map_err(error)?).execute(&mut **tx).await.map_err(error)?;
+        serde_json::to_string(&StoredHistory {
+            version: 1,
+            message_ids,
+        })
+        .map_err(error)
+    }
+
+    async fn hydrate_records(
+        &self,
+        scope: &str,
+        mut records: Vec<ExecutionRecord>,
+    ) -> Result<Vec<ExecutionRecord>, Temm1eError> {
+        let mut total_bytes = 0usize;
+        for record in &mut records {
+            if record.checkpoint.len() > MAX_HISTORY_BYTES {
+                return Err(error("oversized history checkpoint"));
+            }
+            if record.checkpoint.trim_start().starts_with('[') {
+                // Older inline checkpoints remain readable and are not rewritten.
+                let _: Vec<ChatMessage> =
+                    serde_json::from_str(&record.checkpoint).map_err(error)?;
+            } else {
+                let stored: StoredHistory =
+                    serde_json::from_str(&record.checkpoint).map_err(error)?;
+                if stored.message_ids.len() > MAX_HISTORY_MESSAGES {
+                    return Err(error("history manifest exceeds message limit"));
+                }
+                if stored.version != 1 {
+                    return Err(error("unsupported history checkpoint version"));
+                }
+                let rows: Vec<(String, String)> = sqlx::query_as("SELECT id,payload FROM execution_history_payloads WHERE scope=? AND id IN (SELECT value FROM json_each(?))")
+                    .bind(scope).bind(serde_json::to_string(&stored.message_ids).map_err(error)?).fetch_all(&self.pool).await.map_err(error)?;
+                let mut messages = HashMap::new();
+                for (id, payload) in rows {
+                    if hex::encode(Sha256::digest(payload.as_bytes())) != id {
+                        return Err(error("history payload integrity check failed"));
+                    }
+                    messages.insert(id, payload);
+                }
+                let mut raw = String::from("[");
+                for id in stored.message_ids {
+                    let payload = messages
+                        .get(&id)
+                        .ok_or_else(|| error("missing scoped history payload"))?;
+                    if raw.len() > 1 {
+                        raw.push(',');
+                    }
+                    if raw.len().saturating_add(payload.len()).saturating_add(1) > MAX_HISTORY_BYTES
+                    {
+                        return Err(error("hydrated history exceeds 32 MiB"));
+                    }
+                    raw.push_str(payload);
+                }
+                raw.push(']');
+                let _: Vec<ChatMessage> = serde_json::from_str(&raw).map_err(error)?;
+                record.checkpoint = raw;
+            }
+            total_bytes = total_bytes.saturating_add(record.checkpoint.len());
+            if total_bytes > MAX_HISTORY_BYTES {
+                return Err(error(
+                    "recovery results exceed 32 MiB; request a specific inbound message",
+                ));
+            }
+        }
+        Ok(records)
     }
 
     pub async fn begin(
@@ -149,9 +258,10 @@ impl ExecutionJournal {
                 "inbound message has prior execution {prior}; reconciliation is required"
             )));
         }
+        let checkpoint = Self::store_history(&mut transaction, &scope, &session.history).await?;
         sqlx::query("INSERT INTO executions (id,scope,inbound_id,goal,state,checkpoint,created_at,updated_at) VALUES (?,?,?,?,'running',?,?,?)")
             .bind(&id).bind(scope).bind(&msg.id).bind(msg.text.as_deref().unwrap_or(""))
-            .bind(serde_json::to_string(&session.history).map_err(error)?).bind(&now).bind(&now)
+            .bind(checkpoint).bind(&now).bind(&now)
             .execute(&mut *transaction).await.map_err(error)?;
         transaction.commit().await.map_err(error)?;
         Ok(id)
@@ -163,8 +273,10 @@ impl ExecutionJournal {
         session: &SessionContext,
         inbound_id: &str,
     ) -> Result<Vec<ExecutionRecord>, Temm1eError> {
-        sqlx::query_as("SELECT id,inbound_id,goal,state,checkpoint,updated_at FROM executions WHERE scope=? AND inbound_id=? ORDER BY created_at,id")
-            .bind(Self::scope(session)?).bind(inbound_id).fetch_all(&self.pool).await.map_err(error)
+        let scope = Self::scope(session)?;
+        let records = sqlx::query_as("SELECT id,inbound_id,goal,state,checkpoint,updated_at FROM executions WHERE scope=? AND inbound_id=? ORDER BY created_at,id")
+            .bind(&scope).bind(inbound_id).fetch_all(&self.pool).await.map_err(error)?;
+        self.hydrate_records(&scope, records).await
     }
 
     /// Commit intent and the corresponding history in the same transaction,
@@ -179,13 +291,20 @@ impl ExecutionJournal {
     ) -> Result<(), Temm1eError> {
         let now = chrono::Utc::now().to_rfc3339();
         let mut tx = self.pool.begin().await.map_err(error)?;
+        let scope: String =
+            sqlx::query_scalar("SELECT scope FROM executions WHERE id=? AND state='running'")
+                .bind(execution)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(error)?;
+        let checkpoint = Self::store_history(&mut tx, &scope, history).await?;
         sqlx::query("INSERT INTO execution_operations (execution_id,operation_id,tool,arguments,state,updated_at) VALUES (?,?,?,?,'outcome_unknown',?)")
             .bind(execution).bind(operation).bind(tool).bind(arguments.to_string()).bind(&now)
             .execute(&mut *tx).await.map_err(error)?;
         let updated = sqlx::query(
             "UPDATE executions SET checkpoint=?, updated_at=? WHERE id=? AND state='running'",
         )
-        .bind(serde_json::to_string(history).map_err(error)?)
+        .bind(checkpoint)
         .bind(&now)
         .bind(execution)
         .execute(&mut *tx)
@@ -239,15 +358,23 @@ impl ExecutionJournal {
         if !["reply_returned", "interrupted", "failed"].contains(&state) {
             return Err(error("invalid execution state"));
         }
+        let mut tx = self.pool.begin().await.map_err(error)?;
+        let scope: String =
+            sqlx::query_scalar("SELECT scope FROM executions WHERE id=? AND state='running'")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(error)?;
+        let checkpoint = Self::store_history(&mut tx, &scope, history).await?;
         let updated = sqlx::query(
             "UPDATE executions SET state=?, checkpoint=?, reply=?, updated_at=? WHERE id=? AND state='running'",
         )
         .bind(state)
-        .bind(serde_json::to_string(history).map_err(error)?)
+        .bind(checkpoint)
         .bind(reply)
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(error)?;
         if updated.rows_affected() != 1 {
@@ -255,6 +382,7 @@ impl ExecutionJournal {
                 "execution missing or already terminal; transition rejected",
             ));
         }
+        tx.commit().await.map_err(error)?;
         Ok(())
     }
 
@@ -378,8 +506,10 @@ impl ExecutionJournal {
         &self,
         session: &SessionContext,
     ) -> Result<Vec<ExecutionRecord>, Temm1eError> {
-        sqlx::query_as("SELECT id,inbound_id,goal,state,checkpoint,updated_at FROM executions WHERE scope=? AND state IN ('running','interrupted','failed') ORDER BY updated_at DESC LIMIT 100")
-            .bind(Self::scope(session)?).fetch_all(&self.pool).await.map_err(error)
+        let scope = Self::scope(session)?;
+        let records = sqlx::query_as("SELECT id,inbound_id,goal,state,checkpoint,updated_at FROM executions WHERE scope=? AND state IN ('running','interrupted','failed') ORDER BY updated_at DESC LIMIT 100")
+            .bind(&scope).fetch_all(&self.pool).await.map_err(error)?;
+        self.hydrate_records(&scope, records).await
     }
 }
 
@@ -387,6 +517,100 @@ impl ExecutionJournal {
 mod tests {
     use super::*;
     use temm1e_test_utils::{make_inbound_msg, make_session};
+
+    #[tokio::test]
+    async fn oversized_history_rolls_back_admission_without_discarding_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = ExecutionJournal::open(&directory.path().join("executions.db"))
+            .await
+            .unwrap();
+        let mut session = make_session();
+        session.workspace_path = directory.path().to_owned();
+        let message = make_inbound_msg("continue");
+        session.history = vec![
+            ChatMessage {
+                role: temm1e_core::types::message::Role::User,
+                content: temm1e_core::types::message::MessageContent::Text(String::new())
+            };
+            MAX_HISTORY_MESSAGES + 1
+        ];
+        assert!(journal.begin(&message, &session).await.is_err());
+        assert_eq!(session.history.len(), MAX_HISTORY_MESSAGES + 1);
+        assert!(journal
+            .for_inbound(&session, &message.id)
+            .await
+            .unwrap()
+            .is_empty());
+        session.history.clear();
+        assert!(journal.begin(&message, &session).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn checkpoints_deduplicate_payloads_preserve_order_and_detect_corruption() {
+        use temm1e_core::types::message::{MessageContent, Role};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("executions.db");
+        let journal = ExecutionJournal::open(&path).await.unwrap();
+        let mut session = make_session();
+        session.workspace_path = directory.path().to_owned();
+        let message = ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text("original instruction".repeat(1000)),
+        };
+        session.history = vec![message.clone(), message.clone()];
+        let mut inputs = Vec::new();
+        for _ in 0..3 {
+            let input = make_inbound_msg("continue");
+            let id = journal.begin(&input, &session).await.unwrap();
+            journal
+                .intent(&id, "op", "read", &serde_json::json!({}), &session.history)
+                .await
+                .unwrap();
+            journal
+                .finish(&id, "reply_returned", &session.history, Some("returned"))
+                .await
+                .unwrap();
+            inputs.push(input);
+        }
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_history_payloads")
+            .fetch_one(&journal.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+        let stored: String = sqlx::query_scalar("SELECT checkpoint FROM executions LIMIT 1")
+            .fetch_one(&journal.pool)
+            .await
+            .unwrap();
+        assert!(!stored.contains("original instruction"));
+        journal.pool.close().await;
+        let journal = ExecutionJournal::open(&path).await.unwrap();
+        let records = journal.for_inbound(&session, &inputs[0].id).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&records[0].checkpoint).unwrap(),
+            serde_json::to_value(&session.history).unwrap()
+        );
+        // Read old inline checkpoints without rewriting them.
+        sqlx::query("UPDATE executions SET checkpoint=? WHERE inbound_id=?")
+            .bind(serde_json::to_string(&session.history).unwrap())
+            .bind(&inputs[0].id)
+            .execute(&journal.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            journal.for_inbound(&session, &inputs[0].id).await.unwrap()[0].checkpoint,
+            serde_json::to_string(&session.history).unwrap()
+        );
+        sqlx::query("UPDATE execution_history_payloads SET payload='{}'")
+            .execute(&journal.pool)
+            .await
+            .unwrap();
+        assert!(journal
+            .for_inbound(&session, &inputs[1].id)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("integrity"));
+    }
 
     #[tokio::test]
     async fn concurrent_and_restarted_admissions_do_not_replay_an_inbound_message() {
