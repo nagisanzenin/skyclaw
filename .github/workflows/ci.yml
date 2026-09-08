@@ -130,6 +130,10 @@ jobs:
             --features telegram,discord,browser,mcp,codex-oauth,tui \
             -- -D warnings
 
+      - name: Record cancellation phase timings
+        shell: bash
+        run: cargo test -p temm1e-agent --test cancellation -- --nocapture
+
       - name: Run tests (default features, skip desktop-control)
         shell: bash
         run: |
