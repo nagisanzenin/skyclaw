@@ -2902,7 +2902,7 @@ impl AgentRuntime {
                         let prompt =
                             crate::blueprint::build_authoring_prompt(&session.history, &exec_meta);
                         let memory = Arc::clone(&self.memory);
-                        let provider = Arc::clone(&self.provider);
+                        let provider = self.auxiliary_provider();
                         let model = self.model.clone();
                         let user_id = msg.user_id.clone();
                         let session_id = session.session_id.clone();
@@ -2954,7 +2954,7 @@ impl AgentRuntime {
                             let prompt =
                                 crate::blueprint::build_refinement_prompt(loaded_bp, &exec_meta);
                             let memory = Arc::clone(&self.memory);
-                            let provider = Arc::clone(&self.provider);
+                            let provider = self.auxiliary_provider();
                             let model = self.model.clone();
                             let bp_id = loaded_bp.id.clone();
                             let session_id = session.session_id.clone();
@@ -3043,7 +3043,7 @@ impl AgentRuntime {
                         .unwrap_or(false)
                 {
                     let digest = build_engram_digest(&session.history);
-                    let provider = Arc::clone(&self.provider);
+                    let provider = self.auxiliary_provider();
                     let model = self.model.clone();
                     let memory = Arc::clone(&self.memory);
                     let user_id = msg.user_id.clone();
@@ -3233,7 +3233,7 @@ impl AgentRuntime {
                             social_config.min_interval_seconds,
                         ) {
                             let eval_storage = storage.clone();
-                            let eval_provider = self.provider.clone();
+                            let eval_provider = self.auxiliary_provider();
                             let eval_model = self.model.clone();
                             let eval_user_id = msg.user_id.clone();
                             let personality_name = self
@@ -3890,6 +3890,16 @@ impl AgentRuntime {
     ) -> Self {
         self.text_observer = Some(observer);
         self
+    }
+
+    /// Auxiliary consumers discard Usage while parsing their own result. Meter
+    /// at the provider boundary so errors, malformed output and dropped futures
+    /// cannot bypass the owning command's budget. Foreground remains separate.
+    fn auxiliary_provider(&self) -> Arc<dyn Provider> {
+        Arc::new(crate::metered_provider::MeteredProvider::new(
+            self.provider.clone(),
+            self.budget.clone(),
+        ))
     }
 
     async fn complete_foreground(

@@ -490,3 +490,119 @@ async fn canceled_or_deadline_limited_classifier_records_unknown_once_and_blocks
         assert_eq!(runtime.budget_snapshot().recorded_calls, 1);
     }
 }
+
+/// Only the second call is the optional curator. The first is a foreground
+/// response with a known tariff, so canceled/error usage stays distinguishable.
+struct CuratorFixture {
+    calls: std::sync::atomic::AtomicUsize,
+    started: tokio::sync::Semaphore,
+    mode: &'static str,
+}
+#[async_trait::async_trait]
+impl temm1e_core::Provider for CuratorFixture {
+    fn name(&self) -> &str {
+        "openai"
+    }
+    async fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, temm1e_core::types::error::Temm1eError> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let text = if call == 0 {
+            "Foreground reply"
+        } else {
+            assert_eq!(call, 1, "unexpected extra provider call");
+            assert!(request
+                .system
+                .as_deref()
+                .unwrap_or_default()
+                .contains("long-term-memory curator"));
+            self.started.add_permits(1);
+            match self.mode {
+                "error" => {
+                    return Err(temm1e_core::types::error::Temm1eError::Provider(
+                        "synthetic curator failure".into(),
+                    ))
+                }
+                "pending" => return std::future::pending().await,
+                "valid" => r#"{"facts":[]}"#,
+                _ => "malformed curator JSON",
+            }
+        };
+        let mut response = temm1e_test_utils::QueuedMockProvider::text_response(text);
+        response.usage.totals_reported = Some(true);
+        Ok(response)
+    }
+    async fn stream(
+        &self,
+        _: CompletionRequest,
+    ) -> Result<
+        futures::stream::BoxStream<'_, Result<StreamChunk, temm1e_core::types::error::Temm1eError>>,
+        temm1e_core::types::error::Temm1eError,
+    > {
+        unreachable!("fixture uses complete")
+    }
+    async fn health_check(&self) -> Result<bool, temm1e_core::types::error::Temm1eError> {
+        Ok(true)
+    }
+    async fn list_models(&self) -> Result<Vec<String>, temm1e_core::types::error::Temm1eError> {
+        Ok(vec![])
+    }
+}
+
+#[tokio::test]
+async fn optional_curator_charges_returned_usage_before_parsing_and_unknown_on_error_or_cancel() {
+    for mode in ["valid", "malformed", "error", "pending"] {
+        let provider = Arc::new(CuratorFixture {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            started: tokio::sync::Semaphore::new(0),
+            mode,
+        });
+        let runtime = AgentRuntime::new(
+            provider.clone(),
+            Arc::new(MockMemory::new()),
+            vec![],
+            "gpt-4o".into(),
+            None,
+        )
+        .with_v2_optimizations(false);
+        let (reply, foreground) = runtime
+            .process_message(
+                &make_inbound_msg(
+                    "I prefer Vietnamese when we discuss my ordinary project conversations.",
+                ),
+                &mut make_session(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.text, "Foreground reply");
+        assert_eq!(
+            foreground.api_calls, 1,
+            "background usage is not retroactively added to returned foreground usage"
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            provider.started.acquire(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+        let drained = runtime
+            .shutdown_background(std::time::Duration::from_millis(20))
+            .await;
+        assert_eq!(drained, mode != "pending");
+        let budget = runtime.budget_snapshot();
+        assert_eq!(budget.recorded_calls, 2, "mode={mode}");
+        let incomplete = mode == "error" || mode == "pending";
+        assert_eq!(budget.unpriced_calls, u64::from(incomplete), "mode={mode}");
+        assert_eq!(budget.input_tokens, if incomplete { 10 } else { 20 });
+        assert_eq!(budget.output_tokens, if incomplete { 20 } else { 40 });
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+}
