@@ -18,6 +18,12 @@ pub enum Event {
     UserSubmit(String),
     /// Agent finished processing — final response.
     AgentResponse(AgentResponseEvent),
+    /// Read-only committed transcript page; opaque provider reasoning is not rendered.
+    HistoryPage {
+        page: temm1e_agent::conversation::ConversationPage,
+        reset: bool,
+        completes_command: bool,
+    },
     /// Tick for animations (spinner, elapsed time).
     Tick,
 }

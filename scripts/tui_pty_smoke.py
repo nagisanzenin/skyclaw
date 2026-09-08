@@ -50,9 +50,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def run(binary, root, server, onboarding=False):
+def run(binary, root, server, onboarding=False, restore_only=False):
     profile = root / 'profile'
-    profile.mkdir(mode=0o700)
+    profile.mkdir(mode=0o700, exist_ok=restore_only)
     config = profile / 'config.toml'
     config.write_text(f'''[provider]
 name = "openai-compatible"
@@ -81,9 +81,9 @@ enabled = false
     process = subprocess.Popen([str(binary), 'tui'], cwd=root, env=env,
                                stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
     output = bytearray()
-    def until(marker, seconds=20):
+    def until(marker, seconds=20, from_start=False):
         deadline = time.monotonic() + seconds
-        start = len(output)
+        start = 0 if from_start else len(output)
         while time.monotonic() < deadline:
             if marker in output[start:]:
                 return
@@ -98,6 +98,13 @@ enabled = false
         input_latency = None
         if onboarding:
             until(b'Setup')
+        elif restore_only:
+            until(b'PTY_REPLY_42', from_start=True)
+            assert b'PTY_INPUT_42' in output, 'saved user transcript was not restored'
+            os.write(master, b'/history invalid\r')
+            until(b'Usage:')
+            os.write(master, b'/history-more\r')
+            until(b'page.')  # terminal cursor positioning separates words in the rendered sentence
         else:
             until(b'pty-fixture')
             start = time.monotonic()
@@ -119,13 +126,13 @@ enabled = false
         assert termios.tcgetattr(slave) == original, 'TUI changed caller terminal attributes'
         assert b'\x1b[?1049l' in output, 'alternate screen was not left'
         assert b'\x1b[?25h' in output, 'cursor was not restored'
-        if onboarding:
-            assert len(server.requests) == requests_before, 'onboarding unexpectedly called provider'
+        if onboarding or restore_only:
+            assert len(server.requests) == requests_before, 'read-only startup unexpectedly called provider'
         else:
             assert len(server.requests) > requests_before, 'no actual provider HTTP request occurred'
             assert any('PTY_INPUT_42' in json.dumps(request, ensure_ascii=False) for request in server.requests)
         return {'passed': True, 'input_echo_seconds': round(input_latency, 4) if input_latency is not None else None,
-                'provider_requests': len(server.requests) - requests_before, 'onboarding': onboarding, 'terminal_bytes': len(output),
+                'provider_requests': len(server.requests) - requests_before, 'onboarding': onboarding, 'restore_only': restore_only, 'terminal_bytes': len(output),
                 'terminal_attributes_restored': True, 'resize_and_exit': True}
     finally:
         if process.poll() is None:
@@ -148,6 +155,8 @@ def main():
         for onboarding in [False, True]:
             with tempfile.TemporaryDirectory(prefix='temm1e-pty-') as directory:
                 results.append(run(args.binary.resolve(), Path(directory), server, onboarding))
+                if not onboarding:
+                    results.append(run(args.binary.resolve(), Path(directory), server, restore_only=True))
         print(json.dumps(results, indent=2))
     finally:
         server.shutdown()

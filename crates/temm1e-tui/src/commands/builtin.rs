@@ -17,6 +17,8 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
     });
 
     for (name, description) in [
+        ("history", "Show the latest saved transcript page"),
+        ("history-more", "Load the preceding saved transcript page"),
         ("delivery-status", "Inspect saved reply delivery states"),
         (
             "delivery-show",

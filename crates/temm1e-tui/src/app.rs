@@ -522,6 +522,89 @@ pub fn update(state: &mut AppState, event: Event) {
             }
             state.needs_redraw = true;
         }
+        Event::HistoryPage {
+            page,
+            reset,
+            completes_command,
+        } => {
+            // A startup restore must not erase input submitted before its queued event.
+            if !completes_command
+                && (state.is_agent_working
+                    || (page.messages.is_empty()
+                        && !page.recovery_required
+                        && !page.delivery_unresolved))
+            {
+                return;
+            }
+            let old_rows = state.message_list.line_count();
+            let mut restored = Vec::new();
+            for message in &page.messages {
+                let (role, text) = history_display(message);
+                if text.is_empty() {
+                    continue;
+                }
+                restored.push(DisplayMessage {
+                    tool_id: None,
+                    role,
+                    content: render_markdown_with_width(
+                        &text,
+                        state.theme.text,
+                        state.theme.heading,
+                        state.theme.code_bg,
+                        state.theme.info,
+                        state.theme.secondary,
+                        state.terminal_size.0 as usize,
+                    ),
+                    timestamp: Utc::now(),
+                    usage: None,
+                });
+            }
+            if reset {
+                state.message_list.clear();
+                state.tool_call_history.clear();
+                for message in restored {
+                    state.message_list.push(message);
+                }
+            } else {
+                for message in restored.into_iter().rev() {
+                    state.message_list.messages.push_front(message);
+                }
+                state.message_list.scroll_offset = old_rows;
+            }
+            // The durable transcript remains complete. Keep only a bounded window
+            // of rendered pages; /history returns to the most recent page.
+            while state.message_list.messages.len() > 1000 {
+                if reset {
+                    state.message_list.messages.pop_front();
+                } else {
+                    state.message_list.messages.pop_back();
+                }
+            }
+            push_system_line(
+                state,
+                format!(
+                    "Saved transcript · {} older messages · /history-more · /history",
+                    page.older_messages
+                ),
+            );
+            push_system_line(
+                state,
+                "Viewing history does not confirm reply delivery.".into(),
+            );
+            if page.recovery_required {
+                push_system_line(state, "Interrupted turn: inspect /session-recover.".into());
+            }
+            if page.delivery_unresolved {
+                push_system_line(
+                    state,
+                    "Reply delivery is unresolved: inspect /delivery-status.".into(),
+                );
+            }
+            if completes_command {
+                state.is_agent_working = false;
+            }
+            state.needs_redraw = true;
+        }
         Event::AgentResponse(response) => {
             let is_early_reply = response.kind != crate::event::ResponseKind::Final;
             let is_terminal = matches!(
@@ -944,6 +1027,61 @@ fn refresh_tool_message(state: &mut AppState, execution_id: &str) {
     }
 }
 
+/// Display only normalized public content, never native reasoning/signatures.
+fn history_display(message: &temm1e_core::types::message::ChatMessage) -> (MessageRole, String) {
+    use temm1e_core::types::message::{ContentPart, MessageContent, Role};
+    let role = match message.role {
+        Role::User => MessageRole::User,
+        Role::Assistant => MessageRole::Agent,
+        _ => MessageRole::System,
+    };
+    let mut output = String::new();
+    let mut remaining = 8192usize;
+    let mut append = |text: &str| {
+        if remaining == 0 {
+            return;
+        }
+        for c in text
+            .chars()
+            .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+            .take(remaining)
+        {
+            output.push(c);
+            remaining -= 1;
+        }
+    };
+    match &message.content {
+        MessageContent::Text(text) => append(text),
+        MessageContent::Parts(parts) => {
+            for part in parts {
+                match part {
+                    ContentPart::Text { text } => {
+                        append(text);
+                        append("\n");
+                    }
+                    ContentPart::ToolUse { name, .. } => {
+                        append(&format!("\n[Saved tool call: {name}]\n"))
+                    }
+                    ContentPart::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } => append(&format!(
+                        "\n[Saved tool result: {tool_use_id}; {} bytes; error={is_error}]\n",
+                        content.len()
+                    )),
+                    ContentPart::Image { .. } => append("[Saved image]\n"),
+                    ContentPart::ProviderState { .. } => {}
+                }
+            }
+        }
+    }
+    if remaining == 0 {
+        output.push_str("\n[Display excerpt; full content remains in saved history.]");
+    }
+    (role, output)
+}
+
 /// Push a single-line system message to the message list (toast-style).
 fn push_system_line(state: &mut AppState, text: String) {
     state.message_list.push(DisplayMessage {
@@ -1328,6 +1466,60 @@ fn handle_onboarding_key(state: &mut AppState, key: crossterm::event::KeyEvent) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn restored_transcript_never_exposes_native_reasoning_and_is_bounded() {
+        use temm1e_core::types::message::{ChatMessage, ContentPart, MessageContent, Role};
+        let message = ChatMessage {
+            role: Role::Assistant,
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: "Visible_42\u{1b}".into(),
+                },
+                ContentPart::ProviderState {
+                    provider: "anthropic".into(),
+                    model: "fixture".into(),
+                    response_id: "r".into(),
+                    output: vec![
+                        serde_json::json!({"thinking":"private reasoning", "signature":"private signature"}),
+                    ],
+                    context_fingerprint: None,
+                },
+            ]),
+        };
+        let (_, visible) = super::history_display(&message);
+        assert!(visible.contains("Visible_42"));
+        assert!(!visible.contains("private") && !visible.contains('\u{1b}'));
+        let message = ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text("🐈".repeat(20_000)),
+        };
+        let (_, visible) = super::history_display(&message);
+        assert_eq!(visible.chars().filter(|c| *c == '🐈').count(), 8192);
+        assert!(visible.contains("Display excerpt"));
+    }
+
+    #[test]
+    fn queued_startup_history_cannot_erase_an_active_user_submission() {
+        let mut state = super::AppState::new();
+        state.is_agent_working = true;
+        super::push_system_line(&mut state, "current input".into());
+        super::update(
+            &mut state,
+            super::Event::HistoryPage {
+                page: temm1e_agent::conversation::ConversationPage {
+                    messages: vec![],
+                    older: None,
+                    older_messages: 0,
+                    recovery_required: false,
+                    delivery_unresolved: false,
+                },
+                reset: true,
+                completes_command: false,
+            },
+        );
+        assert!(state.is_agent_working);
+        assert_eq!(state.message_list.messages.len(), 1);
+    }
 
     #[test]
     fn onboarding_can_exit_without_credentials() {

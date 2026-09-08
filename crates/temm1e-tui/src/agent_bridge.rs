@@ -634,6 +634,36 @@ pub async fn spawn_agent(
         "local-owner",
     )?;
     tracing::info!(workspace = %workspace.display(), "TUI conversation workspace");
+    let mut history_cursor = match conversations
+        .conversation_page(&conversation_scope, None)
+        .await
+    {
+        Ok(page) => {
+            let cursor = page.older.clone();
+            let _ = event_tx.send(Event::HistoryPage {
+                page,
+                reset: true,
+                completes_command: false,
+            });
+            cursor
+        }
+        Err(error) => {
+            let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
+                kind: crate::event::ResponseKind::Notice,
+                message: OutboundMessage {
+                    chat_id: "tui".into(),
+                    text: format!("Saved transcript could not be loaded: {error}"),
+                    reply_to: None,
+                    parse_mode: None,
+                },
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: 0.0,
+            }));
+            None
+        }
+    };
+
     let task = tokio::spawn(async move {
         while let Some(msg) = inbound_rx.recv().await {
             // CRITICAL: reset the interrupt flag before each turn.
@@ -655,6 +685,41 @@ pub async fn spawn_agent(
                     cost_usd: 0.0,
                 }));
             };
+            let text = msg.text.as_deref().unwrap_or("").trim();
+            if matches!(
+                text.split_whitespace().next(),
+                Some("/history" | "/history-more")
+            ) {
+                if text.split_whitespace().count() != 1 {
+                    fail("Usage: /history or /history-more (no arguments).".into());
+                    continue;
+                }
+                let reset = text == "/history";
+                if !reset && history_cursor.is_none() {
+                    fail(
+                        "No older saved messages. Use /history to refresh the latest page.".into(),
+                    );
+                    continue;
+                }
+                match conversations
+                    .conversation_page(
+                        &conversation_scope,
+                        if reset { None } else { history_cursor.as_ref() },
+                    )
+                    .await
+                {
+                    Ok(page) => {
+                        history_cursor = page.older.clone();
+                        let _ = event_tx.send(Event::HistoryPage {
+                            page,
+                            reset,
+                            completes_command: true,
+                        });
+                    }
+                    Err(error) => fail(error.to_string()),
+                }
+                continue;
+            }
             match temm1e_agent::delivery::prepare_resume_command(
                 &conversations,
                 &conversation_scope,
@@ -697,6 +762,26 @@ pub async fn spawn_agent(
             .await
             {
                 Ok(Some(text)) => {
+                    let command = msg.text.as_deref().unwrap_or("").trim();
+                    if command == "/session-new"
+                        || command.starts_with("/history-import confirm ")
+                        || command.starts_with("/session-recover confirm ")
+                    {
+                        match conversations
+                            .conversation_page(&conversation_scope, None)
+                            .await
+                        {
+                            Ok(page) => {
+                                history_cursor = page.older.clone();
+                                let _ = event_tx.send(Event::HistoryPage {
+                                    page,
+                                    reset: true,
+                                    completes_command: true,
+                                });
+                            }
+                            Err(error) => fail(format!("Transcript refresh failed: {error}")),
+                        }
+                    }
                     let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
                         kind: crate::event::ResponseKind::Final,
                         message: OutboundMessage {

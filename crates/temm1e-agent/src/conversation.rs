@@ -58,7 +58,124 @@ pub struct ConversationTurn {
     _lock: PrivateFileLock,
 }
 
+/// A cursor is bound to a committed head; it never authorizes a turn or replay.
+#[derive(Debug, Clone)]
+pub struct ConversationCursor {
+    scope: String,
+    epoch: String,
+    revision: i64,
+    before: usize,
+}
+
+#[derive(Debug)]
+pub struct ConversationPage {
+    pub messages: Vec<ChatMessage>,
+    pub older: Option<ConversationCursor>,
+    pub older_messages: usize,
+    pub recovery_required: bool,
+    pub delivery_unresolved: bool,
+}
+
 impl ExecutionJournal {
+    /// Read only a bounded page of the committed transcript. Does not acquire a
+    /// turn, set busy state, acknowledge delivery, or expose another scope.
+    pub async fn conversation_page(
+        &self,
+        scope: &ConversationScope,
+        cursor: Option<&ConversationCursor>,
+    ) -> Result<ConversationPage, Temm1eError> {
+        let mut tx = self.pool.begin().await.map_err(error)?;
+        let head: Option<(String, i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT epoch,revision,checkpoint,busy_owner FROM conversation_heads WHERE scope=?",
+        )
+        .bind(&scope.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(error)?;
+        let Some((epoch, revision, checkpoint, busy)) = head else {
+            if cursor.is_some() {
+                return Err(error("history changed; reload the latest page"));
+            }
+            return Ok(ConversationPage {
+                messages: vec![],
+                older: None,
+                older_messages: 0,
+                recovery_required: false,
+                delivery_unresolved: false,
+            });
+        };
+        if cursor.is_some_and(|c| c.scope != scope.0 || c.epoch != epoch || c.revision != revision)
+        {
+            return Err(error(
+                "history changed; use /history to reload the latest page",
+            ));
+        }
+        if checkpoint.len() > 32 * 1024 * 1024 {
+            return Err(error("oversized history checkpoint"));
+        }
+        let (selected, start) = if checkpoint.trim_start().starts_with('[') {
+            let messages: Vec<ChatMessage> = serde_json::from_str(&checkpoint).map_err(error)?;
+            if messages.len() > 100_000 {
+                return Err(error("too many history messages"));
+            }
+            let end = cursor.map_or(messages.len(), |c| c.before);
+            if end > messages.len() {
+                return Err(error("invalid history cursor"));
+            }
+            let start = end.saturating_sub(100);
+            (
+                serde_json::to_string(&messages[start..end]).map_err(error)?,
+                start,
+            )
+        } else {
+            #[derive(serde::Deserialize, serde::Serialize)]
+            #[serde(deny_unknown_fields)]
+            struct Manifest {
+                version: u32,
+                message_ids: Vec<String>,
+            }
+            let mut manifest: Manifest = serde_json::from_str(&checkpoint).map_err(error)?;
+            if manifest.version != 1 || manifest.message_ids.len() > 100_000 {
+                return Err(error("invalid history manifest"));
+            }
+            let end = cursor.map_or(manifest.message_ids.len(), |c| c.before);
+            if end > manifest.message_ids.len() {
+                return Err(error("invalid history cursor"));
+            }
+            let start = end.saturating_sub(100);
+            manifest.message_ids = manifest.message_ids[start..end].to_vec();
+            (serde_json::to_string(&manifest).map_err(error)?, start)
+        };
+        let records = Self::hydrate_records_on(
+            &mut tx,
+            &scope.0,
+            vec![ExecutionRecord {
+                id: epoch.clone(),
+                inbound_id: String::new(),
+                goal: String::new(),
+                state: String::new(),
+                checkpoint: selected,
+                updated_at: String::new(),
+            }],
+        )
+        .await?;
+        let messages = serde_json::from_str(&records[0].checkpoint).map_err(error)?;
+        let unresolved: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM delivery_outbox WHERE scope=? AND epoch=? AND state IN ('pending','attempting','outcome_unknown'))")
+            .bind(&scope.0).bind(&epoch).fetch_one(&mut *tx).await.map_err(error)?;
+        Ok(ConversationPage {
+            messages,
+            older: (start > 0).then_some(ConversationCursor {
+                scope: scope.0.clone(),
+                epoch,
+                revision,
+                before: start,
+            }),
+            older_messages: start,
+            recovery_required: busy.is_some(),
+            delivery_unresolved: unresolved,
+        })
+    }
+
     pub(crate) fn conversation_lock(
         &self,
         scope: &ConversationScope,
@@ -505,6 +622,73 @@ mod tests {
             })
             .collect()
     }
+    #[tokio::test]
+    async fn transcript_pages_are_scoped_read_only_and_reject_stale_heads() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = Arc::new(
+            ExecutionJournal::open(&directory.path().join("executions.db"))
+                .await
+                .unwrap(),
+        );
+        let scope = ConversationScope::new(directory.path(), "tui", "tui", "owner").unwrap();
+        let other = ConversationScope::new(directory.path(), "tui", "tui", "other").unwrap();
+        journal
+            .acquire_conversation(&scope)
+            .await
+            .unwrap()
+            .commit(&messages(250))
+            .await
+            .unwrap();
+        let page = journal.conversation_page(&scope, None).await.unwrap();
+        assert_eq!(page.messages.len(), 100);
+        assert_eq!(page.older_messages, 150);
+        assert_eq!(
+            serde_json::to_value(&page.messages).unwrap(),
+            serde_json::to_value(&messages(250)[150..]).unwrap()
+        );
+        assert!(!page.recovery_required && !page.delivery_unresolved);
+        assert!(journal
+            .conversation_page(&other, None)
+            .await
+            .unwrap()
+            .messages
+            .is_empty());
+        assert!(journal
+            .conversation_page(&other, page.older.as_ref())
+            .await
+            .is_err());
+        let older = journal
+            .conversation_page(&scope, page.older.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(older.older_messages, 50);
+        assert_eq!(
+            journal
+                .conversation_page(&scope, older.older.as_ref())
+                .await
+                .unwrap()
+                .messages
+                .len(),
+            50
+        );
+        // Reading did not acquire a turn or mark it busy.
+        let turn = journal.acquire_conversation(&scope).await.unwrap();
+        assert!(
+            journal
+                .conversation_page(&scope, None)
+                .await
+                .unwrap()
+                .recovery_required
+        );
+        turn.commit(&messages(251)).await.unwrap();
+        assert!(journal
+            .conversation_page(&scope, page.older.as_ref())
+            .await
+            .is_err());
+        let current = journal.conversation_page(&scope, None).await.unwrap();
+        assert_eq!(current.older_messages, 151);
+    }
+
     #[tokio::test]
     async fn admission_does_not_wait_for_a_second_pool_connection() {
         let directory = tempfile::tempdir().unwrap();
