@@ -336,3 +336,157 @@ async fn watch_channel_with_multiple_messages() {
         );
     }
 }
+
+#[tokio::test]
+async fn classification_usage_survives_invalid_json_without_doubling_valid_json() {
+    use temm1e_test_utils::QueuedMockProvider;
+    for classifier_text in [
+        "invalid classifier JSON",
+        r#"{"category":"chat","chat_text":"","difficulty":"simple"}"#,
+    ] {
+        let provider = Arc::new(QueuedMockProvider::with_responses(vec![
+            QueuedMockProvider::text_response(classifier_text),
+            QueuedMockProvider::text_response("final fixture reply"),
+        ]));
+        let runtime = AgentRuntime::new(
+            provider.clone(),
+            Arc::new(MockMemory::new()),
+            vec![],
+            "model".into(),
+            None,
+        )
+        .with_v2_optimizations(true);
+        let (reply, usage) = runtime
+            .process_message(
+                &make_inbound_msg("Hello there"),
+                &mut make_session(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.text, "final fixture reply");
+        assert_eq!(provider.calls().await, 2);
+        assert_eq!(usage.api_calls, 2);
+        assert_eq!((usage.input_tokens, usage.output_tokens), (20, 40));
+        let recorded = runtime.budget_snapshot();
+        assert_eq!(recorded.recorded_calls, 2);
+        assert_eq!((recorded.input_tokens, recorded.output_tokens), (20, 40));
+        assert_eq!(recorded.unpriced_calls, 2); // mock provider has no verified tariff
+    }
+}
+
+struct PendingClassifier {
+    started: tokio::sync::Semaphore,
+    calls: std::sync::atomic::AtomicUsize,
+}
+#[async_trait::async_trait]
+impl temm1e_core::Provider for PendingClassifier {
+    fn name(&self) -> &str {
+        "openai"
+    }
+    async fn complete(
+        &self,
+        _: CompletionRequest,
+    ) -> Result<CompletionResponse, temm1e_core::types::error::Temm1eError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.started.add_permits(1);
+        std::future::pending().await
+    }
+    async fn stream(
+        &self,
+        _: CompletionRequest,
+    ) -> Result<
+        futures::stream::BoxStream<'_, Result<StreamChunk, temm1e_core::types::error::Temm1eError>>,
+        temm1e_core::types::error::Temm1eError,
+    > {
+        panic!("classifier must use complete")
+    }
+    async fn health_check(&self) -> Result<bool, temm1e_core::types::error::Temm1eError> {
+        Ok(true)
+    }
+    async fn list_models(&self) -> Result<Vec<String>, temm1e_core::types::error::Temm1eError> {
+        Ok(vec![])
+    }
+}
+
+#[tokio::test]
+async fn canceled_or_deadline_limited_classifier_records_unknown_once_and_blocks_further_spend() {
+    for use_deadline in [false, true] {
+        let provider = Arc::new(PendingClassifier {
+            started: tokio::sync::Semaphore::new(0),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let runtime = Arc::new(
+            AgentRuntime::with_limits(
+                provider.clone(),
+                Arc::new(MockMemory::new()),
+                vec![],
+                "gpt-4.1".into(),
+                None,
+                10,
+                32768,
+                8,
+                if use_deadline { 1 } else { 60 },
+                1.0,
+            )
+            .with_v2_optimizations(true),
+        );
+        let cancel = CancellationToken::new();
+        let task_runtime = runtime.clone();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            task_runtime
+                .process_message(
+                    &make_inbound_msg("Hello"),
+                    &mut make_session(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(task_cancel),
+                )
+                .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            provider.started.acquire(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+        if !use_deadline {
+            cancel.cancel();
+        }
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_err());
+        let usage = runtime.budget_snapshot();
+        assert_eq!(usage.recorded_calls, 1);
+        assert_eq!(usage.unpriced_calls, 1);
+        assert_eq!((usage.input_tokens, usage.output_tokens), (0, 0));
+        let retry = runtime
+            .process_message(
+                &make_inbound_msg("Try again"),
+                &mut make_session(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+        assert!(retry
+            .unwrap_err()
+            .to_string()
+            .contains("unknown pricing or missing usage"));
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(runtime.budget_snapshot().recorded_calls, 1);
+    }
+}

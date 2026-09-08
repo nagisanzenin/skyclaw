@@ -58,6 +58,7 @@ pub struct BudgetTracker {
     /// Maximum spend in micro-cents (0 = unlimited).
     max_micro_cents: u64,
     valid_limit: bool,
+    recorded_calls: AtomicU64,
     unpriced_calls: AtomicU64,
     subscription_calls: AtomicU64,
     /// Total input tokens consumed.
@@ -81,6 +82,7 @@ impl BudgetTracker {
             cumulative_micro_cents: AtomicU64::new(0),
             max_micro_cents: ((max_spend_usd.max(0.0) * MICRO_CENTS_PER_USD).ceil()) as u64,
             valid_limit: max_spend_usd.is_finite() && max_spend_usd >= 0.0,
+            recorded_calls: AtomicU64::new(0),
             unpriced_calls: AtomicU64::new(0),
             subscription_calls: AtomicU64::new(0),
             total_input_tokens: AtomicU64::new(0),
@@ -124,6 +126,7 @@ impl BudgetTracker {
         if let Some(parent) = &self.parent {
             parent.record_estimate(input, output, estimate);
         }
+        add_saturating(&self.recorded_calls, 1);
         match estimate {
             CostEstimate::StandardTokens {
                 lower_usd,
@@ -255,6 +258,7 @@ impl BudgetTracker {
     /// before using it as a final accounting total.
     pub fn snapshot(&self) -> BudgetSnapshot {
         BudgetSnapshot {
+            recorded_calls: self.recorded_calls.load(Ordering::Relaxed),
             input_tokens: self.total_input_tokens.load(Ordering::Relaxed),
             output_tokens: self.total_output_tokens.load(Ordering::Relaxed),
             cost_usd: self.total_spend_usd(),
@@ -269,6 +273,8 @@ impl BudgetTracker {
 /// a reference to the tracker itself.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BudgetSnapshot {
+    /// Recorded logical call outcomes, not provider-internal HTTP retry attempts.
+    pub recorded_calls: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: f64,
@@ -466,6 +472,8 @@ mod tests {
         assert_eq!(a.snapshot().input_tokens, 10);
         assert_eq!(b.snapshot().input_tokens, 20);
         assert_eq!(parent.snapshot().input_tokens, 30);
+        assert_eq!(parent.snapshot().recorded_calls, 2);
+        assert_eq!(a.snapshot().recorded_calls, 1);
         assert_eq!(parent.snapshot().cost_usd, 1.0);
         assert!(a.check_budget().is_err());
         assert!(b.check_budget().is_err());
@@ -482,11 +490,13 @@ mod tests {
     fn accounting_counters_saturate_instead_of_reopening_admission() {
         let tracker = BudgetTracker::new(1.0);
         tracker.unpriced_calls.store(u64::MAX, Ordering::Relaxed);
+        tracker.recorded_calls.store(u64::MAX, Ordering::Relaxed);
         tracker
             .total_input_tokens
             .store(u64::MAX, Ordering::Relaxed);
         tracker.record_estimate(1, 1, &CostEstimate::Unavailable);
         assert_eq!(tracker.snapshot().unpriced_calls, u64::MAX);
+        assert_eq!(tracker.snapshot().recorded_calls, u64::MAX);
         assert_eq!(tracker.snapshot().input_tokens, u64::MAX);
         assert!(tracker.check_budget().is_err());
     }

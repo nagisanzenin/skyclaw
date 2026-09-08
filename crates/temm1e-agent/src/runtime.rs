@@ -1284,14 +1284,16 @@ impl AgentRuntime {
                 None
             };
 
-            // Safety-net timeout on the classifier LLM call (30s). Under normal
-            // operation the classifier returns in 1–6 s across all supported
-            // providers. A longer stall indicates a provider-side incident;
-            // falling through to the rule-based classifier keeps the session
-            // alive rather than blocking the user. Root-cause notes:
-            // docs/full-sweep-1/TUI-CLASSIFIER-HANG.md.
+            // Bound classification separately from the overall task deadline.
+            // A timed-out provider call remains an unknown charge; fallback
+            // must not turn it into zero usage or reopen limited admission.
+            let classify_budget = Arc::new(BudgetTracker::child(self.budget.clone()));
+            let classifier_provider = crate::metered_provider::MeteredProvider::new(
+                self.provider.clone(),
+                classify_budget.clone(),
+            );
             let classify_fut = crate::llm_classifier::classify_message(
-                self.provider.as_ref(),
+                &classifier_provider,
                 &self.model,
                 &user_text,
                 &session.history,
@@ -1310,21 +1312,19 @@ impl AgentRuntime {
                     "classify_message 30s timeout".to_string(),
                 ))
             });
+            // The provider settled usage before parsing. Parse failure and
+            // timeout still contribute local totals/unknownness to the parent.
+            // Do not re-record successful usage and double-charge this call.
+            let classify_usage = classify_budget.snapshot();
+            turn_api_calls = turn_api_calls
+                .saturating_add(u32::try_from(classify_usage.recorded_calls).unwrap_or(u32::MAX));
+            turn_input_tokens = turn_input_tokens
+                .saturating_add(u32::try_from(classify_usage.input_tokens).unwrap_or(u32::MAX));
+            turn_output_tokens = turn_output_tokens
+                .saturating_add(u32::try_from(classify_usage.output_tokens).unwrap_or(u32::MAX));
+            turn_cost_usd += classify_usage.cost_usd;
             match unwrapped {
-                Ok((classification, classify_usage)) => {
-                    // Record classification call in per-turn accumulators
-                    let classify_cost = self
-                        .budget
-                        .record_model_usage(&classify_usage, &self.model_pricing)
-                        .upper_usd()
-                        .unwrap_or(0.0);
-                    turn_api_calls = turn_api_calls.saturating_add(1);
-                    turn_input_tokens =
-                        turn_input_tokens.saturating_add(classify_usage.input_tokens);
-                    turn_output_tokens =
-                        turn_output_tokens.saturating_add(classify_usage.output_tokens);
-                    turn_cost_usd += classify_cost;
-
+                Ok((classification, _)) => {
                     info!(
                         category = ?classification.category,
                         difficulty = ?classification.difficulty,

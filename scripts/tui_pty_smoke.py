@@ -61,7 +61,7 @@ model = "pty-fixture"
 api_key = "local-fixture-only"
 base_url = "http://127.0.0.1:{server.server_port}/v1"
 [agent]
-max_spend_usd = {0.0001 if budget_limit else 0.0}
+max_spend_usd = {0.0002 if budget_limit else 0.0}
 [memory.engram]
 curator = "off"
 [perpetuum]
