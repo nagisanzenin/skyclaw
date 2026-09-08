@@ -16,8 +16,14 @@ fn error(e: impl std::fmt::Display) -> Temm1eError {
 /// Access domains are chosen by the authenticated entrypoint, never the model.
 /// A group channel deliberately supplies one shared domain for admitted members.
 #[derive(Clone)]
-pub struct ConversationScope(String);
+pub struct ConversationScope(pub(crate) String);
 impl ConversationScope {
+    pub(crate) fn destination(&self) -> Result<(String, String), Temm1eError> {
+        let (_, _, channel, chat, _): (String, std::path::PathBuf, String, String, String) =
+            serde_json::from_str(&self.0).map_err(error)?;
+        Ok((channel, chat))
+    }
+
     pub fn new(
         workspace: &Path,
         channel: &str,
@@ -53,7 +59,10 @@ pub struct ConversationTurn {
 }
 
 impl ExecutionJournal {
-    fn conversation_lock(&self, scope: &ConversationScope) -> Result<PrivateFileLock, Temm1eError> {
+    pub(crate) fn conversation_lock(
+        &self,
+        scope: &ConversationScope,
+    ) -> Result<PrivateFileLock, Temm1eError> {
         let lock = self
             .path
             .with_extension("conversation-locks")
@@ -85,6 +94,11 @@ impl ExecutionJournal {
             .map_err(error)?;
         if busy.is_some() {
             return Err(error("interrupted conversation: use /session-recover to inspect evidence or /session-new to start separately; tools were not replayed"));
+        }
+        let delivery_pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM delivery_outbox WHERE scope=? AND epoch=? AND state IN ('pending','attempting','outcome_unknown'))")
+            .bind(&scope.0).bind(&epoch).fetch_one(&mut *tx).await.map_err(error)?;
+        if delivery_pending {
+            return Err(error("a saved reply needs delivery reconciliation; inspect /delivery-status, or use /session-new to start separately"));
         }
         // Hydration must succeed before a read failure can create a busy marker.
         let records = Self::hydrate_records_on(
@@ -261,7 +275,28 @@ impl ConversationTurn {
         self.commit_boundary(history, "turn").await
     }
 
+    pub async fn commit_with_reply(
+        self,
+        history: &[ChatMessage],
+        reply: &temm1e_core::types::message::OutboundMessage,
+    ) -> Result<crate::delivery::DeliveryTicket, Temm1eError> {
+        self.commit_transaction(history, "turn", Some(reply))
+            .await?
+            .ok_or_else(|| error("reply transaction did not create a delivery ticket"))
+    }
+
     async fn commit_boundary(self, history: &[ChatMessage], kind: &str) -> Result<(), Temm1eError> {
+        self.commit_transaction(history, kind, None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn commit_transaction(
+        self,
+        history: &[ChatMessage],
+        kind: &str,
+        reply: Option<&temm1e_core::types::message::OutboundMessage>,
+    ) -> Result<Option<crate::delivery::DeliveryTicket>, Temm1eError> {
         if history.len() < self.history.len()
             || serde_json::to_vec(&history[..self.history.len()]).map_err(error)?
                 != serde_json::to_vec(&self.history).map_err(error)?
@@ -281,7 +316,36 @@ impl ConversationTurn {
         sqlx::query("INSERT INTO conversation_events(epoch,revision,kind,checkpoint,created_at) VALUES(?,?,?,?,?)")
             .bind(&self.epoch).bind(self.revision + 1).bind(kind).bind(checkpoint)
             .bind(chrono::Utc::now().to_rfc3339()).execute(&mut *tx).await.map_err(error)?;
-        tx.commit().await.map_err(error)
+        let delivery = if let Some(reply) = reply {
+            let (channel, chat) = self.scope.destination()?;
+            if reply.chat_id != chat {
+                return Err(error("reply destination does not match conversation"));
+            }
+            let payload = serde_json::to_string(reply).map_err(error)?;
+            if payload.len() > crate::delivery::MAX_REPLY_BYTES {
+                return Err(error(
+                    "final reply exceeds 1 MiB; prior history is preserved",
+                ));
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query("INSERT INTO delivery_outbox(id,scope,epoch,revision,channel,payload,payload_hash,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'pending',?,?)")
+                .bind(&id).bind(&self.scope.0).bind(&self.epoch).bind(self.revision + 1)
+                .bind(channel).bind(&payload).bind(hex::encode(Sha256::digest(payload.as_bytes())))
+                .bind(&now).bind(&now).execute(&mut *tx).await.map_err(error)?;
+            Some((id, reply.clone()))
+        } else {
+            None
+        };
+        tx.commit().await.map_err(error)?;
+        Ok(
+            delivery.map(|(id, message)| crate::delivery::DeliveryTicket {
+                journal: self.journal.clone(),
+                id,
+                message,
+                _lock: self._lock,
+            }),
+        )
     }
 }
 
@@ -296,6 +360,67 @@ pub async fn handle_owner_command(
 ) -> Result<Option<String>, Temm1eError> {
     let args: Vec<_> = text.split_whitespace().collect();
     match args.first().copied() {
+        Some("/delivery-status") => {
+            if args.len() != 1 {
+                return Ok(Some("Usage: /delivery-status".into()));
+            }
+            let records = journal.delivery_records(scope).await?;
+            if records.is_empty() {
+                return Ok(Some(
+                    "No saved reply deliveries in this conversation scope.".into(),
+                ));
+            }
+            let lines = records
+                .iter()
+                .map(|record| {
+                    let label = match record.state.as_str() {
+                        "pending" => "Saved, never sent",
+                        "attempting" => "Sending or interrupted; receipt unconfirmed",
+                        "outcome_unknown" => "Receipt unconfirmed",
+                        "accepted_by_sink" => "Channel accepted it; display unconfirmed",
+                        "acknowledged_by_user" => "You confirmed receipt",
+                        _ => "Unrecognized delivery state; inspect before continuing",
+                    };
+                    format!(
+                        "{} — {label} (conversation {}, revision {})",
+                        record.id, record.epoch, record.revision
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(Some(format!("Most recent saved replies (up to 100):\n{lines}\nUse /delivery-show <id> to review a saved reply. /delivery-resume <id> sends only a never-attempted reply without running the model or tools. If you received/read it, /delivery-ack <id> records your confirmation. This does not establish that the overall task succeeded.")))
+        }
+        Some("/delivery-show") => {
+            if !(2..=3).contains(&args.len()) {
+                return Ok(Some("Usage: /delivery-show <id> [character offset]".into()));
+            }
+            let offset = args
+                .get(2)
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(error)?
+                .unwrap_or(0);
+            let reply = journal.saved_reply(scope, args[1]).await?;
+            let count = reply.text.chars().count();
+            if offset > count {
+                return Err(error("saved reply offset is beyond the text"));
+            }
+            let text: String = reply.text.chars().skip(offset).take(4096).collect();
+            let next = offset + text.chars().count();
+            let continuation = if next < count {
+                format!("\nNext page: /delivery-show {} {next}", args[1])
+            } else {
+                String::new()
+            };
+            Ok(Some(format!("Saved reply {} (review copy; original delivery state is unchanged):\n{text}{continuation}", args[1])))
+        }
+        Some("/delivery-ack") => {
+            if args.len() != 2 {
+                return Ok(Some("Use /delivery-ack <id> only to report that you received/read that saved reply.".into()));
+            }
+            journal.acknowledge_delivery(scope, args[1]).await?;
+            Ok(Some("Recorded your acknowledgement. No platform receipt or goal completion was inferred.".into()))
+        }
         Some("/session-new") => {
             if args.len() != 1 {
                 return Ok(Some("Usage: /session-new".into()));

@@ -12,6 +12,7 @@ pub mod consciousness_engine;
 pub mod context;
 pub mod conversation;
 pub mod delegation;
+pub mod delivery;
 pub mod done_criteria;
 pub mod engram;
 pub mod execution_journal;

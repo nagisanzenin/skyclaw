@@ -370,6 +370,16 @@ pub async fn launch_tui(config: Temm1eConfig) -> anyhow::Result<()> {
         }
     }
 
+    if let Some(handle) = agent_handle.take() {
+        if !handle
+            .shutdown(std::time::Duration::from_secs(6))
+            .await
+            .loop_joined
+        {
+            tracing::warn!("TUI shutdown did not fully drain; interrupted evidence is preserved");
+        }
+    }
+
     // Explicit terminal restoration before returning
     drop(terminal); // drop ratatui terminal first — releases stdout
     restore_terminal();
@@ -618,10 +628,17 @@ async fn handle_model_switch(
         return;
     };
 
-    // Drop the old handle — its task exits when `inbound_tx` is dropped.
-    // Happens automatically when we overwrite agent_handle below.
-    let old = agent_handle.take();
-    drop(old);
+    // Wait for the old bridge's final persistence before opening the same
+    // conversation in a replacement runtime.
+    if let Some(old) = agent_handle.take() {
+        if !old
+            .shutdown(std::time::Duration::from_secs(6))
+            .await
+            .loop_joined
+        {
+            tracing::warn!("Previous TUI runtime did not fully drain during model switch");
+        }
+    }
 
     match agent_bridge::spawn_agent(
         AgentSetup {

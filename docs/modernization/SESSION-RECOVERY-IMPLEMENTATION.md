@@ -1,6 +1,6 @@
 # Session recovery and legacy history migration
 
-Implementation contract with partial implementation recorded below. CLI/TUI and server workers now use canonical conversation heads; full entrypoint acceptance and the delivery outbox remain unfinished. Do not infer complete recovery coverage from the store tests.
+Implementation contract with partial implementation recorded below. CLI/TUI and server workers now use canonical conversation heads; successful final replies now use a transactional outbox; full entrypoint acceptance and platform reconciliation remain unfinished. Do not infer complete recovery coverage from the store tests.
 
 ## Compatibility policy
 
@@ -70,3 +70,7 @@ Server workers share one conversation-store pool and load the head under the sam
 Normal replies, Hive result text and fallback replies commit the parent history before final delivery. A failed history commit suppresses that final response and retains the interrupted marker. Panic returns no longer restore an older history over partial evidence. Early-return cleanup clears transient busy flags, while durable recovery state remains intact. The secret-censor channel forwards the underlying channel's role resolution and role management rather than silently substituting trait defaults.
 
 This is storage wiring, not full server acceptance. Actual channel dispatch/restart with a fake transport, cross-channel queue/pending-message isolation, attachment pre-processing evidence, delegated worker event linkage, and delivery crash reconciliation remain required. The local CLI fixture and server health/shutdown fixture do not establish those missing results.
+
+## Final-reply delivery follow-up
+
+The final-reply outbox is wired into CLI, TUI and server success paths. See `DELIVERY-IMPLEMENTATION.md` for transaction boundaries, explicit review/resume/acknowledgement commands, process-kill evidence, and coverage limits. Earlier checkpoint lists above describe their state at the time; server history pruning and successful-final outbox wiring have since been replaced. Full event/head integration, external platform receipts, server dispatch/restart, archive UI and total-profile retention remain open.

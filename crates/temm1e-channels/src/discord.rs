@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use temm1e_core::message_text::split_message;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -330,7 +331,7 @@ impl Channel for DiscordChannel {
         };
 
         // Discord has a 2000 character message limit. Split if needed.
-        let chunks = split_message(&text, 2000);
+        let chunks = split_message(&text, 2000)?;
         for (i, chunk) in chunks.iter().enumerate() {
             let mut builder = CreateMessage::new().content(chunk);
 
@@ -975,49 +976,6 @@ fn extract_attachments(msg: &Message) -> Vec<AttachmentRef> {
         .collect()
 }
 
-/// Find the last byte offset that is on a UTF-8 char boundary at or before `max`.
-fn floor_char_boundary(s: &str, max: usize) -> usize {
-    if max >= s.len() {
-        return s.len();
-    }
-    let mut i = max;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// Split a message into chunks that fit within Discord's character limit.
-/// All splits respect UTF-8 char boundaries to prevent panics on multi-byte text.
-fn split_message(text: &str, max_len: usize) -> Vec<String> {
-    if text.len() <= max_len {
-        return vec![text.to_string()];
-    }
-
-    let mut chunks = Vec::new();
-    let mut remaining = text;
-
-    while !remaining.is_empty() {
-        if remaining.len() <= max_len {
-            chunks.push(remaining.to_string());
-            break;
-        }
-
-        let safe_end = floor_char_boundary(remaining, max_len);
-        // Try to split at a newline boundary
-        let split_at = remaining[..safe_end].rfind('\n').unwrap_or_else(|| {
-            // Fall back to splitting at a space
-            remaining[..safe_end].rfind(' ').unwrap_or(safe_end)
-        });
-
-        let (chunk, rest) = remaining.split_at(split_at);
-        chunks.push(chunk.to_string());
-        remaining = rest.trim_start_matches('\n');
-    }
-
-    chunks
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1172,14 +1130,14 @@ mod tests {
 
     #[test]
     fn split_message_short() {
-        let chunks = split_message("hello", 2000);
+        let chunks = split_message("hello", 2000).unwrap();
         assert_eq!(chunks, vec!["hello"]);
     }
 
     #[test]
     fn split_message_at_limit() {
         let text = "a".repeat(2000);
-        let chunks = split_message(&text, 2000);
+        let chunks = split_message(&text, 2000).unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].len(), 2000);
     }
@@ -1187,7 +1145,7 @@ mod tests {
     #[test]
     fn split_message_over_limit() {
         let text = "a".repeat(2500);
-        let chunks = split_message(&text, 2000);
+        let chunks = split_message(&text, 2000).unwrap();
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].len(), 2000);
         assert_eq!(chunks[1].len(), 500);
@@ -1198,17 +1156,14 @@ mod tests {
         let mut text = "a".repeat(1900);
         text.push('\n');
         text.push_str(&"b".repeat(500));
-        let chunks = split_message(&text, 2000);
+        let chunks = split_message(&text, 2000).unwrap();
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].len(), 1900);
+        assert_eq!(chunks[0].len(), 1901);
     }
 
     #[test]
     fn extract_attachments_empty() {
-        // We cannot easily construct a serenity Message in tests without
-        // the full Discord API, so we test the split_message helper instead.
-        // The extract_attachments function is a trivial mapping and will be
-        // validated by integration tests.
+        assert!(extract_attachments(&Message::default()).is_empty());
     }
 
     // ── delete_message trait method existence ─────────────────────────

@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import threading
+import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--binary', type=Path, required=True)
@@ -32,9 +33,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
         requests.append(body)
         # Fixture content is constant: assertions below inspect actual requests
         # and native storage, not whether this fake model can recall anything.
+        text = 'DELIVERY_PARTIAL_' + ('x' * 256000) + '_END' if body.get('messages', [{}])[-1].get('content') == 'Crash delivery fixture.' else 'Fixture reply.'
         response = json.dumps({
             'id': 'fixture', 'object': 'chat.completion', 'model': 'fixture-model',
-            'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'Fixture reply.'}, 'finish_reason': 'stop'}],
+            'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': text}, 'finish_reason': 'stop'}],
             'usage': {'prompt_tokens': 20, 'completion_tokens': 4, 'total_tokens': 24},
         }).encode()
         self.send_response(200)
@@ -118,9 +120,53 @@ try:
     assert 'maple17' not in captured_new and 'allowed color amber' not in captured_new
     with sqlite3.connect(profile / 'memory.db') as db:
         assert db.execute("SELECT content FROM memory_entries WHERE id='chat_history:cli'").fetchone()[0] == raw
+    # Block the actual CLI sink on an unread pipe, then kill the process after
+    # its durable attempt marker exists. This proves partial stdout output is
+    # not converted into a replayable pending reply after process death.
+    with (root / 'crash.stderr.log').open('w') as error_log:
+        process = subprocess.Popen([str(binary), '--config', str(config), 'chat'],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=error_log,
+                                   cwd=root, env=env)
+        try:
+            process.stdin.write(b'Crash delivery fixture.\n/quit\n')
+            process.stdin.close()
+            process.stdin = None
+            deadline = time.monotonic() + 20
+            delivery_id = None
+            while time.monotonic() < deadline:
+                with sqlite3.connect(profile / 'executions.db') as db:
+                    row = db.execute("SELECT id FROM delivery_outbox WHERE state='attempting' ORDER BY rowid DESC LIMIT 1").fetchone()
+                if row:
+                    delivery_id = row[0]
+                    break
+                assert process.poll() is None, 'CLI exited before the crash boundary'
+                time.sleep(.05)
+            assert delivery_id, 'no durable delivery attempt reached'
+            process.kill()
+            stdout, _ = process.communicate(timeout=5)
+            (root / 'crash.stdout.log').write_bytes(stdout)
+            assert b'DELIVERY_PARTIAL_' in stdout and b'_END' not in stdout
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+    with sqlite3.connect(profile / 'executions.db') as db:
+        assert db.execute('SELECT state FROM delivery_outbox WHERE id=?', (delivery_id,)).fetchone()[0] == 'attempting'
+    request_count = len(requests)
+    resumed = run('reject-ambiguous-resume', '/delivery-resume ' + delivery_id)
+    assert 'DELIVERY_PARTIAL_' not in resumed
+    assert 'already attempted' in (root / 'reject-ambiguous-resume.stderr.log').read_text()
+    assert 'receipt unconfirmed' in run('delivery-status', '/delivery-status')
+    reviewed = run('review-saved-reply', '/delivery-show ' + delivery_id)
+    assert 'DELIVERY_PARTIAL_' in reviewed and len(reviewed) < 20000
+    assert len(requests) == request_count, 'delivery inspection/resume reran provider work'
+    run('preserve-unknown-new-epoch', '/session-new')
+    with sqlite3.connect(profile / 'executions.db') as db:
+        assert db.execute('SELECT state FROM delivery_outbox WHERE id=?', (delivery_id,)).fetchone()[0] == 'attempting'
     report = {'native_messages_before_reset': count, 'legacy_preserved': True,
               'commands_bypass_provider': True, 'restart_context_preserved': True,
-              'new_epoch_excludes_old_context': True, 'provider_requests': len(requests)}
+              'new_epoch_excludes_old_context': True, 'provider_requests': len(requests),
+              'process_kill_after_partial_output': True, 'ambiguous_delivery_not_replayed': True, 'saved_reply_review_is_bounded': True}
     (root / 'requests.json').write_text(json.dumps(requests, indent=2))
     (root / 'evidence.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report))

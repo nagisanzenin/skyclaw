@@ -169,3 +169,13 @@ Checkpoint validation also passes all eight compaction/tool-lifecycle integratio
 ### Conversation pool follow-up
 
 Admission now hydrates payloads using its existing transaction connection. It no longer asks for a second pooled connection while holding a write transaction, which could stall competing admissions when the shared pool is full. A one-connection regression fixture passes alongside all eight conversation tests; agent all-target clippy passes. The next delivery boundary is specified in [durable reply delivery](DELIVERY-IMPLEMENTATION.md), which is an implementation contract rather than completed functionality.
+
+## Nineteenth implementation checkpoint (saved final replies and lossless transport)
+
+Final replies now enter a transactional outbox before CLI output, TUI final-event enqueue or server transport. Failed/interrupted delivery remains uncertain and cannot automatically replay model, tools or reply. Explicit owner commands provide bounded review, current-epoch pending resume and separate user acknowledgement. UTF-8 splitting preserves whitespace and terminates on leading delimiters. TUI shutdown joins its bridge before reporting completion and distinguishes optional-hook drainage.
+
+Local validation: 817 agent library tests and 39 TUI tests passed before the shutdown additions; the subsequent TUI suite passed 41 tests. Root binary tests passed 69, all-feature channels 130, and focused shared splitting tests two. Workspace all-feature/all-target clippy passed with warnings denied, then the guard reclaimed 6.5 GiB, leaving about 23 GiB free. Archived-epoch coverage was added afterward: all seven delivery-store tests and agent all-target clippy passed in the follow-up run. The actual CLI crash fixture passed all nine evidence flags, including partial stdout, no ambiguous replay and bounded saved-reply review. The isolated live TUI final run returned the retained code/color with eight real deltas and a persisted accepted record.
+
+An earlier live TUI attempt exposed an unwanted DONE WHEN preamble on a simple recall question. Its output is preserved. That attempt also canceled an optional background hook; the shutdown report was corrected to distinguish foreground finalization from optional-hook drainage. Neither the failed attempt nor the small live pass is a broad A/B result. Planning/classification behavior still needs correction.
+
+CI run 34233346017 passed Linux tests, Windows tests, formatting/clippy, security audit, musl/glibc builds and Docker build for the prior pushed checkpoint. This does not validate unpushed follow-up changes or establish v6 release readiness. Platform delivery reconciliation, complete server/PTY acceptance and held-out A/B remain outstanding.

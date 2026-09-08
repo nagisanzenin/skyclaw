@@ -209,6 +209,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(7);
         }
     }
+    let shutdown = handle.shutdown(Duration::from_secs(6)).await;
+    if !shutdown.loop_joined {
+        eprintln!("[SMOKE FAIL] bridge did not finish its processing loop");
+        std::process::exit(8);
+    }
+    if !prompt_text.trim_start().starts_with('/') {
+        let journal = temm1e_agent::execution_journal::ExecutionJournal::open_profile().await?;
+        let scope = temm1e_agent::conversation::ConversationScope::new(
+            &config_dir.join("workspace"),
+            "tui",
+            "tui",
+            "local-owner",
+        )?;
+        let records = journal.delivery_records(&scope).await?;
+        if !records
+            .first()
+            .is_some_and(|record| record.state == "accepted_by_sink")
+        {
+            eprintln!("[SMOKE FAIL] final UI event acceptance was not durably recorded");
+            std::process::exit(9);
+        }
+    }
+    eprintln!("[SMOKE] processing_loop_joined={} background_drained={} (canceled hooks do not establish known usage/effects)", shutdown.loop_joined, shutdown.background_drained);
     eprintln!("[SMOKE] DONE — final response received; streamed_deltas={streamed_deltas}");
     Ok(())
 }

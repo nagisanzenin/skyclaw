@@ -108,6 +108,15 @@ impl ExecutionJournal {
             CREATE TABLE IF NOT EXISTS execution_conversations (
                 execution_id TEXT PRIMARY KEY, epoch TEXT NOT NULL, revision INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS execution_conversations_epoch_revision ON execution_conversations(epoch,revision);
+            CREATE TABLE IF NOT EXISTS delivery_outbox (
+                id TEXT PRIMARY KEY, scope TEXT NOT NULL, epoch TEXT NOT NULL,
+                revision INTEGER NOT NULL, channel TEXT NOT NULL,
+                payload TEXT NOT NULL, payload_hash TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('pending','attempting','accepted_by_sink','outcome_unknown','acknowledged_by_user')),
+                attempt_owner TEXT, detail TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                UNIQUE(epoch,revision));
+            CREATE INDEX IF NOT EXISTS delivery_outbox_scope_epoch ON delivery_outbox(scope,epoch,state);
             CREATE TABLE IF NOT EXISTS conversation_heads (
                 scope TEXT PRIMARY KEY, epoch TEXT NOT NULL, revision INTEGER NOT NULL,
                 checkpoint TEXT NOT NULL, busy_owner TEXT);

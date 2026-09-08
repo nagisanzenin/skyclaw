@@ -83,6 +83,41 @@ pub struct AgentHandle {
     /// (`runtime.rs:927`) and emits `AgentTaskPhase::Interrupted`.
     /// Reset to false at the start of each new message.
     pub interrupt_flag: Arc<AtomicBool>,
+    task: tokio::task::JoinHandle<bool>,
+}
+
+#[derive(Debug)]
+pub struct ShutdownReport {
+    pub loop_joined: bool,
+    pub background_drained: bool,
+}
+
+impl AgentHandle {
+    /// Close input, interrupt active work, and wait for final persistence and
+    /// owned runtime hooks. A timeout aborts this loop but preserves uncertainty.
+    pub async fn shutdown(self, deadline: std::time::Duration) -> ShutdownReport {
+        self.interrupt_flag.store(true, Ordering::Relaxed);
+        drop(self.inbound_tx);
+        let mut task = self.task;
+        match tokio::time::timeout(deadline, &mut task).await {
+            Ok(Ok(drained)) => ShutdownReport {
+                loop_joined: true,
+                background_drained: drained,
+            },
+            Ok(Err(_)) => ShutdownReport {
+                loop_joined: false,
+                background_drained: false,
+            },
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                ShutdownReport {
+                    loop_joined: false,
+                    background_drained: false,
+                }
+            }
+        }
+    }
 }
 
 /// Configuration for agent setup.
@@ -599,7 +634,7 @@ pub async fn spawn_agent(
         "local-owner",
     )?;
     tracing::info!(workspace = %workspace.display(), "TUI conversation workspace");
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         while let Some(msg) = inbound_rx.recv().await {
             // CRITICAL: reset the interrupt flag before each turn.
             // If a previous turn was cancelled and we didn't reset,
@@ -620,6 +655,38 @@ pub async fn spawn_agent(
                     cost_usd: 0.0,
                 }));
             };
+            match temm1e_agent::delivery::prepare_resume_command(
+                &conversations,
+                &conversation_scope,
+                msg.text.as_deref().unwrap_or(""),
+            )
+            .await
+            {
+                Ok(Some(ticket)) => {
+                    if let Err(e) = ticket
+                        .deliver(|message| async {
+                            event_tx
+                                .send(Event::AgentResponse(AgentResponseEvent {
+                                    kind: crate::event::ResponseKind::Final,
+                                    message,
+                                    input_tokens: 0,
+                                    output_tokens: 0,
+                                    cost_usd: 0.0,
+                                }))
+                                .map_err(|_| Temm1eError::Channel("TUI event queue closed".into()))
+                        })
+                        .await
+                    {
+                        fail(e.to_string());
+                    }
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    fail(e.to_string());
+                    continue;
+                }
+            }
             match temm1e_agent::conversation::handle_owner_command(
                 &conversations,
                 &conversation_scope,
@@ -705,26 +772,26 @@ pub async fn spawn_agent(
                 }
             };
 
-            // Save the exact history before presenting a final response. A
-            // failed commit leaves the durable busy marker for reconciliation.
-            if let Err(e) = turn.commit(&session.history).await {
-                fail(format!(
-                    "Could not save this turn: {e}. Do not retry uncertain tool effects."
-                ));
-                continue;
-            }
             match result {
                 Ok((reply, usage)) => {
-                    // Send response to TUI
-                    let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
-                        kind: crate::event::ResponseKind::Final,
-                        message: reply,
-                        input_tokens: usage.input_tokens,
-                        output_tokens: usage.output_tokens,
-                        cost_usd: usage.total_cost_usd,
-                    }));
+                    match turn.commit_with_reply(&session.history, &reply).await {
+                        Ok(ticket) => {
+                            if let Err(e) = ticket.deliver(|message| async {
+                                event_tx.send(Event::AgentResponse(AgentResponseEvent {
+                                    kind: crate::event::ResponseKind::Final, message,
+                                    input_tokens: usage.input_tokens, output_tokens: usage.output_tokens,
+                                    cost_usd: usage.total_cost_usd,
+                                })).map_err(|_| Temm1eError::Channel("TUI event queue closed".into()))
+                            }).await { fail(e.to_string()); }
+                        }
+                        Err(e) => fail(format!("Could not save the final reply: {e}. Inspect /session-recover before retrying uncertain effects.")),
+                    }
                 }
                 Err(e) => {
+                    if let Err(save_error) = turn.commit(&session.history).await {
+                        fail(format!("Could not save this failed turn: {save_error}. Inspect /session-recover."));
+                        continue;
+                    }
                     // Send error to TUI as a system message
                     let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
                         kind: crate::event::ResponseKind::Failed,
@@ -741,12 +808,16 @@ pub async fn spawn_agent(
                 }
             }
         }
+        agent
+            .shutdown_background(std::time::Duration::from_secs(5))
+            .await
     });
 
     Ok(AgentHandle {
         inbound_tx,
         status_rx,
         interrupt_flag,
+        task,
     })
 }
 
@@ -847,4 +918,66 @@ fn build_tui_system_prompt() -> String {
      - When executing multi-step tasks, call send_message to provide real-time progress updates.\n\
      - After finishing browser work, call browser with action 'close' to shut it down."
         .to_string()
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::time::Duration;
+    #[tokio::test]
+    async fn shutdown_waits_for_finalization_after_input_closes() {
+        let (inbound_tx, mut inbound_rx) = mpsc::channel(1);
+        let (_status_tx, status_rx) = watch::channel(AgentTaskStatus::default());
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let observed = interrupt_flag.clone();
+        let (entered, notified) = tokio::sync::oneshot::channel();
+        let (finish, finish_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            assert!(inbound_rx.recv().await.is_none());
+            assert!(observed.load(Ordering::Relaxed));
+            entered.send(()).unwrap();
+            finish_rx.await.unwrap();
+            true
+        });
+        let handle = AgentHandle {
+            inbound_tx,
+            status_rx,
+            interrupt_flag,
+            task,
+        };
+        let shutdown = tokio::spawn(handle.shutdown(Duration::from_secs(1)));
+        notified.await.unwrap();
+        assert!(!shutdown.is_finished());
+        finish.send(()).unwrap();
+        let report = shutdown.await.unwrap();
+        assert!(report.loop_joined && report.background_drained);
+    }
+    #[tokio::test]
+    async fn shutdown_timeout_aborts_the_owned_processing_task() {
+        struct Guard(Arc<AtomicBool>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = Guard(dropped.clone());
+        let (inbound_tx, _inbound_rx) = mpsc::channel(1);
+        let (_status_tx, status_rx) = watch::channel(AgentTaskStatus::default());
+        let (entered, notified) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            entered.send(()).unwrap();
+            std::future::pending::<bool>().await
+        });
+        notified.await.unwrap();
+        let handle = AgentHandle {
+            inbound_tx,
+            status_rx,
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
+            task,
+        };
+        assert!(!handle.shutdown(Duration::from_millis(1)).await.loop_joined);
+        assert!(dropped.load(Ordering::SeqCst));
+    }
 }

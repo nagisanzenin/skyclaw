@@ -1,4 +1,5 @@
 pub mod config;
+pub mod message_text;
 pub mod orchestrator_impl;
 pub mod process;
 pub mod sse;

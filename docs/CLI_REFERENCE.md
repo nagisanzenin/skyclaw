@@ -49,4 +49,15 @@ Tem keeps the full native conversation in the selected profile's canonical works
 - `/session-recover` inspects a turn interrupted by process death. Its confirmation restores the saved evidence, including unknown tool outcomes, without executing tools or resending replies. Inspect external state before retrying an uncertain effect.
 - TUI `/clear` clears the display only. It does not erase or reset agent memory.
 
-A second local process cannot dispatch another turn into the same conversation while it is locked. Invalid or oversized history produces an explicit error; it is not silently replaced with an empty chat. The current active-history limit is 32 MiB / 100,000 messages. This is not a total profile disk quota or a multi-host lock protocol. Server workers use the same store and no longer delete messages beyond the last 200. Durable reply-delivery reconciliation remains in progress on the modernization branch.
+A second local process cannot dispatch another turn into the same conversation while it is locked. Invalid or oversized history produces an explicit error; it is not silently replaced with an empty chat. The current active-history limit is 32 MiB / 100,000 messages. This is not a total profile disk quota or a multi-host lock protocol. Server workers use the same store and no longer delete messages beyond the last 200. Successful final replies are saved before delivery on the modernization branch.
+
+## Saved replies and interrupted delivery
+
+- `/delivery-status` lists saved replies and whether a send was attempted. “Channel accepted it” does not prove that you saw it.
+- `/delivery-show <id> [offset]` displays a bounded review copy without changing its delivery state.
+- `/delivery-resume <id>` sends a never-attempted reply from the current conversation, without rerunning the model or tools. Replies from earlier conversations can be reviewed but cannot be resumed.
+- `/delivery-ack <id>` records your statement that you received or read the reply. Use it only after reviewing that reply; it does not certify the overall task.
+
+When a process dies during a send, Tem cannot know whether the destination received all of it. It preserves the uncertainty and does not automatically send another copy. Review the saved reply, then acknowledge receipt or start a new conversation. `/session-new` preserves the old evidence. These commands use the same local-owner/server-Admin authorization as conversation recovery. Interim notices and tool-initiated sends do not yet have this final-reply protection.
+
+Logs now live in the selected profile's `logs` directory on Windows too. Existing logs under the older Windows LocalAppData location are left untouched.

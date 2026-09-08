@@ -17,6 +17,16 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
     });
 
     for (name, description) in [
+        ("delivery-status", "Inspect saved reply delivery states"),
+        (
+            "delivery-show",
+            "Review a saved reply without changing its delivery state",
+        ),
+        (
+            "delivery-resume",
+            "Send a never-attempted saved reply by ID",
+        ),
+        ("delivery-ack", "Record that you received a saved reply"),
         (
             "session-recover",
             "Inspect interrupted work before explicitly restoring its evidence",

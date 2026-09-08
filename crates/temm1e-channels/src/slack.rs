@@ -6,6 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use temm1e_core::message_text::split_message;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -376,7 +377,7 @@ impl Channel for SlackChannel {
     }
 
     async fn send_message(&self, msg: OutboundMessage) -> Result<(), Temm1eError> {
-        let chunks = split_message(&msg.text, SLACK_MESSAGE_LIMIT);
+        let chunks = split_message(&msg.text, SLACK_MESSAGE_LIMIT)?;
 
         for chunk in chunks {
             let mut body = serde_json::json!({
@@ -1007,52 +1008,6 @@ fn extract_slack_attachments(msg: &SlackMessage) -> Vec<AttachmentRef> {
         .collect()
 }
 
-/// Split a message into chunks that fit within Slack's character limit.
-/// Tries to split at newline boundaries first, then at spaces, then at
-/// the hard limit.
-/// Find the last byte offset that is on a UTF-8 char boundary at or before `max`.
-fn floor_char_boundary(s: &str, max: usize) -> usize {
-    if max >= s.len() {
-        return s.len();
-    }
-    let mut i = max;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// Split a message into chunks that fit within Slack's character limit.
-/// All splits respect UTF-8 char boundaries to prevent panics on multi-byte text.
-fn split_message(text: &str, max_len: usize) -> Vec<String> {
-    if text.len() <= max_len {
-        return vec![text.to_string()];
-    }
-
-    let mut chunks = Vec::new();
-    let mut remaining = text;
-
-    while !remaining.is_empty() {
-        if remaining.len() <= max_len {
-            chunks.push(remaining.to_string());
-            break;
-        }
-
-        let safe_end = floor_char_boundary(remaining, max_len);
-        // Try to split at a newline boundary.
-        let split_at = remaining[..safe_end].rfind('\n').unwrap_or_else(|| {
-            // Fall back to splitting at a space.
-            remaining[..safe_end].rfind(' ').unwrap_or(safe_end)
-        });
-
-        let (chunk, rest) = remaining.split_at(split_at);
-        chunks.push(chunk.to_string());
-        remaining = rest.trim_start_matches('\n');
-    }
-
-    chunks
-}
-
 /// Sanitize a file name to prevent path traversal.
 /// Strips all directory components and ensures the name is safe.
 fn sanitize_filename(name: &str) -> String {
@@ -1276,14 +1231,14 @@ mod tests {
 
     #[test]
     fn split_message_short() {
-        let chunks = split_message("hello", SLACK_MESSAGE_LIMIT);
+        let chunks = split_message("hello", SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks, vec!["hello"]);
     }
 
     #[test]
     fn split_message_at_limit() {
         let text = "a".repeat(SLACK_MESSAGE_LIMIT);
-        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT);
+        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].len(), SLACK_MESSAGE_LIMIT);
     }
@@ -1291,7 +1246,7 @@ mod tests {
     #[test]
     fn split_message_over_limit() {
         let text = "a".repeat(5000);
-        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT);
+        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].len(), SLACK_MESSAGE_LIMIT);
         assert_eq!(chunks[1].len(), 1000);
@@ -1302,14 +1257,14 @@ mod tests {
         let mut text = "a".repeat(3900);
         text.push('\n');
         text.push_str(&"b".repeat(500));
-        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT);
+        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].len(), 3900);
+        assert_eq!(chunks[0].len(), 3901);
     }
 
     #[test]
     fn split_message_empty() {
-        let chunks = split_message("", SLACK_MESSAGE_LIMIT);
+        let chunks = split_message("", SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks, vec![""]);
     }
 
@@ -1317,7 +1272,7 @@ mod tests {
     fn split_message_multiple_chunks() {
         // Create a message that will split into 3 chunks.
         let text = "a".repeat(SLACK_MESSAGE_LIMIT * 2 + 500);
-        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT);
+        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].len(), SLACK_MESSAGE_LIMIT);
         assert_eq!(chunks[1].len(), SLACK_MESSAGE_LIMIT);
