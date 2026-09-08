@@ -45,18 +45,11 @@ fn allowlist_path() -> Option<std::path::PathBuf> {
 /// Returns `None` if the file does not exist or cannot be parsed.
 fn load_allowlist_file() -> Option<AllowlistFile> {
     let path = allowlist_path()?;
-    let content = std::fs::read_to_string(&path).ok()?;
-    match toml::from_str(&content) {
-        Ok(parsed) => Some(parsed),
-        Err(e) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %e,
-                "Failed to parse allowlist file, ignoring"
-            );
-            None
-        }
-    }
+    let file = temm1e_core::types::rbac::read_role_file(&path).ok()??;
+    Some(AllowlistFile {
+        admin: file.admin,
+        users: file.users,
+    })
 }
 
 /// Save the allowlist to disk. Creates `~/.temm1e/` if needed.
@@ -64,15 +57,7 @@ fn save_allowlist_file(data: &AllowlistFile) -> Result<(), Temm1eError> {
     let path = allowlist_path().ok_or_else(|| {
         Temm1eError::Channel("Cannot determine home directory for allowlist".into())
     })?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            Temm1eError::Channel(format!("Failed to create ~/.temm1e directory: {e}"))
-        })?;
-    }
-    let content = toml::to_string_pretty(data)
-        .map_err(|e| Temm1eError::Channel(format!("Failed to serialize allowlist: {e}")))?;
-    std::fs::write(&path, content)
-        .map_err(|e| Temm1eError::Channel(format!("Failed to write allowlist file: {e}")))?;
+    temm1e_core::types::rbac::save_channel_allowlist(&path, &data.admin, &data.users)?;
     tracing::info!(path = %path.display(), "Allowlist saved");
     Ok(())
 }
@@ -114,6 +99,10 @@ impl TelegramChannel {
         let (tx, rx) = mpsc::channel(256);
 
         // Try to load persisted allowlist; fall back to config.
+        // Corruption is not first-user setup. Preserve the file and fail startup.
+        if let Some(path) = allowlist_path() {
+            temm1e_core::types::rbac::read_role_file(&path)?;
+        }
         let (allowlist, admin) = if let Some(file) = load_allowlist_file() {
             tracing::info!(
                 admin = %file.admin,
@@ -298,6 +287,21 @@ impl Channel for TelegramChannel {
 
     fn file_transfer(&self) -> Option<&dyn FileTransfer> {
         Some(self)
+    }
+
+    fn get_role(&self, user_id: &str) -> Option<temm1e_core::types::rbac::Role> {
+        let owner = self.admin.read().ok()?;
+        let path = temm1e_core::types::rbac::role_file_path(self.name());
+        temm1e_core::types::rbac::resolve_channel_role(
+            path.as_deref(),
+            user_id,
+            self.is_allowed(user_id),
+            owner.as_deref(),
+        )
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, channel = self.name(), "Authorization denied");
+            None
+        })
     }
 
     fn is_allowed(&self, user_id: &str) -> bool {

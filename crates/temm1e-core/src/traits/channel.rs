@@ -28,13 +28,19 @@ pub trait Channel: Send + Sync {
 
     /// Get the role of a user in this channel.
     /// Returns None if the user is not on the allowlist.
-    /// Default: returns Admin if allowed (backward compat for channels not yet upgraded).
+    /// Default: admitted users have User privileges; owner-aware channels override this.
     fn get_role(&self, user_id: &str) -> Option<crate::types::rbac::Role> {
-        if self.is_allowed(user_id) {
-            Some(crate::types::rbac::Role::Admin)
-        } else {
+        let path = crate::types::rbac::role_file_path(self.name());
+        crate::types::rbac::resolve_channel_role(
+            path.as_deref(),
+            user_id,
+            self.is_allowed(user_id),
+            None,
+        )
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, channel = self.name(), "Authorization denied");
             None
-        }
+        })
     }
 
     /// Promote a user to admin role. User must already be on the allowlist.

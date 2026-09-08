@@ -328,6 +328,11 @@ impl Channel for CliChannel {
         Some(self)
     }
 
+    // The local terminal is explicitly operated by the host owner.
+    fn get_role(&self, _user_id: &str) -> Option<temm1e_core::types::rbac::Role> {
+        Some(temm1e_core::types::rbac::Role::Admin)
+    }
+
     fn is_allowed(&self, _user_id: &str) -> bool {
         // CLI is always local; no access control needed.
         true

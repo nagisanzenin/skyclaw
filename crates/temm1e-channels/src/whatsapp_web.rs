@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn allow_all_allows_everyone() {
-        let config = test_config(None);
+        let config = test_config(Some("allow_all:ignore"));
         let channel = WhatsAppWebChannel::new(&config).unwrap();
         assert!(channel.is_allowed("15551234567"));
         assert!(channel.is_allowed("anyone"));
@@ -573,12 +573,11 @@ mod tests {
     }
 
     #[test]
-    fn allowlist_empty_allows_all() {
-        // Allowlist mode but no entries = allow everyone
-        // (user chose allowlist but didn't configure it yet)
+    fn allowlist_empty_denies_all() {
+        // Explicit allowlist mode admits only configured identities.
         let config = test_config(Some("allowlist:ignore"));
         let channel = WhatsAppWebChannel::new(&config).unwrap();
-        assert!(channel.is_allowed("15551234567"));
+        assert!(!channel.is_allowed("15551234567"));
     }
 
     #[test]

@@ -127,6 +127,9 @@ impl RoleFile {
 
     /// Get the role for a user ID. Returns None if user is not allowed.
     pub fn role_of(&self, user_id: &str) -> Option<Role> {
+        if user_id.is_empty() || user_id == "*" {
+            return None;
+        }
         if self.admins.iter().any(|a| a == user_id) || self.admin == user_id {
             Some(Role::Admin)
         } else if self.users.iter().any(|u| u == user_id) {
@@ -189,7 +192,9 @@ pub fn role_file_path(channel_name: &str) -> Option<PathBuf> {
         "telegram" => "allowlist.toml",
         "discord" => "discord_allowlist.toml",
         "slack" => "slack_allowlist.toml",
-        "whatsapp" | "whatsapp_web" | "whatsapp_cloud" => "whatsapp_allowlist.toml",
+        "whatsapp" | "whatsapp_web" | "whatsapp_cloud" | "whatsapp-web" | "whatsapp-cloud" => {
+            "whatsapp_allowlist.toml"
+        }
         _ => return None,
     };
     Some(temm1e_dir.join(filename))
@@ -201,12 +206,63 @@ pub fn load_role_file(channel_name: &str) -> Option<RoleFile> {
     load_role_file_from_path(&path)
 }
 
-/// Load a role file from a specific path.
+/// Load a role file from a specific path (legacy optional API).
 pub fn load_role_file_from_path(path: &Path) -> Option<RoleFile> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let mut file: RoleFile = toml::from_str(&content).ok()?;
+    read_role_file(path).ok().flatten()
+}
+
+/// Missing is distinct from unreadable or malformed authorization data.
+pub fn read_role_file(path: &Path) -> Result<Option<RoleFile>, Temm1eError> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Temm1eError::Config(format!("Cannot read role file: {e}"))),
+    };
+    let mut file: RoleFile = toml::from_str(&content)
+        .map_err(|e| Temm1eError::Config(format!("Invalid role file: {e}")))?;
     file.migrate();
-    Some(file)
+    Ok(Some(file))
+}
+
+/// Resolve an admitted channel identity without converting missing data into Admin.
+/// Only an explicit channel owner may receive Admin when no role file exists.
+/// An existing file is authoritative, including removals; wildcard admission grants User.
+pub fn resolve_channel_role(
+    path: Option<&Path>,
+    user_id: &str,
+    admitted: bool,
+    owner: Option<&str>,
+) -> Result<Option<Role>, Temm1eError> {
+    if !admitted || user_id.is_empty() || user_id == "*" {
+        return Ok(None);
+    }
+    if let Some(path) = path {
+        if let Some(file) = read_role_file(path)? {
+            return Ok(file
+                .role_of(user_id)
+                .or_else(|| file.users.iter().any(|id| id == "*").then_some(Role::User)));
+        }
+    }
+    Ok(Some(if owner == Some(user_id) {
+        Role::Admin
+    } else {
+        Role::User
+    }))
+}
+
+/// Preserve promoted administrators when a legacy channel updates admission.
+/// Removed users lose their promoted role; the explicit owner is retained.
+pub fn save_channel_allowlist(
+    path: &Path,
+    admin: &str,
+    users: &[String],
+) -> Result<(), Temm1eError> {
+    let mut file = read_role_file(path)?.unwrap_or_default();
+    file.admin = admin.to_owned();
+    file.users = users.to_vec();
+    file.admins.retain(|id| users.contains(id) || id == admin);
+    file.migrate();
+    save_role_file_to_path(path, &file)
 }
 
 /// Save a channel's role file to disk.
@@ -225,7 +281,7 @@ pub fn save_role_file_to_path(path: &Path, data: &RoleFile) -> Result<(), Temm1e
     }
     let content = toml::to_string_pretty(data)
         .map_err(|e| Temm1eError::Config(format!("Failed to serialize role file: {}", e)))?;
-    std::fs::write(path, content)
+    crate::private_file::write_private_atomic(path, content.as_bytes())
         .map_err(|e| Temm1eError::Config(format!("Failed to write role file: {}", e)))?;
     Ok(())
 }
@@ -235,6 +291,58 @@ pub fn save_role_file_to_path(path: &Path, data: &RoleFile) -> Result<(), Temm1e
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_admission_updates_preserve_promotions_and_remove_revoked_admins() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roles.toml");
+        let mut file = RoleFile::new_with_admin("owner");
+        file.add_user("promoted");
+        file.promote_to_admin("promoted");
+        save_role_file_to_path(&path, &file).unwrap();
+        save_channel_allowlist(
+            &path,
+            "owner",
+            &["owner".into(), "promoted".into(), "new".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            read_role_file(&path).unwrap().unwrap().role_of("promoted"),
+            Some(Role::Admin)
+        );
+        save_channel_allowlist(&path, "owner", &["owner".into()]).unwrap();
+        assert_eq!(
+            read_role_file(&path).unwrap().unwrap().role_of("promoted"),
+            None
+        );
+        std::fs::write(&path, "[").unwrap();
+        assert!(save_channel_allowlist(&path, "new-owner", &[]).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[");
+    }
+
+    #[test]
+    fn authorization_distinguishes_missing_corrupt_and_revoked_roles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roles.toml");
+        let resolve = |id, admitted| resolve_channel_role(Some(&path), id, admitted, Some("owner"));
+        assert_eq!(resolve("owner", true).unwrap(), Some(Role::Admin));
+        assert_eq!(resolve("guest", true).unwrap(), Some(Role::User));
+        assert_eq!(resolve("owner", false).unwrap(), None);
+        assert_eq!(resolve("", true).unwrap(), None);
+        assert_eq!(resolve("*", true).unwrap(), None);
+        std::fs::write(&path, "not valid [toml").unwrap();
+        assert!(resolve("owner", true).is_err());
+        let mut file = RoleFile::new_with_admin("other-owner");
+        save_role_file_to_path(&path, &file).unwrap();
+        assert_eq!(resolve("owner", true).unwrap(), None);
+        file.add_user("guest");
+        file.add_user("*");
+        save_role_file_to_path(&path, &file).unwrap();
+        assert_eq!(resolve("guest", true).unwrap(), Some(Role::User));
+        assert_eq!(resolve("visitor", true).unwrap(), Some(Role::User));
+        assert_eq!(resolve("other-owner", true).unwrap(), Some(Role::Admin));
+        assert_eq!(RoleFile::default().role_of(""), None);
+    }
 
     #[test]
     fn role_display() {
