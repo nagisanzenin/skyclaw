@@ -17,6 +17,11 @@ pub trait Transport: Send + Sync {
         params: Option<serde_json::Value>,
     ) -> Result<JsonRpcResponse, Temm1eError>;
 
+    /// Apply the negotiated legacy protocol version to subsequent HTTP requests.
+    async fn set_protocol_version(&self, _version: &str) -> Result<(), Temm1eError> {
+        Ok(())
+    }
+
     /// Send a JSON-RPC notification (no response expected).
     async fn notify(
         &self,

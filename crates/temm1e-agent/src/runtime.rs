@@ -1589,6 +1589,8 @@ impl AgentRuntime {
                 );
             }
 
+            crate::context::finalize_context(&mut request, self.max_context_tokens)?;
+
             debug!(
                 round = rounds,
                 messages = request.messages.len(),
@@ -3012,11 +3014,11 @@ impl AgentRuntime {
                                 let safe_end = if output.content.is_char_boundary(output_cap) {
                                     output_cap
                                 } else {
-                                    output.content[..output_cap]
-                                        .char_indices()
-                                        .last()
-                                        .map(|(i, _)| i)
-                                        .unwrap_or(0)
+                                    let mut end = output_cap;
+                                    while !output.content.is_char_boundary(end) {
+                                        end -= 1;
+                                    }
+                                    end
                                 };
                                 let truncated = &output.content[..safe_end];
                                 format!(

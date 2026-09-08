@@ -43,9 +43,7 @@ impl McpClient {
     pub async fn initialize(&self) -> Result<McpServerInfo, Temm1eError> {
         let params = serde_json::json!({
             "protocolVersion": "2025-11-25",
-            "capabilities": {
-                "tools": {}
-            },
+            "capabilities": {},
             "clientInfo": {
                 "name": "temm1e",
                 "version": env!("CARGO_PKG_VERSION")
@@ -58,20 +56,32 @@ impl McpClient {
 
         let result = response.into_result()?;
 
-        let server_info = McpServerInfo {
-            name: result["serverInfo"]["name"]
+        // Explicit legacy compatibility set. New lifecycle revisions require
+        // their own negotiation path; accepting an unknown version is unsafe.
+        let version = result["protocolVersion"].as_str().unwrap_or("");
+        if !["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"].contains(&version) {
+            let _ = self.transport.close().await;
+            return Err(Temm1eError::Tool(
+                "MCP server returned an unsupported protocol version".into(),
+            ));
+        }
+        let required = |field: &str| {
+            result["serverInfo"][field]
                 .as_str()
-                .unwrap_or("unknown")
-                .to_string(),
-            version: result["serverInfo"]["version"]
-                .as_str()
-                .unwrap_or("unknown")
-                .to_string(),
-            protocol_version: result["protocolVersion"]
-                .as_str()
-                .unwrap_or("unknown")
-                .to_string(),
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| Temm1eError::Tool(format!("MCP serverInfo is missing {field}")))
         };
+        let server_info = McpServerInfo {
+            name: required("name")?,
+            version: required("version")?,
+            protocol_version: version.to_owned(),
+        };
+        self.transport.set_protocol_version(version).await?;
+        self.transport
+            .notify("notifications/initialized", None)
+            .await?;
+        *self.server_info.write().await = Some(server_info.clone());
 
         info!(
             server = %self.server_name,
@@ -81,39 +91,72 @@ impl McpClient {
             "MCP server initialized"
         );
 
-        *self.server_info.write().await = Some(server_info.clone());
-
-        // Send initialized notification
-        self.transport
-            .notify("notifications/initialized", None)
-            .await?;
-
         Ok(server_info)
     }
 
     /// List tools exposed by the MCP server.
     pub async fn list_tools(&self) -> Result<Vec<McpToolInfo>, Temm1eError> {
-        let response = self.transport.send("tools/list", None).await?;
-        let result = response.into_result()?;
-
-        let tools_array = result["tools"]
-            .as_array()
-            .ok_or_else(|| Temm1eError::Tool("MCP tools/list: missing 'tools' array".into()))?;
-
-        let mut tools = Vec::with_capacity(tools_array.len());
-        for tool_value in tools_array {
-            let name = tool_value["name"].as_str().unwrap_or("unnamed").to_string();
-            let description = tool_value["description"].as_str().unwrap_or("").to_string();
-            let input_schema = tool_value
-                .get("inputSchema")
-                .cloned()
-                .unwrap_or(serde_json::json!({"type": "object"}));
-
-            tools.push(McpToolInfo {
-                name,
-                description,
-                input_schema,
-            });
+        // Cursors are opaque and scoped to this discovery operation. Bound both
+        // requests and registrations; never return a silently partial catalog.
+        const MAX_PAGES: usize = 256;
+        const MAX_TOOLS: usize = 10_000;
+        let mut tools = Vec::new();
+        let mut names = std::collections::HashSet::new();
+        let mut cursors = std::collections::HashSet::new();
+        let mut params = None;
+        for page in 0..MAX_PAGES {
+            let result = self
+                .transport
+                .send("tools/list", params)
+                .await?
+                .into_result()?;
+            let entries = result["tools"]
+                .as_array()
+                .ok_or_else(|| Temm1eError::Tool("MCP tools/list: missing 'tools' array".into()))?;
+            if entries.len() > MAX_TOOLS.saturating_sub(tools.len()) {
+                return Err(Temm1eError::Tool(
+                    "MCP tool catalog exceeds 10,000 tools".into(),
+                ));
+            }
+            for entry in entries {
+                let name = entry["name"]
+                    .as_str()
+                    .filter(|n| !n.is_empty())
+                    .ok_or_else(|| Temm1eError::Tool("MCP tool has no nonempty name".into()))?;
+                if !names.insert(name.to_owned()) {
+                    return Err(Temm1eError::Tool(
+                        "MCP tool catalog contains duplicate names".into(),
+                    ));
+                }
+                let input_schema = entry
+                    .get("inputSchema")
+                    .filter(|s| s.is_object())
+                    .ok_or_else(|| {
+                        Temm1eError::Tool("MCP tool has no object inputSchema".into())
+                    })?;
+                tools.push(McpToolInfo {
+                    name: name.to_owned(),
+                    description: entry["description"].as_str().unwrap_or("").to_owned(),
+                    input_schema: input_schema.clone(),
+                });
+            }
+            match result.get("nextCursor") {
+                None => break,
+                Some(serde_json::Value::String(cursor)) => {
+                    if !cursors.insert(cursor.clone()) {
+                        return Err(Temm1eError::Tool(
+                            "MCP tool pagination repeated a cursor".into(),
+                        ));
+                    }
+                    if page + 1 == MAX_PAGES {
+                        return Err(Temm1eError::Tool(
+                            "MCP tool discovery exceeds 256 pages".into(),
+                        ));
+                    }
+                    params = Some(serde_json::json!({"cursor": cursor}));
+                }
+                Some(_) => return Err(Temm1eError::Tool("MCP nextCursor must be a string".into())),
+            }
         }
 
         debug!(
@@ -204,6 +247,123 @@ pub struct McpToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FixtureTransport {
+        replies: tokio::sync::Mutex<std::collections::VecDeque<serde_json::Value>>,
+        requests: tokio::sync::Mutex<Vec<(String, Option<serde_json::Value>)>>,
+        closed: std::sync::atomic::AtomicBool,
+        fail_notify: bool,
+    }
+
+    impl FixtureTransport {
+        fn new(replies: Vec<serde_json::Value>, fail_notify: bool) -> Arc<Self> {
+            Arc::new(Self {
+                replies: tokio::sync::Mutex::new(replies.into()),
+                requests: Default::default(),
+                closed: false.into(),
+                fail_notify,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Transport for FixtureTransport {
+        async fn send(
+            &self,
+            method: &str,
+            params: Option<serde_json::Value>,
+        ) -> Result<crate::jsonrpc::JsonRpcResponse, Temm1eError> {
+            self.requests.lock().await.push((method.into(), params));
+            Ok(crate::jsonrpc::JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: Some(1),
+                error: None,
+                result: Some(
+                    self.replies
+                        .lock()
+                        .await
+                        .pop_front()
+                        .expect("unexpected request"),
+                ),
+            })
+        }
+        async fn notify(&self, _: &str, _: Option<serde_json::Value>) -> Result<(), Temm1eError> {
+            if self.fail_notify {
+                Err(Temm1eError::Tool("fixture notification failed".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn is_alive(&self) -> bool {
+            !self.closed.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        async fn close(&self) -> Result<(), Temm1eError> {
+            self.closed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    fn page(name: &str, cursor: Option<&str>) -> serde_json::Value {
+        let mut result =
+            serde_json::json!({"tools": [{"name": name, "inputSchema": {"type": "object"}}]});
+        if let Some(cursor) = cursor {
+            result["nextCursor"] = cursor.into();
+        }
+        result
+    }
+
+    #[tokio::test]
+    async fn discovery_follows_opaque_cursor_and_preserves_all_tools() {
+        let transport =
+            FixtureTransport::new(vec![page("a", Some("雪/+==")), page("b", None)], false);
+        let tools = McpClient::new("fixture", transport.clone())
+            .list_tools()
+            .await
+            .unwrap();
+        assert_eq!(
+            tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        let calls = transport.requests.lock().await;
+        assert_eq!(calls[0].1, None);
+        assert_eq!(calls[1].1, Some(serde_json::json!({"cursor": "雪/+=="})));
+    }
+
+    #[tokio::test]
+    async fn discovery_rejects_cycles_duplicates_and_malformed_pages() {
+        for replies in [
+            vec![page("a", Some("same")), page("b", Some("same"))],
+            vec![page("a", Some("next")), page("a", None)],
+            vec![serde_json::json!({"tools": [], "nextCursor": 1})],
+            vec![serde_json::json!({"tools": [{"inputSchema": {}}]})],
+            vec![serde_json::json!({"tools": [{"name": "bad", "inputSchema": []}]})],
+        ] {
+            let client = McpClient::new("fixture", FixtureTransport::new(replies, false));
+            assert!(client.list_tools().await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_unknown_version_and_never_publishes_failed_initialization() {
+        let transport = FixtureTransport::new(
+            vec![serde_json::json!({"protocolVersion": "unknown"})],
+            false,
+        );
+        let client = McpClient::new("fixture", transport.clone());
+        assert!(client.initialize().await.is_err());
+        assert!(!transport.is_alive());
+        assert!(client.server_info().await.is_none());
+        let transport = FixtureTransport::new(
+            vec![serde_json::json!({
+                "protocolVersion": "2025-11-25", "serverInfo": {"name": "fixture", "version": "1"}
+            })],
+            true,
+        );
+        let client = McpClient::new("fixture", transport);
+        assert!(client.initialize().await.is_err());
+        assert!(client.server_info().await.is_none());
+    }
 
     #[test]
     fn mcp_tool_info_debug() {

@@ -618,6 +618,7 @@ pub async fn spawn_agent(
             tokio::spawn(async move {
                 while let Some(early_msg) = early_rx.recv().await {
                     let _ = event_tx_early.send(Event::AgentResponse(AgentResponseEvent {
+                        kind: crate::event::ResponseKind::Interim,
                         message: early_msg,
                         input_tokens: 0,
                         output_tokens: 0,
@@ -642,6 +643,7 @@ pub async fn spawn_agent(
                 Ok((reply, usage)) => {
                     // Send response to TUI
                     let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
+                        kind: crate::event::ResponseKind::Final,
                         message: reply,
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
@@ -668,6 +670,7 @@ pub async fn spawn_agent(
                 Err(e) => {
                     // Send error to TUI as a system message
                     let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
+                        kind: crate::event::ResponseKind::Failed,
                         message: OutboundMessage {
                             chat_id: "tui".to_string(),
                             text: format!("[Error: {}]", e),

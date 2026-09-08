@@ -55,9 +55,9 @@ pub(crate) fn estimate_tokens(s: &str) -> usize {
     let non_ascii = s.as_bytes().iter().filter(|&&b| b > 127).count();
     let ratio = non_ascii as f64 / s.len().max(1) as f64;
     if ratio > 0.3 {
-        s.len() / 2
+        s.len().div_ceil(2)
     } else {
-        s.len() / 4
+        s.len().div_ceil(4)
     }
 }
 
@@ -78,6 +78,101 @@ fn estimate_message_tokens(msg: &ChatMessage) -> usize {
             })
             .sum(),
     }
+}
+
+/// Final request accounting after every runtime injection. This is explicitly
+/// an estimate: provider tokenizers, image resolution and wire envelopes differ.
+/// Include message framing, IDs, names, schemas and both system segments.
+pub(crate) fn estimate_request_tokens(request: &CompletionRequest) -> usize {
+    let mut total = 32usize;
+    for system in [&request.system, &request.system_volatile]
+        .into_iter()
+        .flatten()
+    {
+        total = total.saturating_add(estimate_tokens(system).saturating_add(8));
+    }
+    for tool in &request.tools {
+        total = total.saturating_add(
+            estimate_tokens(&serde_json::to_string(tool).unwrap_or_default()).saturating_add(16),
+        );
+    }
+    for message in &request.messages {
+        total = total.saturating_add(16);
+        match &message.content {
+            MessageContent::Text(text) => total = total.saturating_add(estimate_tokens(text)),
+            MessageContent::Parts(parts) => {
+                for part in parts {
+                    total = total.saturating_add(match part {
+                        ContentPart::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+                        _ => estimate_tokens(&serde_json::to_string(part).unwrap_or_default())
+                            .saturating_add(8),
+                    });
+                }
+            }
+        }
+    }
+    total
+}
+
+/// Fit the fully assembled request to the configured input allowance. Keep the
+/// current user turn, system instructions and complete tool groups intact.
+/// Fail explicitly when protected content itself cannot fit; never silently
+/// truncate the user's request or a tool's JSON arguments.
+pub(crate) fn finalize_context(
+    request: &mut CompletionRequest,
+    configured_input_limit: usize,
+) -> Result<(), temm1e_core::types::error::Temm1eError> {
+    let (window, _) = model_registry::model_limits(&request.model);
+    let input_limit =
+        configured_input_limit.min(window.saturating_sub(request.max_tokens.unwrap_or(0) as usize));
+    // Leave 10% for tokenizer/wire estimation error. This is not a guarantee
+    // against provider context errors; exact adapter counting remains separate.
+    let target = input_limit.saturating_sub(input_limit / 10);
+    let mut dropped = 0usize;
+    while estimate_request_tokens(request) > target {
+        let current_user = request
+            .messages
+            .iter()
+            .rposition(|message| {
+                matches!(message.role, Role::User)
+                    && match &message.content {
+                        MessageContent::Text(_) => true,
+                        MessageContent::Parts(parts) => parts.iter().any(|p| {
+                            matches!(p, ContentPart::Text { .. } | ContentPart::Image { .. })
+                        }),
+                    }
+            })
+            .unwrap_or(0);
+        let groups = group_into_turns(&request.messages);
+        let removable = groups.iter().find(|group| {
+            group
+                .indices
+                .iter()
+                .all(|&i| i < current_user && !matches!(request.messages[i].role, Role::System))
+        });
+        let Some(group) = removable else {
+            return Err(temm1e_core::types::error::Temm1eError::Provider(format!(
+                "Context budget exceeded: protected current turn and instructions need approximately {} input tokens; allowance is {}. Compact the session or increase its configured context budget.",
+                estimate_request_tokens(request), target
+            )));
+        };
+        for &i in group.indices.iter().rev() {
+            request.messages.remove(i);
+            dropped += 1;
+        }
+        if dropped == group.indices.len() {
+            request.append_system_volatile("[Context notice: older conversation messages were omitted to fit the context budget. Their details are unavailable; do not invent them.]");
+        }
+    }
+    if dropped > 0 {
+        warn!(
+            messages_dropped = dropped,
+            estimated_input = estimate_request_tokens(request),
+            input_limit = target,
+            "Final context pass omitted older history after runtime injections"
+        );
+    }
+    Ok(())
 }
 
 /// Build a CompletionRequest from all available context using priority-based
@@ -1041,6 +1136,84 @@ fn build_system_prompt(
 mod tests {
     use super::*;
     use temm1e_test_utils::{make_session, MockMemory, MockTool};
+
+    fn final_request(messages: Vec<ChatMessage>) -> CompletionRequest {
+        CompletionRequest {
+            model: "test-model".into(),
+            messages,
+            tools: vec![],
+            max_tokens: Some(100),
+            temperature: None,
+            system: Some("Preserve these instructions".into()),
+            system_volatile: None,
+        }
+    }
+
+    #[test]
+    fn final_budget_counts_late_injections_and_preserves_current_turn() {
+        let current = ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text("Current request".into()),
+        };
+        let mut request = final_request(vec![
+            ChatMessage {
+                role: Role::User,
+                content: MessageContent::Text("old context ".repeat(200)),
+            },
+            ChatMessage {
+                role: Role::Assistant,
+                content: MessageContent::Text("old reply ".repeat(200)),
+            },
+            current,
+        ]);
+        request.append_system_volatile(&"late runtime instructions ".repeat(20));
+        finalize_context(&mut request, 600).unwrap();
+        assert!(estimate_request_tokens(&request) <= 540);
+        assert_eq!(request.messages.len(), 1);
+        assert!(
+            matches!(&request.messages[0].content, MessageContent::Text(t) if t == "Current request")
+        );
+        assert!(request
+            .system_volatile
+            .unwrap()
+            .contains("older conversation messages were omitted"));
+    }
+
+    #[test]
+    fn final_budget_removes_tool_pairs_together_and_rejects_oversize_current_turn() {
+        let mut request = final_request(vec![
+            ChatMessage {
+                role: Role::Assistant,
+                content: MessageContent::Parts(vec![ContentPart::ToolUse {
+                    id: "call".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({}),
+                    thought_signature: None,
+                }]),
+            },
+            ChatMessage {
+                role: Role::Tool,
+                content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                    tool_use_id: "call".into(),
+                    content: "large result".repeat(500),
+                    is_error: false,
+                }]),
+            },
+            ChatMessage {
+                role: Role::User,
+                content: MessageContent::Text("Current".into()),
+            },
+        ]);
+        finalize_context(&mut request, 400).unwrap();
+        assert_eq!(request.messages.len(), 1);
+        let mut oversized = final_request(vec![ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text("Do not silently truncate this".repeat(500)),
+        }]);
+        let before = serde_json::to_string(&oversized.messages).unwrap();
+        assert!(finalize_context(&mut oversized, 400).is_err());
+        assert_eq!(serde_json::to_string(&oversized.messages).unwrap(), before);
+    }
 
     #[tokio::test]
     async fn context_includes_system_prompt() {

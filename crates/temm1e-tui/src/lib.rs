@@ -658,6 +658,7 @@ async fn handle_model_switch(
 /// that don't hold a mutable `AppState` reference.
 fn push_system_line_via_tx(event_tx: &mpsc::UnboundedSender<Event>, text: String) {
     let _ = event_tx.send(Event::AgentResponse(event::AgentResponseEvent {
+        kind: crate::event::ResponseKind::Notice,
         message: temm1e_core::types::message::OutboundMessage {
             chat_id: "tui".to_string(),
             text,

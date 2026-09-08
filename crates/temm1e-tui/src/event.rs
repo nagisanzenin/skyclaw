@@ -34,10 +34,20 @@ pub struct StreamChunk {
 /// Agent response event with full message and usage info.
 #[derive(Debug, Clone)]
 pub struct AgentResponseEvent {
+    pub kind: ResponseKind,
     pub message: OutboundMessage,
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub cost_usd: f64,
+}
+
+/// Lifecycle comes from the producer, never inferred from token usage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseKind {
+    Interim,
+    Final,
+    Failed,
+    Notice,
 }
 
 /// Tool execution notification for the activity panel.

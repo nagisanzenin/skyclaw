@@ -502,10 +502,11 @@ pub fn update(state: &mut AppState, event: Event) {
             state.needs_redraw = true;
         }
         Event::AgentResponse(response) => {
-            // Record usage (only if this is a real response, not an early reply)
-            let is_early_reply = response.input_tokens == 0
-                && response.output_tokens == 0
-                && response.cost_usd == 0.0;
+            let is_early_reply = response.kind != crate::event::ResponseKind::Final;
+            let is_terminal = matches!(
+                response.kind,
+                crate::event::ResponseKind::Final | crate::event::ResponseKind::Failed
+            );
 
             if !is_early_reply {
                 state.token_counter.record_turn(
@@ -560,11 +561,10 @@ pub fn update(state: &mut AppState, event: Event) {
                 });
             }
 
-            // Only stop working on the FINAL response (not early replies)
-            if !is_early_reply {
+            if is_terminal {
                 state.is_agent_working = false;
+                state.streaming_renderer = None;
             }
-            state.streaming_renderer = None;
             state.needs_redraw = true;
         }
         Event::UserSubmit(text) => {
@@ -1305,6 +1305,36 @@ fn handle_onboarding_key(state: &mut AppState, key: crossterm::event::KeyEvent) 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn response_lifecycle_does_not_depend_on_reported_usage() {
+        use crate::event::{AgentResponseEvent, ResponseKind};
+        for (kind, should_stop) in [
+            (ResponseKind::Final, true),
+            (ResponseKind::Failed, true),
+            (ResponseKind::Interim, false),
+            (ResponseKind::Notice, false),
+        ] {
+            let mut state = super::AppState::new();
+            state.is_agent_working = true;
+            super::update(
+                &mut state,
+                super::Event::AgentResponse(AgentResponseEvent {
+                    kind,
+                    message: temm1e_core::types::message::OutboundMessage {
+                        chat_id: "fixture".into(),
+                        text: "fixture response".into(),
+                        reply_to: None,
+                        parse_mode: None,
+                    },
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_usd: 0.0,
+                }),
+            );
+            assert_eq!(state.is_agent_working, !should_stop, "{kind:?}");
+        }
+    }
 
     #[test]
     fn ordered_tool_events_keep_repeated_calls_and_details() {

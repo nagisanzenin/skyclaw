@@ -100,6 +100,7 @@ impl Channel for TuiChannel {
     async fn send_message(&self, msg: OutboundMessage) -> Result<(), Temm1eError> {
         // Route through the TUI event loop
         let _ = self.event_tx.send(Event::AgentResponse(AgentResponseEvent {
+            kind: crate::event::ResponseKind::Interim,
             message: msg,
             input_tokens: 0,
             output_tokens: 0,
@@ -160,6 +161,7 @@ impl FileTransfer for TuiChannel {
         // Notify TUI about the saved file
         let msg = format!("[File saved: {}]", dest.display());
         let _ = self.event_tx.send(Event::AgentResponse(AgentResponseEvent {
+            kind: crate::event::ResponseKind::Interim,
             message: OutboundMessage {
                 chat_id: "tui".to_string(),
                 text: msg,
