@@ -81,6 +81,10 @@ impl ExecutionJournal {
             goal TEXT NOT NULL, state TEXT NOT NULL, checkpoint TEXT NOT NULL,
             reply TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS executions_scope_state ON executions(scope, state);
+            CREATE INDEX IF NOT EXISTS executions_scope_inbound ON executions(scope, inbound_id);
+            CREATE TABLE IF NOT EXISTS inbound_claims (
+                scope TEXT NOT NULL, inbound_id TEXT NOT NULL, execution_id TEXT NOT NULL,
+                PRIMARY KEY(scope,inbound_id));
             CREATE TABLE IF NOT EXISTS execution_operations (
             execution_id TEXT NOT NULL REFERENCES executions(id), operation_id TEXT NOT NULL,
             tool TEXT NOT NULL, arguments TEXT NOT NULL, state TEXT NOT NULL,
@@ -118,13 +122,49 @@ impl ExecutionJournal {
         msg: &InboundMessage,
         session: &SessionContext,
     ) -> Result<String, Temm1eError> {
+        if msg.id.is_empty() {
+            return Err(error("inbound message requires a stable nonempty ID"));
+        }
         let id = uuid::Uuid::new_v4().to_string();
+        let scope = Self::scope(session)?;
         let now = chrono::Utc::now().to_rfc3339();
+        let mut transaction = self.pool.begin().await.map_err(error)?;
+        // Claim first to serialize admissions before any provider/tool work.
+        let claimed = sqlx::query("INSERT INTO inbound_claims(scope,inbound_id,execution_id) VALUES(?,?,?) ON CONFLICT(scope,inbound_id) DO NOTHING")
+            .bind(&scope).bind(&msg.id).bind(&id).execute(&mut *transaction).await.map_err(error)?;
+        if claimed.rows_affected() != 1 {
+            return Err(error("inbound message already admitted; reconcile its existing execution instead of replaying it"));
+        }
+        // Preserve protection for records written before claim-table migration,
+        // without deleting or rewriting historical duplicate execution evidence.
+        let prior: Option<String> =
+            sqlx::query_scalar("SELECT id FROM executions WHERE scope=? AND inbound_id=? LIMIT 1")
+                .bind(&scope)
+                .bind(&msg.id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(error)?;
+        if let Some(prior) = prior {
+            return Err(error(format!(
+                "inbound message has prior execution {prior}; reconciliation is required"
+            )));
+        }
         sqlx::query("INSERT INTO executions (id,scope,inbound_id,goal,state,checkpoint,created_at,updated_at) VALUES (?,?,?,?,'running',?,?,?)")
-            .bind(&id).bind(Self::scope(session)?).bind(&msg.id).bind(msg.text.as_deref().unwrap_or(""))
+            .bind(&id).bind(scope).bind(&msg.id).bind(msg.text.as_deref().unwrap_or(""))
             .bind(serde_json::to_string(&session.history).map_err(error)?).bind(&now).bind(&now)
-            .execute(&self.pool).await.map_err(error)?;
+            .execute(&mut *transaction).await.map_err(error)?;
+        transaction.commit().await.map_err(error)?;
         Ok(id)
+    }
+
+    /// Look up evidence for reconciliation. This does not authorize retry or delivery.
+    pub async fn for_inbound(
+        &self,
+        session: &SessionContext,
+        inbound_id: &str,
+    ) -> Result<Vec<ExecutionRecord>, Temm1eError> {
+        sqlx::query_as("SELECT id,inbound_id,goal,state,checkpoint,updated_at FROM executions WHERE scope=? AND inbound_id=? ORDER BY created_at,id")
+            .bind(Self::scope(session)?).bind(inbound_id).fetch_all(&self.pool).await.map_err(error)
     }
 
     /// Commit intent and the corresponding history in the same transaction,
@@ -347,6 +387,70 @@ impl ExecutionJournal {
 mod tests {
     use super::*;
     use temm1e_test_utils::{make_inbound_msg, make_session};
+
+    #[tokio::test]
+    async fn concurrent_and_restarted_admissions_do_not_replay_an_inbound_message() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("executions.db");
+        let first = ExecutionJournal::open(&path).await.unwrap();
+        let second = ExecutionJournal::open(&path).await.unwrap();
+        let mut session = make_session();
+        session.workspace_path = directory.path().to_owned();
+        let message = make_inbound_msg("perform one effect");
+        let (a, b) = tokio::join!(
+            first.begin(&message, &session),
+            second.begin(&message, &session)
+        );
+        assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+        let execution = first
+            .for_inbound(&session, &message.id)
+            .await
+            .unwrap()
+            .remove(0);
+        first
+            .finish(&execution.id, "reply_returned", &[], Some("returned"))
+            .await
+            .unwrap();
+        first.pool.close().await;
+        second.pool.close().await;
+        let restarted = ExecutionJournal::open(&path).await.unwrap();
+        assert!(restarted.begin(&message, &session).await.is_err());
+        assert_eq!(
+            restarted.for_inbound(&session, &message.id).await.unwrap()[0].state,
+            "reply_returned"
+        );
+        // Legacy evidence without a claim row must still prevent replay.
+        sqlx::query("DELETE FROM inbound_claims")
+            .execute(&restarted.pool)
+            .await
+            .unwrap();
+        assert!(restarted.begin(&message, &session).await.is_err());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM executions")
+            .fetch_one(&restarted.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+        sqlx::query("INSERT INTO executions(id,scope,inbound_id,goal,state,checkpoint,created_at,updated_at) SELECT 'legacy-duplicate',scope,inbound_id,goal,state,checkpoint,created_at,updated_at FROM executions WHERE id=?")
+            .bind(&execution.id).execute(&restarted.pool).await.unwrap();
+        assert_eq!(
+            restarted
+                .for_inbound(&session, &message.id)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(restarted.begin(&message, &session).await.is_err());
+
+        let mut other = session.clone();
+        other.user_id = "another-user".into();
+        assert!(restarted
+            .for_inbound(&other, &message.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(restarted.begin(&message, &other).await.is_ok());
+    }
 
     #[tokio::test]
     async fn restart_preserves_intent_and_scopes_recovery_without_claiming_completion() {

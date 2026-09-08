@@ -127,3 +127,45 @@ async fn runtime_filter_is_enforced_at_dispatch_even_if_model_invents_hidden_too
     let history = serde_json::to_string(&session.history).unwrap();
     assert!(!history.contains("effect happened"));
 }
+
+#[tokio::test]
+async fn duplicate_inbound_stops_before_provider_or_tool_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let journal = Arc::new(
+        temm1e_agent::execution_journal::ExecutionJournal::open(
+            &directory.path().join("executions.db"),
+        )
+        .await
+        .unwrap(),
+    );
+    let provider = Arc::new(QueuedMockProvider::with_responses(vec![
+        QueuedMockProvider::tool_use_response("one", "mock_check", serde_json::json!({})),
+        QueuedMockProvider::text_response("Returned."),
+    ]));
+    let runtime = AgentRuntime::new(
+        provider.clone(),
+        Arc::new(MockMemory::new()),
+        vec![Arc::new(MockTool::new("mock_check"))],
+        "queued-mock-model".into(),
+        Some("Test".into()),
+    )
+    .with_v2_optimizations(false)
+    .with_self_audit_enabled(false)
+    .with_execution_journal(journal);
+    let mut session = make_session();
+    session.workspace_path = directory.path().to_owned();
+    let message = make_inbound_msg("Run once");
+    runtime
+        .process_message(&message, &mut session, None, None, None, None, None)
+        .await
+        .unwrap();
+    let before = serde_json::to_value(&session.history).unwrap();
+    let calls = provider.calls().await;
+    let error = runtime
+        .process_message(&message, &mut session, None, None, None, None, None)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("already admitted"));
+    assert_eq!(provider.calls().await, calls);
+    assert_eq!(serde_json::to_value(&session.history).unwrap(), before);
+}

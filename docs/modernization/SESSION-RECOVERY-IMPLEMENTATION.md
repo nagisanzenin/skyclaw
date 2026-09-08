@@ -42,3 +42,7 @@ Use isolated profiles and fake channels/provider fixtures, plus a live CLI/TUI c
 - Reset creates a new epoch; old handoffs do not reappear in the new conversation. Display clear leaves the epoch unchanged.
 - Corrupt/missing source payloads fail explicitly. Byte-limit failures preserve all previously committed events.
 - All entrypoints use the same compiler, scope, epoch and recovery rules. A unit-tested store with unchanged entrypoint loaders does not satisfy this work.
+
+## Admission checkpoint now implemented
+
+The execution journal now has a transactional inbound-claim table and an index for prior execution lookup. One caller can admit a message in a scope; duplicates are rejected before foreground provider/tool work. The migration checks old execution evidence rather than assuming a new claim table means a message is new. The reconciliation lookup returns all matching legacy records. Leases, takeover, event-backed entrypoint history, import commands and outbox delivery remain unfinished; do not treat this checkpoint as the entire recovery contract.

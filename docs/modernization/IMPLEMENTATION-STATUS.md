@@ -134,3 +134,11 @@ The creator explicitly requested disk-space control. The full all-feature worksp
 Local build/test profiles now default to no debug symbols and no incremental cache. `scripts/cargo_guard.py` uses a disposable target directory, reserves 8 GiB free, caps total target usage at 8 GiB, samples while running, stops owned work on a limit, and cleans guarded outputs by default. Resource-limit exits are explicit; logs belong outside the disposable directory. Three Python tests verify refusal before launch, stopping an active process, byte accounting and preservation of failing command exit status. Release protocol documents batching, temporary release-artifact retention and cleanup. Cross-platform process-tree enforcement beyond the local Unix host remains to be validated.
 
 A real guarded `cargo check -p temm1e-core` completed successfully and automatically removed 814 generated files (121.9 MiB). Free space remained approximately 22 GiB. The repository build instructions now direct storage-constrained local runs through the guard.
+
+## Fifteenth implementation checkpoint (durable inbound admission)
+
+Journal-enabled runtime admission now claims each stable inbound message ID transactionally within its user/channel/chat/canonical-workspace scope before provider or tool work. Concurrent callers and restarts cannot create a second execution for the same admitted message. Existing execution rows from before the claim table also block replay; historical duplicate records remain intact and the scoped lookup returns all of them for reconciliation.
+
+Four journal tests pass, including simultaneous independent database connections, restart, terminal-state replay rejection and legacy duplicate preservation. Eight integration tests pass across compaction and tool lifecycle; the duplicate-message runtime test verifies unchanged history and no additional provider calls. This is an admission safeguard, not exactly-once external effects, lease-based takeover, automatic cached-reply delivery or a complete recovery UI. Unknown outcomes still require reconciliation. The remaining session/archive/import contract is in `SESSION-RECOVERY-IMPLEMENTATION.md`.
+
+Admission checkpoint lint: agent all-target clippy passes with warnings denied. The guarded validation batch automatically removed 879.1 MiB of build outputs afterward.
