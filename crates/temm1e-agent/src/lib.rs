@@ -6,6 +6,7 @@ pub mod background;
 pub mod blueprint;
 pub mod budget;
 pub mod circuit_breaker;
+pub mod compaction;
 pub mod consciousness;
 pub mod consciousness_engine;
 pub mod context;

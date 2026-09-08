@@ -19,6 +19,8 @@ pub enum AgentTaskPhase {
     Preparing,
     /// Classifying message complexity (V2 optimization).
     Classifying,
+    /// Preparing a validated handoff from retained raw history.
+    Compacting { source_messages: usize },
     /// Building context and sending request to LLM provider.
     CallingProvider { round: u32 },
     /// Executing a tool call.
@@ -96,6 +98,9 @@ impl std::fmt::Display for AgentTaskPhase {
         match self {
             Self::Preparing => write!(f, "Preparing"),
             Self::Classifying => write!(f, "Classifying request"),
+            Self::Compacting { source_messages } => {
+                write!(f, "Compacting {source_messages} earlier messages")
+            }
             Self::CallingProvider { round } => write!(f, "Thinking (round {round})"),
             Self::ExecutingTool {
                 round,

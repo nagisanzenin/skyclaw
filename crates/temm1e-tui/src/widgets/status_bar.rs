@@ -125,6 +125,7 @@ fn state_indicator(
         AgentTaskPhase::Preparing | AgentTaskPhase::Classifying => {
             ("◐", "preparing".to_string(), accent)
         }
+        AgentTaskPhase::Compacting { .. } => ("◐", "compacting".to_string(), accent),
         AgentTaskPhase::CallingProvider { .. } => ("◐", "thinking".to_string(), accent),
         AgentTaskPhase::ExecutingTool { tool_name, .. } => {
             let truncated: String = tool_name.chars().take(12).collect();

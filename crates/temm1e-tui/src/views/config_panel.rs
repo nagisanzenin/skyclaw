@@ -160,6 +160,9 @@ fn render_status_lines(state: &AppState) -> Vec<Line<'static>> {
     let phase = match &panel.phase {
         AgentTaskPhase::Preparing => "Preparing".to_string(),
         AgentTaskPhase::Classifying => "Classifying".to_string(),
+        AgentTaskPhase::Compacting { source_messages } => {
+            format!("Compacting {source_messages} earlier messages")
+        }
         AgentTaskPhase::CallingProvider { round } => format!("Thinking (round {round})"),
         AgentTaskPhase::ExecutingTool { tool_name, .. } => format!("Running {tool_name}"),
         AgentTaskPhase::ToolCompleted {

@@ -1554,6 +1554,10 @@ impl AgentRuntime {
         // raw "[DONE]" token.
         let mut audits_used_this_turn: u8 = 0;
         let mut pending_audit_pre_text: Option<String> = None;
+        let mut context_handoff = match execution {
+            Some((journal, _)) => journal.load_handoff(session).await?,
+            None => None,
+        };
         loop {
             rounds += 1;
 
@@ -1613,7 +1617,7 @@ impl AgentRuntime {
             // Role-based tool filtering + P6 per-runtime tool filter.
             // Both filters compose with AND: a tool must be permitted by the
             // session role AND pass the runtime filter (if set) to be visible.
-            let effective_tools: Vec<Arc<dyn Tool>> = self
+            let mut effective_tools: Vec<Arc<dyn Tool>> = self
                 .tools
                 .iter()
                 .filter(|t| {
@@ -1628,20 +1632,207 @@ impl AgentRuntime {
                 .cloned()
                 .collect();
 
-            let mut request = build_context(
-                session,
-                self.memory.as_ref(),
-                &effective_tools,
-                &self.model,
-                self.system_prompt.as_deref(),
-                self.max_turns,
-                self.max_context_tokens,
-                prompt_tier,
-                &matched_blueprints,
-                lambda_enabled,
-                self.personality.as_deref(),
-            )
-            .await;
+            let mut pending_handoff_generation = None;
+            let mut context_session = session.clone();
+            let mut context_injection = None;
+            let mut context_pins = Vec::new();
+            if execution.is_some() {
+                let previous = context_handoff
+                    .as_ref()
+                    .filter(|(_, h)| h.matches_prefix(&session.history));
+                let previous_boundary = previous.map_or(0, |(_, h)| h.high_water);
+                let previous_tokens = match previous {
+                    Some((_, h)) => crate::context::estimate_tokens(&h.context_injection()?)
+                        .saturating_add(
+                            h.pinned_messages()
+                                .iter()
+                                .map(crate::context::estimate_message_tokens)
+                                .sum::<usize>(),
+                        ),
+                    None => 0,
+                };
+                let retained_tokens: usize = session.history[previous_boundary..]
+                    .iter()
+                    .map(crate::context::estimate_message_tokens)
+                    .sum();
+                let needs_compaction = retained_tokens.saturating_add(previous_tokens)
+                    > self.max_context_tokens / 2
+                    || (self.max_turns > 0
+                        && session.history.len() - previous_boundary
+                            > self.max_turns.saturating_mul(2));
+                if needs_compaction {
+                    if let Some(cutoff) = crate::compaction::eligible_cutoff(&session.history)
+                        .filter(|n| *n > previous_boundary)
+                    {
+                        if let Some(tx) = &status_tx {
+                            tx.send_modify(|status| {
+                                status.phase = AgentTaskPhase::Compacting {
+                                    source_messages: cutoff,
+                                }
+                            });
+                        }
+                        let raw = &session.history[..cutoff];
+                        let (window, max_output) = model_registry::model_limits_with_custom(
+                            self.provider.name(),
+                            &self.model,
+                        );
+                        let requests = crate::compaction::summary_requests(
+                            raw,
+                            &self.model,
+                            max_output.min(4096).min(u32::MAX as usize) as u32,
+                            self.max_context_tokens,
+                            window,
+                        )?;
+                        let mut summary = crate::compaction::Summary::default();
+                        for mut summary_request in requests {
+                            let mut attempt = 0;
+                            let mut part = loop {
+                                crate::context::check_context_fit(
+                                    &summary_request,
+                                    self.max_context_tokens,
+                                    window,
+                                )?;
+                                self.budget.check_budget().map_err(Temm1eError::Provider)?;
+                                tracing::info!(source_messages=cutoff, "Generating source-grounded context handoff; raw history remains intact");
+                                let response =
+                                    self.provider.complete(summary_request.clone()).await?;
+                                let cost = budget::calculate_cost(
+                                    response.usage.input_tokens,
+                                    response.usage.output_tokens,
+                                    &self.model_pricing,
+                                );
+                                self.budget.record_usage(
+                                    response.usage.input_tokens,
+                                    response.usage.output_tokens,
+                                    cost,
+                                );
+                                turn_api_calls = turn_api_calls.saturating_add(1);
+                                turn_input_tokens =
+                                    turn_input_tokens.saturating_add(response.usage.input_tokens);
+                                turn_output_tokens =
+                                    turn_output_tokens.saturating_add(response.usage.output_tokens);
+                                turn_cost_usd += cost;
+                                let text = response_to_text(&response);
+                                let parsed = serde_json::from_str::<crate::compaction::Summary>(&text)
+                                .map_err(|_| Temm1eError::Provider("Compaction returned invalid structured JSON; emit only the specified object".into()))
+                                .and_then(|part| { crate::compaction::Handoff::new(raw,part.clone())?; Ok(part) });
+                                match parsed {
+                                    Ok(part) => break part,
+                                    Err(error) if attempt == 0 => {
+                                        attempt += 1;
+                                        summary_request.append_system_volatile(&format!("Your previous attempt failed validation: {error}. Correct the JSON schema and use exact quotations from the named source records. Do not add commentary or markdown fences."));
+                                    }
+                                    Err(error) => return Err(error),
+                                }
+                            };
+                            summary.work_state.append(&mut part.work_state);
+                            summary.decisions.append(&mut part.decisions);
+                            summary.pending_work.append(&mut part.pending_work);
+                            summary.uncertainties.append(&mut part.uncertainties);
+                        }
+                        let handoff = crate::compaction::Handoff::new(raw, summary)?;
+                        let injection = handoff.context_injection()?;
+                        let old_tokens: usize = raw
+                            .iter()
+                            .map(crate::context::estimate_message_tokens)
+                            .sum();
+                        if crate::context::estimate_tokens(&injection).saturating_add(
+                            handoff
+                                .pinned_messages()
+                                .iter()
+                                .map(crate::context::estimate_message_tokens)
+                                .sum::<usize>(),
+                        ) >= old_tokens
+                        {
+                            return Err(Temm1eError::Provider("Compaction cannot reduce context while preserving the original constraints. Raw history is intact; increase the context budget or reduce optional context.".into()));
+                        }
+                        let expected = context_handoff
+                            .as_ref()
+                            .map_or(0, |(generation, _)| *generation);
+                        let generation = expected.checked_add(1).ok_or_else(|| {
+                            Temm1eError::Internal("Compaction generation overflow".into())
+                        })?;
+                        pending_handoff_generation = Some(expected);
+                        context_handoff = Some((generation, handoff));
+                    }
+                }
+                if let Some((_, handoff)) = context_handoff
+                    .as_ref()
+                    .filter(|(_, h)| h.matches_prefix(&session.history))
+                {
+                    context_session.history = session.history[handoff.high_water..].to_vec();
+                    let recall: Arc<dyn Tool> = Arc::new(crate::compaction::RecallTool {
+                        handoff: Arc::new(handoff.clone()),
+                        session_id: session.session_id.clone(),
+                        chat_id: session.chat_id.clone(),
+                        workspace: session.workspace_path.clone(),
+                    });
+                    if (session.role.has_all_tools() || session.role.is_tool_allowed(recall.name()))
+                        && self
+                            .tool_filter
+                            .as_ref()
+                            .is_none_or(|filter| filter(recall.as_ref()))
+                    {
+                        if effective_tools
+                            .iter()
+                            .any(|tool| tool.name() == recall.name())
+                        {
+                            return Err(Temm1eError::Config(
+                                "context_recall is reserved for scoped runtime history access"
+                                    .into(),
+                            ));
+                        }
+                        effective_tools.push(recall);
+                    }
+                    context_pins = handoff.pinned_messages();
+                    context_injection = Some(handoff.context_injection()?);
+                }
+            }
+
+            effective_tools.sort_by(|a, b| a.name().cmp(b.name()));
+            if effective_tools
+                .windows(2)
+                .any(|pair| pair[0].name() == pair[1].name())
+            {
+                return Err(Temm1eError::Config(
+                    "Duplicate visible tool names make dispatch ambiguous".into(),
+                ));
+            }
+            let mut request = if execution.is_some() {
+                crate::context::build_context_preserving_history(
+                    &context_session,
+                    self.memory.as_ref(),
+                    &effective_tools,
+                    &self.model,
+                    self.system_prompt.as_deref(),
+                    self.max_turns,
+                    self.max_context_tokens,
+                    prompt_tier,
+                    &matched_blueprints,
+                    lambda_enabled,
+                    self.personality.as_deref(),
+                )
+                .await
+            } else {
+                build_context(
+                    &context_session,
+                    self.memory.as_ref(),
+                    &effective_tools,
+                    &self.model,
+                    self.system_prompt.as_deref(),
+                    self.max_turns,
+                    self.max_context_tokens,
+                    prompt_tier,
+                    &matched_blueprints,
+                    lambda_enabled,
+                    self.personality.as_deref(),
+                )
+                .await
+            };
+            request.messages.splice(0..0, context_pins);
+            if let Some(injection) = context_injection {
+                request.prepend_system_volatile(&injection);
+            }
 
             // ── Engram: prepend the permanent-memory block (scoped, capped) ──
             if self.engram_config.enabled {
@@ -1768,11 +1959,25 @@ impl AgentRuntime {
                 model_registry::model_limits_with_custom(self.provider.name(), &self.model);
             request.max_tokens =
                 Some(output_limit.min(context_window / 2).min(u32::MAX as usize) as u32);
-            crate::context::finalize_context(
-                &mut request,
-                self.max_context_tokens,
-                context_window,
-            )?;
+            if execution.is_some() {
+                crate::context::check_context_fit(
+                    &request,
+                    self.max_context_tokens,
+                    context_window,
+                )?;
+            } else {
+                crate::context::finalize_context(
+                    &mut request,
+                    self.max_context_tokens,
+                    context_window,
+                )?;
+            }
+
+            if let Some(expected) = pending_handoff_generation {
+                if let (Some((journal, _)), Some((_, handoff))) = (execution, &context_handoff) {
+                    journal.save_handoff(session, expected, handoff).await?;
+                }
+            }
 
             debug!(
                 round = rounds,
@@ -1834,7 +2039,7 @@ impl AgentRuntime {
             }
 
             // Track whether the original request had tools (for fallback detection)
-            let request_had_tools = !self.tools.is_empty();
+            let request_had_tools = !request.tools.is_empty();
 
             // Pre-extract Eigen-Tune collection data so `request` can be
             // moved (not cloned) into the routing match below.
@@ -2221,7 +2426,7 @@ impl AgentRuntime {
                         arguments,
                     } => {
                         // Validate the tool actually exists
-                        let tool_exists = self.tools.iter().any(|t| t.name() == tool_name);
+                        let tool_exists = effective_tools.iter().any(|t| t.name() == tool_name);
                         if tool_exists {
                             info!(
                                 tool = %tool_name,
@@ -3177,7 +3382,8 @@ impl AgentRuntime {
                         )
                         .await?;
                 }
-                let result = execute_tool(tool_name, arguments.clone(), &self.tools, session).await;
+                let result =
+                    execute_tool(tool_name, arguments.clone(), &effective_tools, session).await;
                 if let Some((journal, turn_id)) = execution {
                     let (text, is_error) = match &result {
                         Ok(output) => (output.content.clone(), output.is_error),

@@ -65,7 +65,7 @@ pub(crate) fn estimate_tokens(s: &str) -> usize {
 const IMAGE_TOKEN_ESTIMATE: usize = 1000;
 
 /// Estimate token count for a ChatMessage.
-fn estimate_message_tokens(msg: &ChatMessage) -> usize {
+pub(crate) fn estimate_message_tokens(msg: &ChatMessage) -> usize {
     match &msg.content {
         MessageContent::Text(t) => estimate_tokens(t),
         MessageContent::Parts(parts) => parts
@@ -78,6 +78,21 @@ fn estimate_message_tokens(msg: &ChatMessage) -> usize {
             })
             .sum(),
     }
+}
+
+pub(crate) fn check_context_fit(
+    request: &CompletionRequest,
+    configured_input_limit: usize,
+    window: usize,
+) -> Result<(), temm1e_core::types::error::Temm1eError> {
+    let allowance =
+        configured_input_limit.min(window.saturating_sub(request.max_tokens.unwrap_or(0) as usize));
+    let target = allowance.saturating_sub(allowance / 10);
+    let estimated = estimate_request_tokens(request);
+    if estimated > target {
+        return Err(temm1e_core::types::error::Temm1eError::Provider(format!("Context needs approximately {estimated} input tokens; allowance is {target}. Raw history and constraints were retained. Reduce optional context, compact completed work, or increase the configured budget.")));
+    }
+    Ok(())
 }
 
 /// Final request accounting after every runtime injection. This is explicitly
@@ -280,6 +295,69 @@ pub async fn build_context(
     lambda_enabled: bool,
     personality: Option<&temm1e_anima::personality::PersonalityConfig>,
 ) -> CompletionRequest {
+    build_context_policy(
+        session,
+        memory,
+        tools,
+        model,
+        system_prompt,
+        max_turns,
+        max_context_tokens,
+        prompt_tier,
+        matched_blueprints,
+        lambda_enabled,
+        personality,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn build_context_preserving_history(
+    session: &SessionContext,
+    memory: &dyn Memory,
+    tools: &[Arc<dyn Tool>],
+    model: &str,
+    system_prompt: Option<&str>,
+    max_turns: usize,
+    max_context_tokens: usize,
+    prompt_tier: Option<PromptTier>,
+    matched_blueprints: &[crate::blueprint::Blueprint],
+    lambda_enabled: bool,
+    personality: Option<&temm1e_anima::personality::PersonalityConfig>,
+) -> CompletionRequest {
+    build_context_policy(
+        session,
+        memory,
+        tools,
+        model,
+        system_prompt,
+        max_turns,
+        max_context_tokens,
+        prompt_tier,
+        matched_blueprints,
+        lambda_enabled,
+        personality,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_context_policy(
+    session: &SessionContext,
+    memory: &dyn Memory,
+    tools: &[Arc<dyn Tool>],
+    model: &str,
+    system_prompt: Option<&str>,
+    max_turns: usize,
+    max_context_tokens: usize,
+    prompt_tier: Option<PromptTier>,
+    matched_blueprints: &[crate::blueprint::Blueprint],
+    lambda_enabled: bool,
+    personality: Option<&temm1e_anima::personality::PersonalityConfig>,
+    preserve_history: bool,
+) -> CompletionRequest {
     let budget = max_context_tokens;
 
     // ── Category 1: System prompt ──────────────────────────────────
@@ -420,6 +498,10 @@ pub async fn build_context(
         }
         recent_tokens += turn_tokens;
         recent_indices.extend_from_slice(&turn.indices);
+    }
+    if preserve_history {
+        recent_indices = (0..history.len()).collect();
+        recent_tokens = history.iter().map(estimate_message_tokens).sum();
     }
     recent_indices.sort_unstable();
 

@@ -23,6 +23,16 @@ pub struct ExecutionRecord {
     pub updated_at: String,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredHandoff {
+    schema_version: u32,
+    source_hash: String,
+    high_water: usize,
+    source_ids: Vec<String>,
+    summary: crate::compaction::Summary,
+}
+
 fn error(e: impl std::fmt::Display) -> Temm1eError {
     Temm1eError::Internal(format!("Execution journal: {e}"))
 }
@@ -75,7 +85,15 @@ impl ExecutionJournal {
             execution_id TEXT NOT NULL REFERENCES executions(id), operation_id TEXT NOT NULL,
             tool TEXT NOT NULL, arguments TEXT NOT NULL, state TEXT NOT NULL,
             output TEXT, is_error INTEGER, updated_at TEXT NOT NULL,
-            PRIMARY KEY (execution_id, operation_id));",
+            PRIMARY KEY (execution_id, operation_id));
+            CREATE TABLE IF NOT EXISTS context_heads (
+                scope TEXT PRIMARY KEY, generation INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS context_handoffs (
+                scope TEXT NOT NULL, generation INTEGER NOT NULL, document TEXT NOT NULL,
+                created_at TEXT NOT NULL, PRIMARY KEY(scope,generation));
+            CREATE TABLE IF NOT EXISTS context_source_messages (
+                scope TEXT NOT NULL, id TEXT NOT NULL, sequence INTEGER NOT NULL,
+                message TEXT NOT NULL, PRIMARY KEY(scope,id));",
         )
         .execute(&pool)
         .await
@@ -198,6 +216,120 @@ impl ExecutionJournal {
             ));
         }
         Ok(())
+    }
+
+    fn context_scope(session: &SessionContext) -> Result<String, Temm1eError> {
+        serde_json::to_string(&(Self::scope(session)?, &session.session_id)).map_err(error)
+    }
+
+    /// Immutable generations: concurrent compaction must compare-and-swap the
+    /// observed head. Never replace a newer handoff with a stale summary.
+    pub async fn save_handoff(
+        &self,
+        session: &SessionContext,
+        expected: i64,
+        handoff: &crate::compaction::Handoff,
+    ) -> Result<i64, Temm1eError> {
+        let raw: Vec<_> = handoff.sources.iter().map(|s| s.message.clone()).collect();
+        handoff.validate(&raw)?;
+        let generation = expected
+            .checked_add(1)
+            .ok_or_else(|| error("context generation overflow"))?;
+        let scope = Self::context_scope(session)?;
+        let mut tx = self.pool.begin().await.map_err(error)?;
+        sqlx::query("INSERT OR IGNORE INTO context_heads(scope,generation) VALUES (?,0)")
+            .bind(&scope)
+            .execute(&mut *tx)
+            .await
+            .map_err(error)?;
+        let changed =
+            sqlx::query("UPDATE context_heads SET generation=? WHERE scope=? AND generation=?")
+                .bind(generation)
+                .bind(&scope)
+                .bind(expected)
+                .execute(&mut *tx)
+                .await
+                .map_err(error)?;
+        if changed.rows_affected() != 1 {
+            return Err(error(
+                "stale compaction generation; raw history remains unchanged",
+            ));
+        }
+        // Content-addressed immutable source rows avoid copying the entire raw
+        // prefix into every successive handoff generation.
+        for source in &handoff.sources {
+            sqlx::query("INSERT OR IGNORE INTO context_source_messages(scope,id,sequence,message) VALUES (?,?,?,?)")
+                .bind(&scope).bind(&source.id).bind(i64::try_from(source.sequence).map_err(error)?)
+                .bind(serde_json::to_string(&source.message).map_err(error)?).execute(&mut *tx).await.map_err(error)?;
+        }
+        let stored = StoredHandoff {
+            schema_version: handoff.schema_version,
+            source_hash: handoff.source_hash.clone(),
+            high_water: handoff.high_water,
+            source_ids: handoff.sources.iter().map(|s| s.id.clone()).collect(),
+            summary: handoff.summary.clone(),
+        };
+        sqlx::query(
+            "INSERT INTO context_handoffs(scope,generation,document,created_at) VALUES (?,?,?,?)",
+        )
+        .bind(&scope)
+        .bind(generation)
+        .bind(serde_json::to_string(&stored).map_err(error)?)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&mut *tx)
+        .await
+        .map_err(error)?;
+        tx.commit().await.map_err(error)?;
+        Ok(generation)
+    }
+
+    pub async fn load_handoff(
+        &self,
+        session: &SessionContext,
+    ) -> Result<Option<(i64, crate::compaction::Handoff)>, Temm1eError> {
+        let record: Option<(i64,String)> = sqlx::query_as("SELECT h.generation,d.document FROM context_heads h JOIN context_handoffs d ON h.scope=d.scope AND h.generation=d.generation WHERE h.scope=?")
+            .bind(Self::context_scope(session)?).fetch_optional(&self.pool).await.map_err(error)?;
+        let Some((generation, raw)) = record else {
+            return Ok(None);
+        };
+        let document: serde_json::Value = serde_json::from_str(&raw).map_err(error)?;
+        let handoff = if document.get("sources").is_some() {
+            // Read the earlier development checkpoint's inline format without
+            // rewriting its immutable evidence or breaking existing profiles.
+            serde_json::from_value::<crate::compaction::Handoff>(document).map_err(error)?
+        } else {
+            let stored: StoredHandoff = serde_json::from_value(document).map_err(error)?;
+            let rows: Vec<(i64,String,String)> = sqlx::query_as("SELECT sequence,id,message FROM context_source_messages WHERE scope=? AND id IN (SELECT value FROM json_each(?)) ORDER BY sequence")
+                .bind(Self::context_scope(session)?).bind(serde_json::to_string(&stored.source_ids).map_err(error)?)
+                .fetch_all(&self.pool).await.map_err(error)?;
+            if rows
+                .iter()
+                .map(|(_, id, _)| id)
+                .ne(stored.source_ids.iter())
+            {
+                return Err(error("missing or reordered context source rows"));
+            }
+            let sources = rows
+                .into_iter()
+                .map(|(sequence, id, message)| {
+                    Ok(crate::compaction::SourceMessage {
+                        sequence: usize::try_from(sequence).map_err(error)?,
+                        id,
+                        message: serde_json::from_str(&message).map_err(error)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, Temm1eError>>()?;
+            crate::compaction::Handoff {
+                schema_version: stored.schema_version,
+                source_hash: stored.source_hash,
+                high_water: stored.high_water,
+                sources,
+                summary: stored.summary,
+            }
+        };
+        let source: Vec<_> = handoff.sources.iter().map(|s| s.message.clone()).collect();
+        handoff.validate(&source)?;
+        Ok(Some((generation, handoff)))
     }
 
     /// Read recovery candidates only in the caller's user/chat/workspace scope.

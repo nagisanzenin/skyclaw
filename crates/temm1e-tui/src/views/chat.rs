@@ -110,6 +110,10 @@ pub fn render_chat(state: &AppState, area: Rect, buf: &mut Buffer) {
         let phase_display = match &state.activity_panel.phase {
             AgentTaskPhase::Preparing => format!("preparing · {:.1}s", elapsed.as_secs_f64()),
             AgentTaskPhase::Classifying => format!("classifying · {:.1}s", elapsed.as_secs_f64()),
+            AgentTaskPhase::Compacting { source_messages } => format!(
+                "compacting {source_messages} earlier messages · {:.1}s",
+                elapsed.as_secs_f64()
+            ),
             AgentTaskPhase::CallingProvider { round } => {
                 if *round <= 1 {
                     format!("thinking · {:.0}s", elapsed.as_secs_f64())
@@ -174,9 +178,10 @@ pub fn render_chat(state: &AppState, area: Rect, buf: &mut Buffer) {
         };
 
         let (symbol, sym_style) = match &state.activity_panel.phase {
-            AgentTaskPhase::Preparing | AgentTaskPhase::Classifying | AgentTaskPhase::Finishing => {
-                ("⧖", state.theme.phase_active)
-            }
+            AgentTaskPhase::Preparing
+            | AgentTaskPhase::Classifying
+            | AgentTaskPhase::Compacting { .. }
+            | AgentTaskPhase::Finishing => ("⧖", state.theme.phase_active),
             AgentTaskPhase::CallingProvider { .. } => ("◐", state.theme.phase_active),
             AgentTaskPhase::ExecutingTool { .. } => ("▸", state.theme.tool_running),
             AgentTaskPhase::ToolCompleted { ok, .. } => {
