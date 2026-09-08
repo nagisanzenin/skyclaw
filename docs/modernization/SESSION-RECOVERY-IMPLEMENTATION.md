@@ -1,6 +1,6 @@
 # Session recovery and legacy history migration
 
-Implementation contract with partial implementation recorded below. CLI/TUI now use canonical conversation heads; server parity and delivery outbox remain unfinished. Do not infer complete recovery coverage from the store tests.
+Implementation contract with partial implementation recorded below. CLI/TUI and server workers now use canonical conversation heads; full entrypoint acceptance and the delivery outbox remain unfinished. Do not infer complete recovery coverage from the store tests.
 
 ## Compatibility policy
 
@@ -62,3 +62,11 @@ Execution admission now links canonical epochs and their revision to exact execu
 For local processes, ownership uses the OS lock lifetime instead of expiry-based takeover: a slow provider must not authorize a competing process while its tool may still be running. The durable marker survives lock release after process death, and recovery/reset require explicit user action. This is an intentional local-host implementation of the exclusion requirement, not a claim of distributed fencing on network filesystems. Multi-host leasing remains separate work.
 
 Still outstanding: server history migration, transactional tool-result/event-head integration, durable delivery outbox and platform reconciliation, complete process-kill/PTY acceptance, archive UI and total-storage retention policy. The existing server's 200-message deletion remains until its entrypoint is converted; this checkpoint does not claim parity.
+
+## Server storage conversion
+
+Server workers share one conversation-store pool and load the head under the same local lock as CLI/TUI. Scope includes the canonical workspace, channel and chat, with a shared admitted-members access domain. Heartbeats select the destination channel's conversation instead of a separate heartbeat history. The previous 200-message deletion and global legacy-key overwrites are removed. Existing admin command authorization gates import/recover/reset; the shared command handler itself does not grant authorization.
+
+Normal replies, Hive result text and fallback replies commit the parent history before final delivery. A failed history commit suppresses that final response and retains the interrupted marker. Panic returns no longer restore an older history over partial evidence. Early-return cleanup clears transient busy flags, while durable recovery state remains intact. The secret-censor channel forwards the underlying channel's role resolution and role management rather than silently substituting trait defaults.
+
+This is storage wiring, not full server acceptance. Actual channel dispatch/restart with a fake transport, cross-channel queue/pending-message isolation, attachment pre-processing evidence, delegated worker event linkage, and delivery crash reconciliation remain required. The local CLI fixture and server health/shutdown fixture do not establish those missing results.

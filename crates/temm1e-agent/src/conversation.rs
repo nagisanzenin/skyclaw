@@ -285,9 +285,9 @@ impl ConversationTurn {
     }
 }
 
-/// Local-owner command handling shared by CLI and TUI. No command is sent to a
+/// Owner command handling shared by authenticated entrypoints. No command is sent to a
 /// model. The digest confirmation binds the displayed source to the import.
-pub async fn handle_local_command(
+pub async fn handle_owner_command(
     journal: &Arc<ExecutionJournal>,
     scope: &ConversationScope,
     memory: &dyn temm1e_core::Memory,
@@ -484,7 +484,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let preview = handle_local_command(
+        let preview = handle_owner_command(
             &journal,
             &scope,
             &memory,
@@ -495,7 +495,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(preview.contains("240 messages"));
-        assert!(handle_local_command(
+        assert!(handle_owner_command(
             &journal,
             &scope,
             &memory,
@@ -508,10 +508,10 @@ mod tests {
             "/history-import confirm {}",
             hex::encode(Sha256::digest(raw.as_bytes()))
         );
-        handle_local_command(&journal, &scope, &memory, "chat_history:cli", &command)
+        handle_owner_command(&journal, &scope, &memory, "chat_history:cli", &command)
             .await
             .unwrap();
-        let repeat = handle_local_command(&journal, &scope, &memory, "chat_history:cli", &command)
+        let repeat = handle_owner_command(&journal, &scope, &memory, "chat_history:cli", &command)
             .await
             .unwrap()
             .unwrap();
@@ -537,7 +537,7 @@ mod tests {
         );
         memory.store(entry).await.unwrap();
         assert!(
-            handle_local_command(&journal, &scope, &memory, "chat_history:cli", &changed)
+            handle_owner_command(&journal, &scope, &memory, "chat_history:cli", &changed)
                 .await
                 .is_err()
         );

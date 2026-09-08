@@ -620,7 +620,7 @@ pub async fn spawn_agent(
                     cost_usd: 0.0,
                 }));
             };
-            match temm1e_agent::conversation::handle_local_command(
+            match temm1e_agent::conversation::handle_owner_command(
                 &conversations,
                 &conversation_scope,
                 memory.as_ref(),

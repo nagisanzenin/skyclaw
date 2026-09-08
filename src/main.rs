@@ -54,6 +54,21 @@ impl Channel for SecretCensorChannel {
     fn is_allowed(&self, user_id: &str) -> bool {
         self.inner.is_allowed(user_id)
     }
+    fn get_role(&self, user_id: &str) -> Option<temm1e_core::types::rbac::Role> {
+        self.inner.get_role(user_id)
+    }
+    fn promote_to_admin(
+        &self,
+        user_id: &str,
+    ) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+        self.inner.promote_to_admin(user_id)
+    }
+    fn demote_from_admin(
+        &self,
+        user_id: &str,
+    ) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+        self.inner.demote_from_admin(user_id)
+    }
     async fn delete_message(
         &self,
         chat_id: &str,
@@ -1390,6 +1405,29 @@ async fn send_with_retry(
             }
         }
     }
+}
+
+/// Persist before delivery. Failure leaves a durable interrupted marker and
+/// suppresses the uncommitted final response; this is not an outbox protocol.
+async fn commit_channel_conversation(
+    turn: &mut Option<temm1e_agent::conversation::ConversationTurn>,
+    history: &[temm1e_core::types::message::ChatMessage],
+    sender: &dyn temm1e_core::Channel,
+    msg: &temm1e_core::types::message::InboundMessage,
+) -> bool {
+    let Some(turn) = turn.take() else {
+        return true;
+    };
+    if let Err(e) = turn.commit(history).await {
+        tracing::error!(error = %e, "Conversation commit failed before final delivery");
+        send_with_retry(sender, temm1e_core::types::message::OutboundMessage {
+            chat_id: msg.chat_id.clone(),
+            text: format!("Could not save this turn: {e}. Inspect /session-recover before retrying uncertain effects."),
+            reply_to: Some(msg.id.clone()), parse_mode: None,
+        }).await;
+        return false;
+    }
+    true
 }
 
 /// Interactive setup wizard — guides first-time users through configuration.
@@ -3046,6 +3084,9 @@ async fn main() -> Result<()> {
             }
 
             if !channel_map.is_empty() {
+                let conversations = Arc::new(
+                    temm1e_agent::execution_journal::ExecutionJournal::open_profile().await?,
+                );
                 let channel_map_arc = channel_map.clone();
                 let primary_fallback = primary_channel.clone();
                 let agent_state_clone = agent_state.clone();
@@ -3538,42 +3579,8 @@ async fn main() -> Result<()> {
                             let hive_worker = hive_clone.clone();
                             let worker_chat_id = chat_id.clone();
 
+                            let conversations = conversations.clone();
                             let worker_handle = tokio::spawn(async move {
-                                // ── Restore conversation history from memory backend ──
-                                let history_key = format!("chat_history:{}", worker_chat_id);
-                                let mut persistent_history: Vec<temm1e_core::types::message::ChatMessage> =
-                                    match memory.get(&history_key).await {
-                                        Ok(Some(entry)) => {
-                                            match serde_json::from_str(&entry.content) {
-                                                Ok(h) => {
-                                                    tracing::info!(
-                                                        chat_id = %worker_chat_id,
-                                                        messages = %Vec::<temm1e_core::types::message::ChatMessage>::len(&h),
-                                                        "Restored conversation history from memory"
-                                                    );
-                                                    h
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!(
-                                                        chat_id = %worker_chat_id,
-                                                        error = %e,
-                                                        "Failed to deserialize saved history, starting fresh"
-                                                    );
-                                                    Vec::new()
-                                                }
-                                            }
-                                        }
-                                        Ok(None) => Vec::new(),
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                chat_id = %worker_chat_id,
-                                                error = %e,
-                                                "Failed to load saved history, starting fresh"
-                                            );
-                                            Vec::new()
-                                        }
-                                    };
-
                                 while let Some(mut msg) = tokio::select! {
                                     biased;
                                     _ = cancel_token_clone.cancelled() => None,
@@ -3639,6 +3646,44 @@ async fn main() -> Result<()> {
                                         }
                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
                                         return;
+                                    }
+
+                                    // Heartbeats continue the target channel's conversation.
+                                    // Group access stays shared among currently admitted users.
+                                    let conversation_scope = match temm1e_agent::conversation::ConversationScope::new(
+                                        &workspace_path, if is_hb { sender.name() } else { &msg.channel },
+                                        &msg.chat_id, "channel-admitted-members",
+                                    ) {
+                                        Ok(scope) => scope,
+                                        Err(e) => {
+                                            send_with_retry(&*sender, temm1e_core::types::message::OutboundMessage {
+                                                chat_id: msg.chat_id.clone(), text: format!("Cannot open the conversation: {e}"),
+                                                reply_to: Some(msg.id.clone()), parse_mode: None,
+                                            }).await;
+                                            return;
+                                        }
+                                    };
+                                    // The existing RBAC command gate above restricts these
+                                    // management commands to Admin. They never reach the model.
+                                    match temm1e_agent::conversation::handle_owner_command(
+                                        &conversations, &conversation_scope, memory.as_ref(),
+                                        &format!("chat_history:{}", msg.chat_id), msg_text_cmd,
+                                    ).await {
+                                        Ok(Some(text)) => {
+                                            send_with_retry(&*sender, temm1e_core::types::message::OutboundMessage {
+                                                chat_id: msg.chat_id.clone(), text,
+                                                reply_to: Some(msg.id.clone()), parse_mode: None,
+                                            }).await;
+                                            return;
+                                        }
+                                        Err(e) => {
+                                            send_with_retry(&*sender, temm1e_core::types::message::OutboundMessage {
+                                                chat_id: msg.chat_id.clone(), text: e.to_string(),
+                                                reply_to: Some(msg.id.clone()), parse_mode: None,
+                                            }).await;
+                                            return;
+                                        }
+                                        Ok(None) => {}
                                     }
 
                                     // /eigentune — Eigen-Tune slash dispatch
@@ -5301,6 +5346,17 @@ Just type a message to chat with the AI agent.",
 
                                         // ── Normal mode: process with agent ────
 
+                                        let acquired = match conversations.acquire_conversation(&conversation_scope).await {
+                                            Ok(turn) => turn,
+                                            Err(e) => {
+                                                send_with_retry(&*sender, temm1e_core::types::message::OutboundMessage {
+                                                    chat_id: msg.chat_id.clone(), text: e.to_string(),
+                                                    reply_to: Some(msg.id.clone()), parse_mode: None,
+                                                }).await;
+                                                return;
+                                            }
+                                        };
+
                                         // Download attachments
                                         if !msg.attachments.is_empty() {
                                             if let Some(ft) = sender.file_transfer() {
@@ -5333,15 +5389,17 @@ Just type a message to chat with the AI agent.",
                                         }
 
                                         let mut session = temm1e_core::types::session::SessionContext {
-                                            session_id: format!("{}-{}", msg.channel, msg.chat_id),
+                                            session_id: acquired.epoch().to_string(),
                                             user_id: msg.user_id.clone(),
                                             channel: msg.channel.clone(),
                                             chat_id: msg.chat_id.clone(),
                                             role: user_role,
-                                            history: persistent_history.clone(),
+                                            history: acquired.history().to_vec(),
                                             workspace_path: workspace_path.clone(),
                                             read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new())),
                                         };
+
+                                        let mut conversation_turn = Some(acquired);
 
                                         // ── Early reply channel for LLM classifier ────
                                         // When V2 classifies a message as "order", it sends
@@ -5380,6 +5438,12 @@ Just type a message to chat with the AI agent.",
                                         )
                                         .catch_unwind()
                                         .await;
+
+                                        if process_result.is_ok() && !matches!(&process_result,
+                                            Ok(Err(temm1e_core::types::error::Temm1eError::HiveRoute(_))))
+                                            && !commit_channel_conversation(&mut conversation_turn, &session.history, &*sender, &msg).await {
+                                            return;
+                                        }
 
                                         match process_result {
                                             Ok(Ok((mut reply, turn_usage))) => {
@@ -5562,6 +5626,12 @@ Just type a message to chat with the AI agent.",
                                                                         result.total_tokens,
                                                                     ));
 
+                                                                    session.history.push(temm1e_core::types::message::ChatMessage {
+                                                                        role: temm1e_core::types::message::Role::Assistant,
+                                                                        content: temm1e_core::types::message::MessageContent::Text(full_text.clone()),
+                                                                    });
+                                                                    if !commit_channel_conversation(&mut conversation_turn, &session.history, &*sender, &msg).await { return; }
+
                                                                     // Split into chunks for Telegram's 4096 char limit
                                                                     let max_chunk = 4000; // leave margin
                                                                     let chunks: Vec<&str> = if full_text.len() <= max_chunk {
@@ -5604,6 +5674,7 @@ Just type a message to chat with the AI agent.",
                                                                     }
                                                                 }
                                                                 Err(e) => {
+                                                                    if !commit_channel_conversation(&mut conversation_turn, &session.history, &*sender, &msg).await { return; }
                                                                     tracing::error!(error = %e, "Hive execution failed");
                                                                     let reply = temm1e_core::types::message::OutboundMessage {
                                                                         chat_id: msg.chat_id.clone(),
@@ -5626,7 +5697,11 @@ Just type a message to chat with the AI agent.",
                                                                 max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
                                                             ).with_durable_execution().with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             let fallback_cancel = cancel_token_clone.clone();
-                                                            match fallback_agent.process_message(&msg, &mut session, Some(interrupt_clone.clone()), Some(pending_for_worker.clone()), None, None, Some(fallback_cancel)).await {
+                                                            let mut fallback_msg = msg.clone();
+                                                            fallback_msg.id = format!("{}:hive-fallback", msg.id);
+                                                            let fallback_result = fallback_agent.process_message(&fallback_msg, &mut session, Some(interrupt_clone.clone()), Some(pending_for_worker.clone()), None, None, Some(fallback_cancel)).await;
+                                                            if !commit_channel_conversation(&mut conversation_turn, &session.history, &*sender, &msg).await { return; }
+                                                            match fallback_result {
                                                                 Ok((mut reply, _usage)) => {
                                                                     reply.text = censor_secrets(&reply.text);
                                                                     if !reply.text.trim().is_empty() {
@@ -5675,47 +5750,17 @@ Just type a message to chat with the AI agent.",
                                                 );
                                                 let error_reply = temm1e_core::types::message::OutboundMessage {
                                                     chat_id: msg.chat_id.clone(),
-                                                    text: "An internal error occurred while processing your message. I've recovered and am ready for your next message.".to_string(),
+                                                    text: "The turn stopped after an internal error. An admin can use /session-recover to inspect its evidence before continuing.".to_string(),
                                                     reply_to: Some(msg.id.clone()),
                                                     parse_mode: None,
                                                 };
                                                 send_with_retry(&*sender, error_reply).await;
-                                                // Session history may be corrupted after a panic.
-                                                // Trim the last entry if it was partially added.
-                                                if persistent_history.len() < session.history.len() {
-                                                    // Panic happened after adding user msg but before
-                                                    // assistant reply — rollback to pre-message state.
-                                                    session.history = persistent_history.clone();
-                                                }
+                                                // Leave the busy marker and exact execution
+                                                // checkpoint for explicit recovery after a panic.
+                                                return;
                                             }
                                         }
-
-                                        // ── Persist session history for next message ────
-                                        // Cap to last 200 messages to prevent unbounded memory growth
-                                        persistent_history = session.history;
-                                        if persistent_history.len() > 200 {
-                                            let drain_count = persistent_history.len() - 200;
-                                            persistent_history.drain(..drain_count);
-                                        }
-
-                                        // ── Save conversation history to memory backend ──
-                                        if let Ok(json) = serde_json::to_string(&persistent_history) {
-                                            let entry = temm1e_core::MemoryEntry {
-                                                id: history_key.clone(),
-                                                content: json,
-                                                metadata: serde_json::json!({"chat_id": worker_chat_id}),
-                                                timestamp: chrono::Utc::now(),
-                                                session_id: Some(worker_chat_id.clone()),
-                                                entry_type: temm1e_core::MemoryEntryType::Conversation,
-                                            };
-                                            if let Err(e) = memory.store(entry).await {
-                                                tracing::warn!(
-                                                    chat_id = %worker_chat_id,
-                                                    error = %e,
-                                                    "Failed to persist conversation history"
-                                                );
-                                            }
-                                        }
+                                        if !commit_channel_conversation(&mut conversation_turn, &session.history, &*sender, &msg).await { return; }
 
                                         // ── Hot-reload: check if credentials changed ────
                                         if let Some((new_name, new_keys, new_model, saved_base_url)) = load_active_provider_keys() {
@@ -6036,6 +6081,10 @@ Just type a message to chat with the AI agent.",
                                     is_busy_clone.store(false, Ordering::Relaxed);
                                     interrupt_clone.store(false, Ordering::Relaxed);
                                     }).catch_unwind().await;
+                                    // Also clean up early returns (including failed persistence).
+                                    is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                    is_busy_clone.store(false, Ordering::Relaxed);
+                                    interrupt_clone.store(false, Ordering::Relaxed);
 
                                     // ── Outer panic safety net ─────────────────
                                     // If ANYTHING in the loop body panicked
@@ -6988,7 +7037,7 @@ Just type a message to chat with the AI agent.",
                 let msg_text = msg.text.as_deref().unwrap_or("");
                 let cmd_lower = msg_text.trim().to_lowercase();
 
-                match temm1e_agent::conversation::handle_local_command(
+                match temm1e_agent::conversation::handle_owner_command(
                     &conversations,
                     &conversation_scope,
                     memory.as_ref(),
@@ -8074,7 +8123,7 @@ Just type a message to chat with the AI agent.",
                                 .with_parallel_phases(pp_opt)
                                 .with_witness_attachments(witness_attachments.as_ref());
                                 let re_msg = temm1e_core::types::message::InboundMessage {
-                                    id: uuid::Uuid::new_v4().to_string(),
+                                    id: format!("{}:hive-fallback", msg.id),
                                     channel: "cli".into(),
                                     chat_id: "cli".into(),
                                     user_id: "local".into(),
@@ -8944,6 +8993,106 @@ async fn handle_eigentune_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct ConversationTestChannel {
+        sent: Mutex<Vec<temm1e_core::types::message::OutboundMessage>>,
+    }
+    #[async_trait]
+    impl Channel for ConversationTestChannel {
+        fn name(&self) -> &str {
+            "conversation-fixture"
+        }
+        async fn start(
+            &mut self,
+        ) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+            Ok(())
+        }
+        async fn stop(
+            &mut self,
+        ) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+            Ok(())
+        }
+        async fn send_message(
+            &self,
+            msg: temm1e_core::types::message::OutboundMessage,
+        ) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+            self.sent.lock().await.push(msg);
+            Ok(())
+        }
+        fn file_transfer(&self) -> Option<&dyn temm1e_core::FileTransfer> {
+            None
+        }
+        fn is_allowed(&self, user: &str) -> bool {
+            user == "owner"
+        }
+        fn get_role(&self, user: &str) -> Option<temm1e_core::types::rbac::Role> {
+            (user == "owner").then_some(temm1e_core::types::rbac::Role::Admin)
+        }
+    }
+
+    #[test]
+    fn conversation_censor_wrapper_preserves_owner_authorization() {
+        let wrapped = SecretCensorChannel {
+            inner: Arc::new(ConversationTestChannel::default()),
+        };
+        assert_eq!(
+            wrapped.get_role("owner"),
+            Some(temm1e_core::types::rbac::Role::Admin)
+        );
+        assert_eq!(wrapped.get_role("stranger"), None);
+        assert!(!temm1e_core::types::rbac::Role::User
+            .is_command_allowed("/session-recover confirm digest"));
+        assert!(!temm1e_core::types::rbac::Role::User.is_command_allowed("/session-new"));
+        assert!(!temm1e_core::types::rbac::Role::User.is_command_allowed("/history-import"));
+    }
+
+    #[tokio::test]
+    async fn conversation_commit_failure_preserves_history_and_reports_recovery() {
+        use temm1e_agent::{conversation::ConversationScope, execution_journal::ExecutionJournal};
+        use temm1e_core::types::message::{ChatMessage, InboundMessage, MessageContent, Role};
+        let directory = tempfile::tempdir().unwrap();
+        let journal = Arc::new(
+            ExecutionJournal::open(&directory.path().join("executions.db"))
+                .await
+                .unwrap(),
+        );
+        let scope = ConversationScope::new(
+            directory.path(),
+            "fixture",
+            "shared",
+            "channel-admitted-members",
+        )
+        .unwrap();
+        let channel = ConversationTestChannel::default();
+        let msg = InboundMessage {
+            id: "inbound".into(),
+            channel: "fixture".into(),
+            chat_id: "shared".into(),
+            user_id: "owner".into(),
+            username: None,
+            text: Some("continue".into()),
+            attachments: vec![],
+            reply_to: None,
+            timestamp: chrono::Utc::now(),
+        };
+        let history = vec![ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text("Keep this constraint".into()),
+        }];
+        let mut first = Some(journal.acquire_conversation(&scope).await.unwrap());
+        assert!(commit_channel_conversation(&mut first, &history, &channel, &msg).await);
+        assert!(channel.sent.lock().await.is_empty());
+        let mut second = Some(journal.acquire_conversation(&scope).await.unwrap());
+        assert!(!commit_channel_conversation(&mut second, &[], &channel, &msg).await);
+        assert!(journal.acquire_conversation(&scope).await.is_err());
+        let sent = channel.sent.lock().await;
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].text.contains("Could not save this turn"));
+        assert!(sent[0].text.contains("/session-recover"));
+        let preview = journal.recover_conversation(&scope, None).await.unwrap();
+        assert!(preview.contains("1 checkpoint messages"));
+    }
 
     // ── detect_api_key: auto-detect from prefix ──────────────────────
 
