@@ -558,6 +558,7 @@ async fn handle_model_switch(
         return;
     };
     let previous = current.setup.clone();
+    let budget = current.budget.clone();
     let provider = &previous.provider_name;
     let known = available_models_for_provider(provider);
     let registered =
@@ -582,7 +583,13 @@ async fn handle_model_switch(
             return;
         }
     }
-    match agent_bridge::spawn_agent(replacement.clone(), event_tx.clone()).await {
+    match agent_bridge::spawn_agent_with_budget(
+        replacement.clone(),
+        event_tx.clone(),
+        budget.clone(),
+    )
+    .await
+    {
         Ok(handle) => {
             *agent_handle = Some(handle);
             state.current_provider = Some(replacement.provider_name.clone());
@@ -620,7 +627,7 @@ async fn handle_model_switch(
         }
         Err(error) => {
             tracing::warn!(%error, "TUI replacement runtime failed; restoring previous connection");
-            match agent_bridge::spawn_agent(previous, event_tx.clone()).await {
+            match agent_bridge::spawn_agent_with_budget(previous, event_tx.clone(), budget).await {
                 Ok(handle) => {
                     *agent_handle = Some(handle);
                     push_system_line_via_tx(

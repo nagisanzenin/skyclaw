@@ -85,6 +85,7 @@ pub struct AgentHandle {
     pub interrupt_flag: Arc<AtomicBool>,
     task: tokio::task::JoinHandle<bool>,
     pub(crate) setup: AgentSetup,
+    pub(crate) budget: Arc<temm1e_agent::budget::BudgetTracker>,
 }
 
 #[derive(Debug)]
@@ -151,6 +152,17 @@ impl AgentSetup {
 pub async fn spawn_agent(
     setup: AgentSetup,
     event_tx: mpsc::UnboundedSender<Event>,
+) -> Result<AgentHandle, Temm1eError> {
+    let budget = Arc::new(temm1e_agent::budget::BudgetTracker::new(
+        setup.config.agent.max_spend_usd,
+    ));
+    spawn_agent_with_budget(setup, event_tx, budget).await
+}
+
+pub(crate) async fn spawn_agent_with_budget(
+    setup: AgentSetup,
+    event_tx: mpsc::UnboundedSender<Event>,
+    budget: Arc<temm1e_agent::budget::BudgetTracker>,
 ) -> Result<AgentHandle, Temm1eError> {
     // 1. Construct only from the captured connection. Never reread a possibly
     // unrelated active provider or redirect to a saved endpoint here.
@@ -304,9 +316,7 @@ pub async fn spawn_agent(
             tui_core_registry.clone(),
             provider.clone(),
             tools.clone(),
-            Arc::new(temm1e_agent::budget::BudgetTracker::new(
-                setup.config.agent.max_spend_usd,
-            )),
+            budget.clone(),
             model_pricing,
             setup.model.clone(),
             setup.config.agent.max_context_tokens,
@@ -355,7 +365,10 @@ pub async fn spawn_agent(
             Arc::new(HashMap::new());
         match temm1e_perpetuum::Perpetuum::new(
             perp_config,
-            provider.clone(),
+            Arc::new(temm1e_agent::metered_provider::MeteredProvider::new(
+                provider.clone(),
+                budget.clone(),
+            )),
             setup.model.clone(),
             channel_map,
             &db_url,
@@ -505,6 +518,7 @@ pub async fn spawn_agent(
         setup.config.agent.max_task_duration_secs,
         setup.config.agent.max_spend_usd,
     )
+    .with_budget(budget.clone())
     .with_durable_execution()
     .with_v2_optimizations(setup.config.agent.v2_optimizations)
     .with_self_audit_enabled(setup.config.agent.self_audit_enabled)
@@ -580,9 +594,7 @@ pub async fn spawn_agent(
             memory: memory.clone(),
             tools_template: tui_swarm_snapshot.clone(),
             model: agent.model().to_string(),
-            parent_budget: Arc::new(temm1e_agent::budget::BudgetTracker::new(
-                setup.config.agent.max_spend_usd,
-            )),
+            parent_budget: agent.budget(),
             cancel: tokio_util::sync::CancellationToken::new(),
             workspace_path: std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -891,6 +903,7 @@ pub async fn spawn_agent(
         interrupt_flag,
         task,
         setup,
+        budget,
     })
 }
 
@@ -1030,6 +1043,7 @@ mod lifecycle_tests {
             interrupt_flag,
             task,
             setup: test_setup(),
+            budget: Arc::new(temm1e_agent::budget::BudgetTracker::new(0.0)),
         };
         let shutdown = tokio::spawn(handle.shutdown(Duration::from_secs(1)));
         notified.await.unwrap();
@@ -1063,6 +1077,7 @@ mod lifecycle_tests {
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             task,
             setup: test_setup(),
+            budget: Arc::new(temm1e_agent::budget::BudgetTracker::new(0.0)),
         };
         assert!(!handle.shutdown(Duration::from_millis(1)).await.loop_joined);
         assert!(dropped.load(Ordering::SeqCst));

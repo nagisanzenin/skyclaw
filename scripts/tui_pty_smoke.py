@@ -51,7 +51,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def run(binary, root, server, trap, onboarding=False, restore_only=False):
+def run(binary, root, server, trap, onboarding=False, restore_only=False, budget_limit=False):
     profile = root / 'profile'
     profile.mkdir(mode=0o700, exist_ok=restore_only)
     config = profile / 'config.toml'
@@ -60,6 +60,8 @@ name = "openai"
 model = "pty-fixture"
 api_key = "local-fixture-only"
 base_url = "http://127.0.0.1:{server.server_port}/v1"
+[agent]
+max_spend_usd = {0.0001 if budget_limit else 0.0}
 [memory.engram]
 curator = "off"
 [perpetuum]
@@ -67,6 +69,18 @@ enabled = false
 [hive]
 enabled = false
 ''')
+    if budget_limit:
+        custom = profile / 'custom_models.toml'
+        custom.write_text(''.join(f'''[[models]]
+provider = "openai"
+name = "{model}"
+context_window = 32768
+max_output_tokens = 4096
+input_price_per_1m = 1.0
+output_price_per_1m = 1.0
+pricing_verified = true
+''' for model in ['pty-fixture', 'pty-fixture-next']))
+        custom.chmod(0o600)
     saved_path = profile / 'credentials.toml'
     saved_text = f'''active = "anthropic"
 [[providers]]
@@ -128,8 +142,14 @@ base_url = "http://127.0.0.1:{trap.server_port}/v1"
             time.sleep(0.3)  # allow final completion event to reach the TUI
             os.write(master, b'/model pty-fixture-next\r')
             until(b'Switched')
+            before_second = len(server.requests)
             os.write(master, b'PTY_SWITCH_43\r')
-            until(b'PTY_REPLY_43')
+            if budget_limit:
+                until(b'exceeded:')  # renderer places cursor escapes between words
+                assert b'Budget' in output
+                assert len(server.requests) == before_second, 'model switch reopened exhausted budget'
+            else:
+                until(b'PTY_REPLY_43')
         # Force a resize while the event stream and renderer are active.
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 18, 60, 0, 0))
         os.kill(process.pid, signal.SIGWINCH)
@@ -152,10 +172,10 @@ base_url = "http://127.0.0.1:{trap.server_port}/v1"
         assert all(auth == 'Bearer local-fixture-only' for auth in server.authorizations), 'selected endpoint received a wrong credential'
         if not onboarding:
             assert saved_path.read_text() == saved_text, 'config-owned switch overwrote saved credentials'
-        if not onboarding and not restore_only:
+        if not onboarding and not restore_only and not budget_limit:
             assert any(request.get('model') == 'pty-fixture-next' for request in server.requests[requests_before:]), 'replacement runtime did not use the selected custom model'
-        return {'connection_isolation': True, 'model_switch': not onboarding and not restore_only, 'passed': True, 'input_echo_seconds': round(input_latency, 4) if input_latency is not None else None,
-                'provider_requests': len(server.requests) - requests_before, 'onboarding': onboarding, 'restore_only': restore_only, 'terminal_bytes': len(output),
+        return {'budget_continuity': budget_limit, 'connection_isolation': True, 'model_switch': not onboarding and not restore_only, 'passed': True, 'input_echo_seconds': round(input_latency, 4) if input_latency is not None else None,
+                'provider_requests': len(server.requests) - requests_before, 'request_models': [request.get('model') for request in server.requests[requests_before:]], 'onboarding': onboarding, 'restore_only': restore_only, 'terminal_bytes': len(output),
                 'terminal_attributes_restored': True, 'resize_and_exit': True}
     finally:
         if process.poll() is None:
@@ -185,6 +205,8 @@ def main():
                 results.append(run(args.binary.resolve(), Path(directory), server, trap, onboarding))
                 if not onboarding:
                     results.append(run(args.binary.resolve(), Path(directory), server, trap, restore_only=True))
+        with tempfile.TemporaryDirectory(prefix='temm1e-pty-budget-') as directory:
+            results.append(run(args.binary.resolve(), Path(directory), server, trap, budget_limit=True))
         print(json.dumps(results, indent=2))
     finally:
         trap.shutdown()
