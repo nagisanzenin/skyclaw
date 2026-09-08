@@ -174,8 +174,8 @@ pub async fn seal_oath_via_planner(
         // dormant on every code turn. Per project rule (feedback_no_max_tokens),
         // we set None — the provider adapter falls back to the model's
         // declared output limit (Anthropic: model_registry; OpenAI-compat:
-        // field omitted, model default applies). Planner output is bounded
-        // naturally by the JSON structure, typically 500-1500 tokens.
+        // field omitted, model default applies). JSON syntax is not an output
+        // bound; provider response limits and the caller's deadline still apply.
         max_tokens: None,
         temperature: Some(0.0),
         system: Some(OATH_GENERATION_PROMPT.to_string()),
@@ -199,7 +199,11 @@ pub async fn seal_oath_via_planner(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let draft = parse_planner_oath(&text)?;
+    let mut draft = parse_planner_oath(&text)?;
+    // The model proposes postconditions, not a replacement user objective.
+    // Review and seal against the exact request so renaming it cannot weaken
+    // the required rigor or lose a user requirement from the audit record.
+    draft.goal = req.user_request.to_owned();
     let oath = oath_from_draft(
         draft,
         req.subtask_id,

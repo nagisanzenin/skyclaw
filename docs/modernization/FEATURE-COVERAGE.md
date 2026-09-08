@@ -2,7 +2,7 @@
 
 Every original FEATURES.md entry is mapped below, followed by later feature families and the complete source/document inventory. Coverage means design/source audit and a defined acceptance path; it does not mean every native platform, external account, integration or mathematical claim was experimentally validated. The baseline workspace library tests ran, but binary/integration/feature-flag tests and live services have separate limits in VALIDATION. No feature is declared healthy merely because no defect was found.
 
-## Implementation evidence through checkpoint46
+## Implementation evidence through checkpoint47
 
 The tables below preserve the initial baseline audit. They are not the current implementation status. Use the linked implementation documents and checkpoint log for repairs and remaining limits:
 
@@ -17,6 +17,7 @@ The tables below preserve the initial baseline audit. They are not the current i
 | Numerical reliability, identity and editing | Earlier math/reference checks, RBAC bootstrap, caller workspace propagation and temporary-index snapshot checkpoints | Global principal isolation, learning calibration and crash-atomic multi-file edits are not proved by these repairs. |
 | Prowl blueprints | Checkpoint 27 parses every built-in with the real production schema and corrects unsupported login instructions | `BROWSER-IMPLEMENTATION.md` records owned profiles and tested origin-bound submission; no claim of 100+ verified live login services. |
 | Engram persistence, identity and numeric policy | `ENGRAM-NUMERIC-IMPLEMENTATION.md`, `TOOL-IDENTITY-IMPLEMENTATION.md`, `ENGRAM-PERSISTENCE-IMPLEMENTATION.md`; checkpoints42–44, real scoped SQLite persistence/deletion and Markdown unsupported acceptance | EMA/provenance/cadence, channel-qualified principals and promised Markdown Engram fallback remain open. |
+| Witness objective/identity/accounting | `WITNESS-GOAL-BINDING-IMPLEMENTATION.md`; checkpoint47 actual two-turn CLI and malformed/error/cancel tests | Caller authority for evaluator commands, persistent criteria/observations, coverage and configured tier evidence remain open. |
 | Durable goals and evidence | `GOAL-LEDGER-IMPLEMENTATION.md`; checkpoint46 active admission/tool/return journal, scoped readonly CLI/TUI and actual persistence/hash/restart tests | Persistent criteria/Witness assessment consumer, task queue leases/recovery, child lineage and D02 continuation remain open; no success-from-prose. |
 | Runtime resources and delegated model identity | `RUNTIME-RESOURCES-IMPLEMENTATION.md`; checkpoint45 immutable bindings, two-endpoint real CLI model switch/core and interleaved core/JIT tests | Full composition factory, Consciousness/Perpetuum lifecycle identity and durable global reservations remain open. |
 | Hive scheduling and composed accounting | `HIVE-IMPLEMENTATION.md`, `SHARED-ACCOUNTING-IMPLEMENTATION.md`; stale publication/transactional completion and initial shared budgets, checkpoints 32–33 | Active-task recovery/generation ownership, durable budget reservations, alternate entrypoint and all auxiliary-call coverage remain open. |

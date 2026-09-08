@@ -456,9 +456,10 @@ impl AgentRuntime {
     /// the Witness Ledger. The gate hook at the end of the agent loop will
     /// then verify it.
     ///
-    /// Adds **one extra LLM call per process_message** (clean-slate context,
-    /// max_tokens=1024). Cost on a typical model: ~$0.001 per call. Failures
-    /// (LLM error, parse error, Spec Reviewer rejection) are non-fatal —
+    /// Adds a clean-slate planner call when the current turn-selection policy
+    /// admits it. Usage is charged to the owning runtime; output policy follows
+    /// the selected provider/model. Failures (LLM error, parse error, Spec
+    /// Reviewer rejection) are non-fatal —
     /// they're logged and the runtime proceeds with no sealed Oath, so the
     /// gate hook becomes a no-op for that session (Law 5: zero downside).
     pub fn with_auto_planner_oath(mut self, enabled: bool) -> Self {
@@ -1004,15 +1005,20 @@ impl AgentRuntime {
                             "phase4.5: planner oath skipped (turn not code-shaped)"
                         );
                     } else {
+                        // One goal per admitted execution, not per conversation epoch.
+                        // Embedded non-durable callers still get a fresh turn identity.
+                        let verification_id = execution
+                            .map(|(_, id)| id.to_owned())
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                         let planner_req = temm1e_witness::planner::PlannerOathRequest {
                             witness,
-                            provider: self.provider.clone(),
+                            provider: self.auxiliary_provider(),
                             model: self.model.clone(),
                             user_request: user_text,
                             workspace_root: &session.workspace_path,
                             session_id: session.session_id.clone(),
-                            root_goal_id: format!("root-{}", session.session_id),
-                            subtask_id: format!("rootst-{}", session.session_id),
+                            root_goal_id: verification_id.clone(),
+                            subtask_id: format!("rootst-{verification_id}"),
                         };
                         match temm1e_witness::planner::seal_oath_via_planner(planner_req).await {
                             Ok((sealed, entry_id)) => {
