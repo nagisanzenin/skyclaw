@@ -918,7 +918,7 @@ fn handle_model_command(args: &str) -> String {
         }
 
         lines.push(String::new());
-        lines.push("Available models per provider:".to_string());
+        lines.push("Suggested models per provider (account access may vary):".to_string());
         for p in &creds.providers {
             let models = available_models_for_provider(&p.name);
             let active_marker = if p.name == creds.active {

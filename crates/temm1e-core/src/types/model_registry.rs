@@ -437,12 +437,28 @@ pub fn default_model(provider_name: &str) -> &'static str {
     }
 }
 
-/// Known models for each provider (used by /model listing and onboarding).
+/// Suggested model IDs for each provider (used by /model listing and onboarding).
+/// These are not an account entitlement probe. Existing configured models and
+/// explicit custom registrations remain valid even when absent from this list.
+/// Modern additions have source-dated facts in `model_catalog.json`; inclusion
+/// does not promote an unaccepted adapter or silently change saved defaults.
 pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
     match provider {
-        "anthropic" => vec!["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
+        "anthropic" => vec![
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "claude-opus-5",
+            "claude-fable-5-1",
+            "claude-opus-4-6",
+            "claude-haiku-4-5",
+        ],
         "openai" => vec![
             "gpt-5.4",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-6-astra",
+            "gpt-5.5",
             "gpt-5.4-mini",
             "gpt-5.4-nano",
             "gpt-5.2",
@@ -453,14 +469,27 @@ pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
             "o4-mini",
             "gpt-3.5-turbo",
         ],
+        // Codex uses the native Responses adapter, not the API-key route.
+        // Account-specific availability is still decided by the provider.
+        "openai-codex" => vec![
+            "gpt-5.4",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-6-astra",
+            "gpt-5.5",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+        ],
         "gemini" => vec![
             "gemini-3-flash-preview",
+            "gemini-3.8-flash",
             "gemini-3.1-pro-preview",
             "gemini-3.1-flash-lite-preview",
             "gemini-2.5-flash",
             "gemini-2.5-pro",
         ],
-        "grok" | "xai" => vec!["grok-4-1-fast-non-reasoning", "grok-3"],
+        "grok" | "xai" => vec!["grok-4-1-fast-non-reasoning", "grok-4.6", "grok-3"],
         "openrouter" => vec![
             "anthropic/claude-sonnet-4-6",
             "openai/gpt-5.2",

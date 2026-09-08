@@ -22,7 +22,9 @@
 
 ## Current position
 
-This commit completes **checkpoint 29**, browser ownership and truthful credential submission. Previous pushed checkpoint **28, `5d90e20`**, passed complete CI **34258067737**; checkpoint **27, `bfb409c`**, also passed complete CI **34256450049**, including Docker onboarding and volume replacement. Checkpoint 29 CI is pending its push; do not infer a pass.
+This commit completes **checkpoint 30**, exposing modern model IDs in selection menus while preserving defaults/preselection. Core tests passed 254 plus one doctest (one ignored), before an ordering-only preselection preservation adjustment; format/diff checks pass. See `MODEL-CATALOG-IMPLEMENTATION.md`. Next concrete task: replace Gemini's simulated streaming and validate native signatures/usage. Do not treat catalog presence as account access.
+
+Browser checkpoint **29, `06d9bbd`**, is pushed; CI **34261489651** is in progress. Previous checkpoints 28 (`5d90e20`, CI 34258067737) and 27 (`bfb409c`, CI 34256450049) are fully green. Inspect actual new CI status before claiming success.
 
 Final browser-feature tests passed **493 tests, one ignored real-Chrome test** (`implementation-browser-post-review-tests.log`). Eleven obsolete typed-accessibility formatter tests were removed with the unused formatter; schema tests remain. The real-Chrome test was separately invoked and passed (`implementation-browser-real-auth-final.log`): wrong origin rejected without submission, valid form submitted once, authentication explicitly unverified, reflected credentials redacted and owned profile removed. Final workspace/all-feature/all-target clippy passed (`implementation-browser-final-workspace-clippy.log`); the guard removed 1.2 GiB. Earlier lint failures are retained as evidence. No Cargo process from this validation is running.
 
@@ -35,7 +37,7 @@ Files for checkpoint 29:
 - `Cargo.toml`/lock: tools adds already-locked `fs2 0.4.3`. Cargo may rewrite lock format 3 to 4; keep format 3 if that is the only unrelated change.
 - `BROWSER-IMPLEMENTATION.md`: detailed behavior, migration/environment options, evidence and remaining boundaries. Review it against final code.
 
-After pushing this checkpoint, inspect its CI and continue provider/model capability completion. Keep the following boundaries visible; the browser checkpoint is not complete product acceptance.
+After pushing checkpoint 30, inspect its CI and continue Gemini native streaming/provider capability completion. Keep the following boundaries visible; the browser checkpoint is not complete product acceptance.
 
 ## Validation evidence currently available locally
 
@@ -67,7 +69,7 @@ The first 28 pushed checkpoints include source-backed frontier research, 65-fami
 
 1. **Browser/current critical findings:** validate remaining pool/interactive launch paths on supported platforms. Total browser/storage retention, sandbox policy, principal-scoped browser page/image/vault sessions and generic modern accessibility handling remain separate gaps. Current origin checks do not defeat a malicious script on the authorized origin or make page mutations atomic. Do not claim complete browser isolation.
 2. **Shared runtime and accounting:** remaining durable/global budget and all auxiliary/retry/cancel accounting; Perpetuum's String-only bridge drops usage; Engram curator commonly cancels at short shutdown. Preserve explicit unknown costs. Complete actual entrypoint composition and durable goal/evidence linkage; legacy TaskQueue is not a wired production goal manager.
-3. **Provider/context completion:** model menus/defaults must use current verified capabilities, Gemini real native streaming (function-call signatures already exist, do not misreport them as absent), reasoning controls/quota experience, whole-wire/auxiliary context and cache acceptance. Only GLM coding plan is live-authorized; other accounts require fixtures/source verification.
+3. **Provider/context completion:** modern menu IDs are exposed in checkpoint 30 with existing defaults preserved; capability-knownness and Gemini real native streaming (function-call signatures already exist, do not misreport them as absent), reasoning controls/quota experience, whole-wire/auxiliary context and cache acceptance. Only GLM coding plan is live-authorized; other accounts require fixtures/source verification.
 4. **Identity/migration/feature acceptance:** channel/principal setup tokens and memory/vault namespaces, attachments/interim/control delivery, server/channel restart, delegated linkage, retention/GC, supported-platform process/migration behavior. Distinguish implemented invariants from broader advertised capabilities.
 5. **Feature matrix:** update original audit rows with concrete checkpoint/acceptance evidence; some original assessments are stale after repairs. Complete remaining feature-family reviews and classify release blockers vs explicit limitations/future work rather than labeling all proposals implemented.
 6. **Broader held-out paired A/B:** freeze corpus/margins/sample/stopping before results. Same GLM/model settings, endpoint, account route, resources and tools on immutable baseline and final modernization. Existing four-task pilots both passed 4/4, but do not establish broad nonregression. Preserve all attempts, failures, request accounting and uncertainty. Protocol proposed 80 independent scenarios/3 repeats; size is to be finalized before held-out runs, not changed after unfavorable results.
