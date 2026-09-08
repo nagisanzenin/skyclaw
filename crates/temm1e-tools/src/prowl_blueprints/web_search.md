@@ -1,6 +1,7 @@
 ---
 id: bp_prowl_search
 name: Web Search Pattern
+trigger_patterns: ['search the web', 'find on a website', 'look up online']
 semantic_tags: ["web", "search", "browse", "find", "lookup"]
 task_signature: "search for {query} on {site}"
 success_count: 0

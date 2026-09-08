@@ -2,6 +2,10 @@
 
 TEMM1E supports three deployment methods: Docker, Fly.io, and Terraform (AWS). They share the configuration format; the Docker image includes a dynamically linked Linux binary and Chromium.
 
+The image starts with `start --host 0.0.0.0` so published ports work across the container boundary. Compose publishes only on host loopback; expose it remotely only through your configured access controls. An explicit replacement command can select a different `--host`.
+
+`/health` is process liveness, available even during first-run onboarding. `/ready` returns 503 until an agent is configured, then 200; it does not assert upstream provider connectivity or sufficient subscription quota. Dashboard data returns 503 during onboarding and follows the active runtime after configuration/model changes.
+
 ## Docker Deployment
 
 ### Quick Start
@@ -12,7 +16,7 @@ docker build -t temm1e:latest .
 docker run -d \
   --name temm1e \
   --restart unless-stopped \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -v temm1e-data:/var/lib/temm1e \
   -e TEMM1E_MODE=cloud \
   -e ANTHROPIC_API_KEY=sk-ant-... \
@@ -60,7 +64,7 @@ services:
     container_name: temm1e
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - temm1e-data:/var/lib/temm1e
       - ./config.toml:/etc/temm1e/config.toml:ro

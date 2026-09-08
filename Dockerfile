@@ -85,4 +85,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
 # Default command: start the gateway. Override with "chat" or "tui" for
 # interactive modes: docker run -it temm1e chat
 ENTRYPOINT ["tini", "--", "./temm1e"]
-CMD ["start"]
+CMD ["start", "--host", "0.0.0.0"]

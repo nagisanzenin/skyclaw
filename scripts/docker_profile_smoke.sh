@@ -14,7 +14,7 @@ docker volume create "$volume" >/dev/null
 start_and_wait() {
   docker run -d --name "$case_id" --network none \
     --mount "type=volume,src=$volume,dst=/var/lib/temm1e" \
-    "$image" start >/dev/null
+    "$image" >/dev/null
   for attempt in $(seq 1 30); do
     if docker exec "$case_id" curl -fsS http://localhost:8080/health >/dev/null 2>&1; then
       return
@@ -29,6 +29,8 @@ start_and_wait() {
   return 1
 }
 start_and_wait
+# Onboarding is alive but not ready to execute agent turns.
+test "$(docker exec "$case_id" curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ready)" = 503
 # The actual application must have created its memory database in the mount.
 docker exec "$case_id" sh -ec '
   test "$TEMM1E_DATA_DIR" = /var/lib/temm1e

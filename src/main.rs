@@ -101,6 +101,9 @@ struct Cli {
 enum Commands {
     /// Start the TEMM1E gateway daemon
     Start {
+        /// Override the gateway bind address (for example 0.0.0.0 inside a container)
+        #[arg(long)]
+        host: Option<std::net::IpAddr>,
         /// Run as a background daemon (requires prior setup via `temm1e start` first)
         #[arg(short, long)]
         daemon: bool,
@@ -1958,10 +1961,14 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Start {
+            host,
             daemon,
             log,
             personality,
         } => {
+            if let Some(host) = host {
+                config.gateway.host = host.to_string();
+            }
             // ── Parse personality mode ───────────────────────────
             let temm1e_mode = match personality.to_lowercase().as_str() {
                 "work" => temm1e_core::types::config::Temm1eMode::Work,
@@ -6178,33 +6185,30 @@ Just type a message to chat with the AI agent.",
             println!("TEMM1E gateway starting...");
             println!("  Mode: {}", cli.mode);
 
-            if let Some(agent) = agent_state.read().await.as_ref().cloned() {
-                let gate = temm1e_gateway::SkyGate::new(channels, agent, config.gateway.clone());
-                task_handles.push(tokio::spawn(async move {
-                    if let Err(e) = gate.start().await {
-                        tracing::error!(error = %e, "Gateway error");
-                    }
-                }));
-                println!("  Status: Online");
-                println!(
-                    "  Gateway: http://{}:{}",
-                    config.gateway.host, config.gateway.port
-                );
-                println!(
-                    "  Health: http://{}:{}/health",
-                    config.gateway.host, config.gateway.port
-                );
-            } else {
-                let channel_names: Vec<&str> = channel_map.keys().map(|s| s.as_str()).collect();
-                if channel_names.is_empty() {
-                    println!("  Status: No channels configured — set TELEGRAM_BOT_TOKEN or DISCORD_BOT_TOKEN");
-                } else {
-                    println!(
-                        "  Status: Onboarding — send your API key via {}",
-                        channel_names.join(" or ")
-                    );
+            let gate = temm1e_gateway::SkyGate::from_shared(
+                channels,
+                agent_state.clone(),
+                config.gateway.clone(),
+            );
+            let gateway_shutdown = shutdown_token.clone();
+            task_handles.push(tokio::spawn(async move {
+                if let Err(e) = gate.start_with_shutdown(gateway_shutdown).await {
+                    tracing::error!(error = %e, "Gateway error");
                 }
-            }
+            }));
+            println!(
+                "  Status: {}",
+                if agent_state.read().await.is_some() {
+                    "Configured"
+                } else {
+                    "Onboarding — configure a provider to enable the agent"
+                }
+            );
+            println!(
+                "  Gateway: http://{}:{}",
+                config.gateway.host, config.gateway.port
+            );
+            println!("  Health: /health (process); /ready (agent configured)");
 
             // ── SystemNotifier: fire Startup ───────────────────────
             // Spawned (fire-and-forget) so a slow channel POST does not
@@ -8751,6 +8755,19 @@ async fn handle_eigentune_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_shipped_prowl_blueprint_parses_with_real_agent_schema() {
+        let mut ids = std::collections::HashSet::new();
+        for (id, raw) in temm1e_tools::prowl_blueprints::WEB_BLUEPRINTS {
+            let blueprint = temm1e_agent::blueprint::parse_blueprint(raw)
+                .unwrap_or_else(|error| panic!("{id}: {error}"));
+            assert_eq!(&blueprint.id, id);
+            assert!(ids.insert(id));
+            assert!(!blueprint.trigger_patterns.is_empty());
+            assert!(!blueprint.semantic_tags.is_empty());
+        }
+    }
 
     #[derive(Default)]
     struct ConversationTestChannel {

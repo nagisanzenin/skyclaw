@@ -1,6 +1,7 @@
 ---
 id: bp_prowl_extract
 name: Web Data Extraction
+trigger_patterns: ['extract web data', 'read a web table']
 semantic_tags: ["web", "extract", "table", "data", "scrape", "read", "get"]
 task_signature: "extract {data} from {url}"
 success_count: 0

@@ -84,6 +84,7 @@ jobs:
         run: |
           cargo build --locked --bin temm1e
           python3 scripts/tui_pty_smoke.py target/debug/temm1e
+          python3 scripts/gateway_onboarding_smoke.py --binary target/debug/temm1e
 
   # -----------------------------------------------
   # Job 2b: Windows cross-platform gate — fmt + clippy + test on windows-latest

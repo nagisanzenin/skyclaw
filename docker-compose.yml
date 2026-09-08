@@ -6,7 +6,7 @@ services:
     image: temm1e:latest
     container_name: temm1e
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - TEMM1E_DATA_DIR=/var/lib/temm1e
       - TEMM1E_MODE=auto
