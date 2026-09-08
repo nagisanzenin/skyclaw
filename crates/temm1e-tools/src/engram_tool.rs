@@ -11,8 +11,8 @@
 //! - `recall`   — search permanent facts visible in this scope.
 //! - `forget`   — delete the best-matching fact for a query.
 //!
-//! Scopes (v1): `global` (default) and `chat`. `user` scope requires a user id
-//! in `ToolContext` (tracked follow-up); the data model already supports it.
+//! Scopes: global (legacy default), chat, or the authenticated user's scope.
+//! User identity comes from ToolContext, never from model-supplied arguments.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -40,11 +40,17 @@ impl EngramTool {
             .unwrap_or(0)
     }
 
-    fn parse_scope(scope: &str, ctx: &ToolContext) -> MemoryScope {
+    fn parse_scope(scope: &str, ctx: &ToolContext) -> Result<MemoryScope, Temm1eError> {
         match scope {
-            "chat" => MemoryScope::Chat(ctx.chat_id.clone()),
-            // "user" needs a user id not yet in ToolContext — v1 falls back to global.
-            _ => MemoryScope::Global,
+            "global" => Ok(MemoryScope::Global),
+            "chat" => Ok(MemoryScope::Chat(ctx.chat_id.clone())),
+            "user" if !ctx.user_id.is_empty() => Ok(MemoryScope::User(ctx.user_id.clone())),
+            "user" => Err(Temm1eError::Tool(
+                "User-scoped memory requires an authenticated user identity".into(),
+            )),
+            _ => Err(Temm1eError::Tool(
+                "Unknown memory scope; use global, user or chat".into(),
+            )),
         }
     }
 
@@ -111,7 +117,7 @@ impl EngramTool {
             })
             .unwrap_or_default();
 
-        let scope = Self::parse_scope(scope_s, ctx);
+        let scope = Self::parse_scope(scope_s, ctx)?;
         let id = Self::make_id(&scope, subject_key, content);
         let now = Self::now();
         let summary: String = content
@@ -160,10 +166,10 @@ impl EngramTool {
         ctx: &ToolContext,
     ) -> Result<ToolOutput, Temm1eError> {
         let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        // v1: tool sees global + chat scopes (user_id not available here).
+        // User facts include those captured by the automatic curator.
         let facts = self
             .memory
-            .engram_recall(query, "", &ctx.chat_id, 20)
+            .engram_recall(query, &ctx.user_id, &ctx.chat_id, 20)
             .await?;
         if facts.is_empty() {
             return Ok(ToolOutput {
@@ -194,7 +200,7 @@ impl EngramTool {
             .ok_or_else(|| Temm1eError::Tool("Missing required parameter: query".into()))?;
         let matches = self
             .memory
-            .engram_recall(query, "", &ctx.chat_id, 1)
+            .engram_recall(query, &ctx.user_id, &ctx.chat_id, 1)
             .await?;
         match matches.into_iter().next() {
             Some(f) => {
@@ -259,8 +265,8 @@ impl Tool for EngramTool {
                 },
                 "scope": {
                     "type": "string",
-                    "enum": ["global", "chat"],
-                    "description": "'global' (default) persists everywhere; 'chat' is limited to this conversation."
+                    "enum": ["global", "user", "chat"],
+                    "description": "'global' (legacy default) is shared; 'user' uses your authenticated caller, and 'chat' is limited to this conversation."
                 },
                 "pinned": {
                     "type": "string",
@@ -313,6 +319,8 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "cli".into(),
             workspace_path: PathBuf::from("/tmp/test"),
             session_id: "tg-123".to_string(),
@@ -378,5 +386,20 @@ mod tests {
             EngramTool::make_id(&s, None, "a"),
             EngramTool::make_id(&s, None, "b")
         );
+    }
+    #[test]
+    fn user_scope_uses_context_identity_and_unknown_scopes_fail() {
+        let mut context = ctx();
+        assert_eq!(
+            EngramTool::parse_scope("user", &context).unwrap(),
+            MemoryScope::User("test-user".into())
+        );
+        assert_eq!(
+            EngramTool::parse_scope("global", &context).unwrap(),
+            MemoryScope::Global
+        );
+        assert!(EngramTool::parse_scope("users", &context).is_err());
+        context.user_id.clear();
+        assert!(EngramTool::parse_scope("user", &context).is_err());
     }
 }

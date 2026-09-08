@@ -136,6 +136,8 @@ mod tests {
 
     fn test_ctx() -> ToolContext {
         ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "cli".into(),
             workspace_path: PathBuf::from("/tmp/test"),
             session_id: "test-session".to_string(),

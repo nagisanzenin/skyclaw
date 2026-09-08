@@ -79,9 +79,8 @@ pub struct SpawnSwarmContext {
     pub parent_budget: Arc<BudgetTracker>,
     pub policy: crate::runtime_policy::RuntimePolicy,
     pub cancel: CancellationToken,
-    /// Parent's workspace_path. Workers use this so Witness Planner
-    /// Oaths ground against the user's real filesystem instead of the
-    /// process cwd. Defaults to "." if construction site passed None.
+    /// Legacy composition hint retained for source compatibility. The actual
+    /// invocation's ToolContext workspace is authoritative for each worker.
     pub workspace_path: std::path::PathBuf,
     /// Parent's Witness attachments. When Some, each JIT swarm worker
     /// is constructed with `.with_witness_attachments(...)` so Oath
@@ -190,7 +189,7 @@ impl Tool for SpawnSwarmTool {
     async fn execute(
         &self,
         input: ToolInput,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> Result<ToolOutput, Temm1eError> {
         let args: SpawnArgs = serde_json::from_value(input.arguments)
             .map_err(|e| Temm1eError::Tool(format!("spawn_swarm: invalid arguments: {e}")))?;
@@ -232,7 +231,7 @@ impl Tool for SpawnSwarmTool {
         let tools_template = swarm_ctx.tools_template.clone();
         let model = swarm_ctx.model.clone();
         let witness_attachments_for_closure = swarm_ctx.witness_attachments.clone();
-        let workspace_for_closure = swarm_ctx.workspace_path.clone();
+        let parent_context = ctx.clone();
         let shared_context = args.shared_context.clone();
         let parent_budget = swarm_ctx.parent_budget.clone();
         let policy = swarm_ctx.policy.clone();
@@ -245,7 +244,7 @@ impl Tool for SpawnSwarmTool {
                 let model = model.clone();
                 let shared_context = shared_context.clone();
                 let witness_for_worker = witness_attachments_for_closure.clone();
-                let workspace_for_worker = workspace_for_closure.clone();
+                let parent_context = parent_context.clone();
                 let worker_budget = Arc::new(BudgetTracker::child(parent_budget.clone()));
                 let policy = policy.clone();
                 async move {
@@ -278,29 +277,18 @@ impl Tool for SpawnSwarmTool {
                         task.description,
                     );
 
+                    let mut session = parent_context
+                        .delegated_session("jit-swarm", format!("jit-swarm-{}", task.id));
                     let inbound = InboundMessage {
                         id: uuid::Uuid::new_v4().to_string(),
-                        chat_id: format!("jit-swarm-{}", task.id),
-                        user_id: "jit-swarm".into(),
+                        chat_id: session.chat_id.clone(),
+                        user_id: session.user_id.clone(),
                         username: None,
-                        channel: "jit-swarm".into(),
+                        channel: session.channel.clone(),
                         text: Some(initial_msg),
                         attachments: vec![],
                         reply_to: None,
                         timestamp: chrono::Utc::now(),
-                    };
-
-                    let mut session = temm1e_core::types::session::SessionContext {
-                        session_id: format!("jit-swarm-{}", task.id),
-                        user_id: "jit-swarm".into(),
-                        channel: "jit-swarm".into(),
-                        chat_id: format!("jit-swarm-{}", task.id),
-                        role: temm1e_core::types::rbac::Role::Admin,
-                        history: vec![],
-                        workspace_path: workspace_for_worker.clone(),
-                        read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
-                            std::collections::HashSet::new(),
-                        )),
                     };
 
                     match worker
@@ -581,5 +569,137 @@ mod tests {
         assert!(text.contains("task1"));
         assert!(text.contains("task2"));
         assert!(text.contains("done"));
+    }
+    struct ContextProbe {
+        name: &'static str,
+        calls: std::sync::atomic::AtomicUsize,
+        seen: tokio::sync::Mutex<Option<ToolContext>>,
+    }
+    #[async_trait::async_trait]
+    impl Tool for ContextProbe {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "local identity test probe"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object","properties":{}})
+        }
+        fn declarations(&self) -> ToolDeclarations {
+            ToolDeclarations {
+                file_access: vec![],
+                network_access: vec![],
+                shell_access: false,
+            }
+        }
+        async fn execute(
+            &self,
+            _: ToolInput,
+            context: &ToolContext,
+        ) -> Result<ToolOutput, Temm1eError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *self.seen.lock().await = Some(context.clone());
+            let content =
+                tokio::fs::read_to_string(context.workspace_path.join("caller-marker.txt"))
+                    .await
+                    .map_err(|e| Temm1eError::Tool(e.to_string()))?;
+            Ok(ToolOutput {
+                content,
+                is_error: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn real_jit_worker_inherits_user_role_and_invocation_workspace() {
+        use temm1e_test_utils::{MockMemory, QueuedMockProvider};
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("caller-workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("caller-marker.txt"), "caller-owned-marker").unwrap();
+        let config = temm1e_hive::config::HiveConfig {
+            min_workers: 1,
+            max_workers: 1,
+            swarm_threshold_speedup: 1.0,
+            queen_cost_ratio_max: 1.0,
+            ..Default::default()
+        };
+        let hive = Arc::new(
+            temm1e_hive::Hive::new(
+                &config,
+                &format!(
+                    "sqlite://{}?mode=rwc",
+                    directory.path().join("hive.db").display()
+                ),
+            )
+            .await
+            .unwrap(),
+        );
+        let provider = Arc::new(QueuedMockProvider::with_responses(vec![
+            QueuedMockProvider::text_response(
+                r#"{"tasks":[{"id":"t1","description":"Inspect caller identity","dependencies":[],"context_tags":[],"estimated_tokens":2000},{"id":"t2","description":"Inspect again","dependencies":["t1"],"context_tags":[],"estimated_tokens":2000}],"single_agent_recommended":false,"reasoning":"fixture"}"#,
+            ),
+            QueuedMockProvider::tool_use_response("forged-shell", "shell", serde_json::json!({})),
+            QueuedMockProvider::tool_use_response(
+                "inspect-context",
+                "identity_probe",
+                serde_json::json!({}),
+            ),
+            QueuedMockProvider::text_response("worker returned"),
+            QueuedMockProvider::tool_use_response(
+                "inspect-second-context",
+                "identity_probe",
+                serde_json::json!({}),
+            ),
+            QueuedMockProvider::text_response("second worker returned"),
+        ]));
+        let probe = Arc::new(ContextProbe {
+            name: "identity_probe",
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            seen: tokio::sync::Mutex::new(None),
+        });
+        let shell = Arc::new(ContextProbe {
+            name: "shell",
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            seen: tokio::sync::Mutex::new(None),
+        });
+        let mut policy_config = temm1e_core::types::config::Temm1eConfig::default();
+        policy_config.agent.v2_optimizations = false;
+        policy_config.memory.engram.enabled = false;
+        let handle = Arc::new(tokio::sync::RwLock::new(Some(SpawnSwarmContext {
+            hive,
+            provider,
+            memory: Arc::new(MockMemory::new()),
+            tools_template: vec![probe.clone(), shell.clone()],
+            model: "fixture".into(),
+            parent_budget: Arc::new(BudgetTracker::new(0.0)),
+            policy: crate::runtime_policy::RuntimePolicy::from_config(&policy_config),
+            cancel: CancellationToken::new(),
+            workspace_path: directory.path().join("wrong-composition-workspace"),
+            witness_attachments: None,
+        })));
+        let tool = SpawnSwarmTool::new(handle);
+        let context = ToolContext {
+            user_id: "caller-alice".into(),
+            role: temm1e_core::types::rbac::Role::User,
+            channel: "telegram".into(),
+            workspace_path: workspace.clone(),
+            session_id: "parent-session".into(),
+            chat_id: "parent-room".into(),
+            read_tracker: None,
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), tool.execute(ToolInput {
+            name: SPAWN_SWARM_TOOL_NAME.into(), arguments: serde_json::json!({"goal":"inspect identity", "shared_context":"local fixture"}),
+        }, &context)).await.unwrap().unwrap();
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(shell.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(probe.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let seen = probe.seen.lock().await;
+        let seen = seen.as_ref().unwrap();
+        assert_eq!(seen.user_id, "caller-alice");
+        assert_eq!(seen.role, temm1e_core::types::rbac::Role::User);
+        assert_eq!(seen.workspace_path, workspace);
+        assert_ne!(seen.chat_id, context.chat_id);
     }
 }

@@ -777,6 +777,8 @@ mod tests {
         assert_eq!(tools.len(), 1);
 
         let ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
@@ -802,6 +804,8 @@ mod tests {
 
         let tool = SelfCreateTool::new(registry.clone());
         let ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),

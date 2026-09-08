@@ -3650,6 +3650,8 @@ mod live_fixture_tests {
         let vault = Arc::new(FixtureVault(serde_json::to_vec(&serde_json::json!({"username":"fixture-user","password":"p!","service_url":format!("http://{address}/login")})).unwrap()));
         let browser = BrowserTool::new().with_vault(vault);
         let ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "fixture".into(),
             workspace_path: source.path().into(),
             session_id: "fixture".into(),

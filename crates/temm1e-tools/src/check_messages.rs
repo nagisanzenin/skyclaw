@@ -107,6 +107,8 @@ mod tests {
             .insert(ChatRoute::new("discord", "42"), vec![discord]);
         let tool = CheckMessagesTool::new(pending.clone());
         let context = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "telegram".into(),
             chat_id: "42".into(),
             session_id: "epoch".into(),

@@ -45,7 +45,12 @@ pub struct ToolOutputImage {
 }
 
 /// Context provided to tools during execution
+#[derive(Clone)]
 pub struct ToolContext {
+    /// Authenticated user identifier from the active session, never model input.
+    pub user_id: String,
+    /// Parent authority; delegated work must not replace it with Admin.
+    pub role: crate::types::rbac::Role,
     /// Authenticated transport identity, carried from the active session.
     pub channel: String,
     pub workspace_path: std::path::PathBuf,
@@ -56,6 +61,41 @@ pub struct ToolContext {
     /// None for non-coding contexts (backwards compatible).
     pub read_tracker:
         Option<std::sync::Arc<tokio::sync::RwLock<std::collections::HashSet<std::path::PathBuf>>>>,
+}
+
+impl ToolContext {
+    pub fn from_session(session: &crate::types::session::SessionContext) -> Self {
+        Self {
+            user_id: session.user_id.clone(),
+            role: session.role,
+            channel: session.channel.clone(),
+            workspace_path: session.workspace_path.clone(),
+            session_id: session.session_id.clone(),
+            chat_id: session.chat_id.clone(),
+            read_tracker: Some(session.read_tracker.clone()),
+        }
+    }
+
+    /// Create isolated worker history/read tracking while retaining the caller's
+    /// user, authority and workspace. The private worker route is not delivery.
+    pub fn delegated_session(
+        &self,
+        channel: &str,
+        session_id: String,
+    ) -> crate::types::session::SessionContext {
+        crate::types::session::SessionContext {
+            user_id: self.user_id.clone(),
+            role: self.role,
+            channel: channel.into(),
+            chat_id: session_id.clone(),
+            session_id,
+            workspace_path: self.workspace_path.clone(),
+            history: Vec::new(),
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
+        }
+    }
 }
 
 /// Tool trait — agent capabilities like shell, file ops, browser, etc.
@@ -82,5 +122,43 @@ pub trait Tool: Send + Sync {
     /// conversation. Default: returns None (most tools produce no images).
     fn take_last_image(&self) -> Option<ToolOutputImage> {
         None
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    #[test]
+    fn delegation_retains_identity_authority_workspace_but_isolates_history_and_reads() {
+        for role in [
+            crate::types::rbac::Role::User,
+            crate::types::rbac::Role::Admin,
+        ] {
+            let parent = crate::types::session::SessionContext {
+                session_id: "parent".into(),
+                channel: "telegram".into(),
+                chat_id: "room".into(),
+                user_id: "caller-alice".into(),
+                role,
+                workspace_path: "/caller-workspace".into(),
+                history: Vec::new(),
+                read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                    std::collections::HashSet::from([std::path::PathBuf::from("read-by-parent")]),
+                )),
+            };
+            let context = ToolContext::from_session(&parent);
+            let worker = context.delegated_session("hive", "private-worker".into());
+            assert_eq!(worker.user_id, parent.user_id);
+            assert_eq!(worker.role, role);
+            assert_eq!(worker.workspace_path, parent.workspace_path);
+            assert_eq!(worker.chat_id, "private-worker");
+            assert_eq!(worker.channel, "hive");
+            assert!(worker.history.is_empty());
+            assert!(worker.read_tracker.try_read().unwrap().is_empty());
+            assert!(!std::sync::Arc::ptr_eq(
+                &worker.read_tracker,
+                &parent.read_tracker
+            ));
+        }
     }
 }

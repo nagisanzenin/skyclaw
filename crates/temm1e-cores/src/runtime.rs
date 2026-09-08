@@ -23,7 +23,6 @@ use temm1e_core::types::error::Temm1eError;
 use temm1e_core::types::message::{
     ChatMessage, CompletionRequest, ContentPart, MessageContent, Role, ToolDefinition,
 };
-use temm1e_core::types::session::SessionContext;
 use temm1e_core::{Provider, Tool};
 use tracing::{debug, info};
 
@@ -87,20 +86,27 @@ impl CoreRuntime {
         task: &str,
         workspace_path: PathBuf,
     ) -> Result<CoreResult, Temm1eError> {
-        let session_id = format!("core-{}-{}", self.core_name, uuid::Uuid::new_v4());
-
-        let mut session = SessionContext {
-            session_id: session_id.clone(),
-            channel: "core".to_string(),
-            chat_id: session_id.clone(),
-            user_id: "core".to_string(),
+        // Compatibility entrypoint for an explicitly trusted standalone host.
+        let context = temm1e_core::ToolContext {
+            user_id: "core".into(),
             role: temm1e_core::types::rbac::Role::Admin,
-            history: Vec::new(),
+            channel: "core".into(),
             workspace_path,
-            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
-                std::collections::HashSet::new(),
-            )),
+            session_id: String::new(),
+            chat_id: String::new(),
+            read_tracker: None,
         };
+        self.run_scoped(task, &context).await
+    }
+
+    /// Active tool invocation inherits caller identity, role and workspace.
+    pub async fn run_scoped(
+        &self,
+        task: &str,
+        context: &temm1e_core::ToolContext,
+    ) -> Result<CoreResult, Temm1eError> {
+        let session_id = format!("core-{}-{}", self.core_name, uuid::Uuid::new_v4());
+        let mut session = context.delegated_session("core", session_id);
 
         // Initial user message is the task
         session.history.push(ChatMessage {
@@ -111,6 +117,7 @@ impl CoreRuntime {
         let tool_defs: Vec<ToolDefinition> = self
             .tools
             .iter()
+            .filter(|t| session.role.is_tool_allowed(t.name()))
             .map(|t| ToolDefinition {
                 name: t.name().to_string(),
                 description: t.description().to_string(),

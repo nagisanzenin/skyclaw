@@ -343,6 +343,8 @@ mod tests {
     async fn execute_empty_query() {
         let tool = SelfExtendTool::new();
         let ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
@@ -361,6 +363,8 @@ mod tests {
     async fn execute_valid_query() {
         let tool = SelfExtendTool::new();
         let ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),

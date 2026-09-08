@@ -218,10 +218,7 @@ impl Tool for InvokeCoreTool {
             })
             .unwrap_or_default();
 
-        // Use the actual working directory for the core so it can find project files.
-        // Fall back to the tool context workspace, then the configured workspace.
-        let core_workspace = std::env::current_dir().unwrap_or_else(|_| ctx.workspace_path.clone());
-        let run_result = runtime.run(&task, core_workspace).await;
+        let run_result = runtime.run_scoped(&task, ctx).await;
 
         // Record outcome in stats
         match &run_result {
@@ -423,5 +420,126 @@ mod tests {
         async fn list_models(&self) -> Result<Vec<String>, Temm1eError> {
             Ok(vec![])
         }
+    }
+    struct IdentityTool {
+        name: &'static str,
+        seen: std::sync::Mutex<Option<ToolContext>>,
+    }
+    #[async_trait]
+    impl Tool for IdentityTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "identity fixture"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object","properties":{}})
+        }
+        fn declarations(&self) -> ToolDeclarations {
+            ToolDeclarations {
+                file_access: vec![],
+                network_access: vec![],
+                shell_access: false,
+            }
+        }
+        async fn execute(
+            &self,
+            _: ToolInput,
+            ctx: &ToolContext,
+        ) -> Result<ToolOutput, Temm1eError> {
+            assert_ne!(
+                self.name, "shell",
+                "a User child executed the forbidden shell tool"
+            );
+            *self.seen.lock().unwrap() = Some(ctx.clone());
+            let content =
+                std::fs::read_to_string(ctx.workspace_path.join("caller-marker.txt")).unwrap();
+            assert_eq!(content, "caller-owned-marker");
+            Ok(ToolOutput {
+                content,
+                is_error: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn invocation_uses_caller_workspace_and_never_elevates_child_role() {
+        use temm1e_test_utils::QueuedMockProvider;
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("caller-marker.txt"),
+            "caller-owned-marker",
+        )
+        .unwrap();
+        let mut registry = CoreRegistry::new();
+        registry.load_core(crate::definition::CoreDefinition {
+            name: "identity".into(),
+            description: "fixture".into(),
+            version: "1.0.0".into(),
+            temperature: None,
+            system_prompt: "<task>".into(),
+            source_path: directory.path().join("identity.md"),
+        });
+        let probe = Arc::new(IdentityTool {
+            name: "identity_probe",
+            seen: std::sync::Mutex::new(None),
+        });
+        let tool = InvokeCoreTool {
+            registry: Arc::new(RwLock::new(registry)),
+            provider: Arc::new(QueuedMockProvider::with_responses(vec![
+                QueuedMockProvider::tool_use_response(
+                    "forged-shell",
+                    "shell",
+                    serde_json::json!({}),
+                ),
+                QueuedMockProvider::tool_use_response(
+                    "probe",
+                    "identity_probe",
+                    serde_json::json!({}),
+                ),
+                QueuedMockProvider::text_response("core returned"),
+            ])),
+            all_tools: vec![
+                probe.clone(),
+                Arc::new(IdentityTool {
+                    name: "shell",
+                    seen: std::sync::Mutex::new(None),
+                }),
+            ],
+            budget: Arc::new(BudgetTracker::new(0.0)),
+            model_pricing: ModelPricing::Unknown,
+            model: "fixture".into(),
+            max_context_tokens: 32768,
+            memory: Arc::new(MockMemory),
+        };
+        let context = ToolContext {
+            user_id: "caller-alice".into(),
+            role: temm1e_core::types::rbac::Role::User,
+            channel: "telegram".into(),
+            workspace_path: directory.path().to_path_buf(),
+            session_id: "parent".into(),
+            chat_id: "room".into(),
+            read_tracker: None,
+        };
+        // Exercise the tool API as an embedded host; the outer runtime already
+        // blocks invoke_core for User, and the child must preserve authority too.
+        let output = tool
+            .execute(
+                ToolInput {
+                    name: "invoke_core".into(),
+                    arguments: serde_json::json!({"core":"identity", "task":"inspect caller"}),
+                },
+                &context,
+            )
+            .await
+            .unwrap();
+        assert!(output.content.contains("core returned"));
+        let seen = probe.seen.lock().unwrap();
+        let seen = seen.as_ref().unwrap();
+        assert_eq!(seen.user_id, context.user_id);
+        assert_eq!(seen.role, context.role);
+        assert_eq!(seen.workspace_path, context.workspace_path);
+        assert_ne!(seen.chat_id, context.chat_id);
     }
 }

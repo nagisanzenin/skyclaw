@@ -5618,13 +5618,9 @@ Just type a message to chat with the AI agent.",
                                                             let model_h = agent.model().to_string();
                                                             // Hive worker witness wiring — ACTIVE mode (v5.5.0).
                                                             // Workers now inherit the parent session's workspace_path
-                                                            // (propagated via workspace_for_hive → workspace_for_worker
-                                                            // below) so the Planner's file-path postconditions target
-                                                            // the user's real workspace, not the process cwd. This
-                                                            // closes the audit-trail gap where delegated work escaped
-                                                            // Witness oversight in passive mode.
+                                                            // Each worker receives the caller's workspace and role.
                                                             let witness_h = witness_attachments.clone();
-                                                            let workspace_for_hive = workspace_path.clone();
+                                                            let hive_parent = temm1e_core::ToolContext::from_session(&session);
                                                             let hive_budget = runtime_budget.clone();
                                                             let hive_policy = runtime_policy.clone();
 
@@ -5636,7 +5632,7 @@ Just type a message to chat with the AI agent.",
                                                                     let m_clone = memory_h.clone();
                                                                     let mdl = model_h.clone();
                                                                     let witness_for_worker = witness_h.clone();
-                                                                    let workspace_for_worker = workspace_for_hive.clone();
+                                                                    let worker_parent = hive_parent.clone();
                                                                     let runtime_budget = Arc::new(temm1e_agent::budget::BudgetTracker::child(hive_budget.clone()));
                                                                     let runtime_policy = hive_policy.clone();
                                                                     async move {
@@ -5647,21 +5643,13 @@ Just type a message to chat with the AI agent.",
                                                                         .with_witness_attachments(
                                                                             witness_for_worker.as_ref(),
                                                                         );
+                                                                        let mut s = worker_parent.delegated_session("hive", format!("hive-{}", task.id));
                                                                         let mini_msg = temm1e_core::types::message::InboundMessage {
                                                                             id: uuid::Uuid::new_v4().to_string(),
-                                                                            chat_id: "hive".into(), user_id: "hive".into(),
-                                                                            username: None, channel: "hive".into(),
+                                                                            chat_id: s.chat_id.clone(), user_id: s.user_id.clone(),
+                                                                            username: None, channel: s.channel.clone(),
                                                                             text: Some(scoped), attachments: vec![],
                                                                             reply_to: None, timestamp: chrono::Utc::now(),
-                                                                        };
-                                                                        let mut s = temm1e_core::types::session::SessionContext {
-                                                                            session_id: format!("hive-{}", task.id),
-                                                                            user_id: "hive".into(), channel: "hive".into(),
-                                                                            chat_id: "hive".into(),
-                                                                            role: temm1e_core::types::rbac::Role::Admin,
-                                                                            history: vec![],
-                                                                            workspace_path: workspace_for_worker,
-                                                                            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new())),
                                                                         };
                                                                         match mini.process_message(&mini_msg, &mut s, None, None, None, None, None).await {
                                                                             Ok((r, u)) => {

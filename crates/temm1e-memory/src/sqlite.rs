@@ -800,13 +800,18 @@ impl Memory for SqliteMemory {
     ) -> Result<Vec<EngramFact>, Temm1eError> {
         let user_key = format!("user:{user_id}");
         let chat_key = format!("chat:{chat_id}");
-        // Sanitize LIKE wildcards from the query, then substring-match.
-        let pat = format!("%{}%", query.replace(['%', '_'], ""));
+        // Escape LIKE syntax while preserving the actual query. Removing '%'
+        // or '_' changes fact identity and can turn a forget query into match-all.
+        let escaped = query
+            .replace('!', "!!")
+            .replace('%', "!%")
+            .replace('_', "!_");
+        let pat = format!("%{escaped}%");
         let rows: Vec<EngramRow> = sqlx::query_as(
             "SELECT id, content, summary, essence, fact_type, scope, pinned_by, subject_key, \
              importance, created_at, last_accessed, tags, links \
              FROM engram_facts WHERE scope IN ('global', ?, ?) \
-             AND (summary LIKE ? OR essence LIKE ? OR content LIKE ? OR tags LIKE ?) \
+             AND (summary LIKE ? ESCAPE '!' OR essence LIKE ? ESCAPE '!' OR content LIKE ? ESCAPE '!' OR tags LIKE ? ESCAPE '!') \
              ORDER BY importance DESC LIMIT ?",
         )
         .bind(&user_key)
@@ -1452,6 +1457,43 @@ mod tests {
         // forget
         mem.engram_forget("g1").await.unwrap();
         assert!(mem.engram_get("g1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn engram_recall_preserves_literal_wildcards_and_caller_scope() {
+        let mem = SqliteMemory::new("sqlite::memory:").await.unwrap();
+        for (id, content, user) in [
+            ("under", "key_1", "alice"),
+            ("plain", "keyX1", "alice"),
+            ("percent", "100% done", "alice"),
+            ("plain-percent", "100 done", "alice"),
+            ("escape", "wow!yes", "alice"),
+            ("foreign", "key_1 100% wow!yes", "bob"),
+        ] {
+            let mut fact = mk_fact(
+                id,
+                MemoryScope::User(user.into()),
+                None,
+                4.0,
+                PinnedBy::Agent,
+            );
+            fact.content = content.into();
+            fact.summary = content.into();
+            fact.essence = content.into();
+            fact.tags.clear();
+            mem.engram_store(fact).await.unwrap();
+        }
+        for (query, expected) in [
+            ("key_1", "under"),
+            ("_", "under"),
+            ("100%", "percent"),
+            ("%", "percent"),
+            ("!", "escape"),
+        ] {
+            let facts = mem.engram_recall(query, "alice", "room", 20).await.unwrap();
+            assert_eq!(facts.len(), 1, "query={query}");
+            assert_eq!(facts[0].id, expected);
+        }
     }
 
     #[tokio::test]

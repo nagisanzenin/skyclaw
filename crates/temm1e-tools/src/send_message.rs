@@ -131,6 +131,8 @@ mod tests {
         ]);
         let tool = SendMessageTool::routed(channels.clone(), Some(first.clone()));
         let mut ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "discord".into(),
             chat_id: "42".into(),
             session_id: "epoch".into(),

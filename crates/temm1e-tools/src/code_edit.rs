@@ -203,6 +203,8 @@ mod tests {
 
     fn test_ctx(workspace: PathBuf) -> ToolContext {
         ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "cli".into(),
             workspace_path: workspace,
             session_id: "test-session".into(),
@@ -220,6 +222,8 @@ mod tests {
         let tracker =
             std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
         let ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "cli".into(),
             workspace_path: workspace,
             session_id: "test-session".into(),

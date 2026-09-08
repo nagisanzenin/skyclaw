@@ -7194,6 +7194,7 @@ dependencies = [
  "serde_yaml",
  "temm1e-agent",
  "temm1e-core",
+ "temm1e-test-utils",
  "tempfile",
  "tokio",
  "tracing",

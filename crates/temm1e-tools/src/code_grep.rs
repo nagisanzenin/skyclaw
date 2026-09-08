@@ -450,6 +450,8 @@ mod tests {
 
     fn make_ctx(workspace: &Path) -> ToolContext {
         ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
             channel: "cli".into(),
             workspace_path: workspace.to_path_buf(),
             session_id: "test-session".to_string(),

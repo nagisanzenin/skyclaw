@@ -373,13 +373,7 @@ pub async fn execute_tool(
     // Validate runtime arguments against workspace scope (CA-02 / CA-06)
     validate_arguments(tool_name, &arguments, session)?;
 
-    let ctx = ToolContext {
-        channel: session.channel.clone(),
-        workspace_path: session.workspace_path.clone(),
-        session_id: session.session_id.clone(),
-        chat_id: session.chat_id.clone(),
-        read_tracker: Some(session.read_tracker.clone()),
-    };
+    let ctx = ToolContext::from_session(session);
 
     let input = ToolInput {
         name: tool_name.to_string(),
