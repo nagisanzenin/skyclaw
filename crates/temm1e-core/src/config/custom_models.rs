@@ -35,6 +35,9 @@ use crate::types::error::Temm1eError;
 /// A user-defined model entry with capability limits and pricing.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct CustomModel {
+    /// Explicit operator capability for this provider/model. Omitted is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input: Option<bool>,
     /// Provider scope — the model is only valid for this provider.
     pub provider: String,
     /// Model ID as the proxy API expects it (e.g. `qwen3-coder-30b-a3b`).
@@ -165,6 +168,22 @@ pub fn custom_models_for_provider(provider: &str) -> Vec<CustomModel> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn omitted_and_explicit_image_capability_survive_toml_roundtrip() {
+        let legacy = "provider = 'openai'\nname = 'custom'\ncontext_window = 8192\nmax_output_tokens = 1024\n";
+        for capability in [None, Some(false), Some(true)] {
+            let mut model: CustomModel = toml::from_str(legacy).unwrap();
+            assert_eq!(model.image_input, None);
+            model.image_input = capability;
+            let encoded = toml::to_string(&model).unwrap();
+            assert_eq!(encoded.contains("image_input"), capability.is_some());
+            assert_eq!(
+                toml::from_str::<CustomModel>(&encoded).unwrap().image_input,
+                capability
+            );
+        }
+    }
+
     // ── TOML round-trip (pure data, no disk I/O) ─────────────────────
 
     #[test]
@@ -177,6 +196,7 @@ mod tests {
     fn round_trip_custom_model() {
         let file = CustomModelsFile {
             models: vec![CustomModel {
+                image_input: None,
                 provider: "openai".into(),
                 name: "qwen3-coder-30b-a3b".into(),
                 context_window: 262144,
@@ -250,6 +270,7 @@ mod tests {
         CustomModelsFile {
             models: vec![
                 CustomModel {
+                    image_input: None,
                     provider: "openai".into(),
                     name: "qwen3-coder".into(),
                     context_window: 262144,
@@ -259,6 +280,7 @@ mod tests {
                     pricing_verified: false,
                 },
                 CustomModel {
+                    image_input: None,
                     provider: "openai".into(),
                     name: "llama-3.3-70b".into(),
                     context_window: 131072,
@@ -268,6 +290,7 @@ mod tests {
                     pricing_verified: false,
                 },
                 CustomModel {
+                    image_input: None,
                     provider: "anthropic".into(),
                     name: "claude-custom".into(),
                     context_window: 200000,
@@ -324,6 +347,7 @@ mod tests {
     fn upsert_replaces_existing_scoped_by_provider_and_name() {
         let mut file = sample_file();
         let replacement = CustomModel {
+            image_input: None,
             provider: "openai".into(),
             name: "qwen3-coder".into(), // same key as existing entry
             context_window: 1_000_000,  // different values
@@ -351,6 +375,7 @@ mod tests {
     fn upsert_appends_when_not_found() {
         let mut file = sample_file();
         let new_entry = CustomModel {
+            image_input: None,
             provider: "openai".into(),
             name: "brand-new-model".into(),
             context_window: 128_000,

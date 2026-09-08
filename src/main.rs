@@ -19,7 +19,7 @@ use temm1e_core::config::credentials::{
     load_active_provider_keys, load_credentials_file, load_saved_credentials, save_credentials,
 };
 use temm1e_core::types::model_registry::{
-    available_models_for_provider, default_model, is_vision_model,
+    available_models_for_provider, default_model, image_input_badge,
 };
 use temm1e_core::Channel;
 use tokio::sync::Mutex;
@@ -929,16 +929,12 @@ fn handle_model_command(args: &str) -> String {
             let is_proxy = p.base_url.is_some() || p.name == "openrouter";
             lines.push(format!("  {}{}:", p.name, active_marker));
             if is_proxy {
-                let current_vision = if is_vision_model(&p.model) {
-                    " [vision]"
-                } else {
-                    ""
-                };
+                let current_vision = image_input_badge(&p.name, &p.model);
                 lines.push(format!("    {} ← current{}", p.model, current_vision));
                 lines.push("    (proxy — any model name accepted)".to_string());
             } else {
                 for m in &models {
-                    let vision = if is_vision_model(m) { " [vision]" } else { "" };
+                    let vision = image_input_badge(&p.name, m);
                     let current = if *m == p.model { " ← current" } else { "" };
                     lines.push(format!("    {}{}{}", m, vision, current));
                 }
@@ -982,7 +978,7 @@ fn handle_model_command(args: &str) -> String {
         let list = known
             .iter()
             .map(|m| {
-                let v = if is_vision_model(m) { " [vision]" } else { "" };
+                let v = image_input_badge(&active_provider.name, m);
                 format!("  {}{}", m, v)
             })
             .collect::<Vec<_>>()
@@ -1089,14 +1085,14 @@ fn remove_provider(provider_name: &str) -> String {
 // local models via these commands. Storage lives in a separate file
 // (`~/.temm1e/custom_models.toml`) so credentials.toml format is untouched.
 
-/// Handle `/addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>]`.
+/// Handle `/addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] [vision:true|false|unknown]`.
 fn handle_addmodel_command(args: &str) -> String {
     use temm1e_core::config::custom_models::{upsert_custom_model, CustomModel};
 
     let trimmed = args.trim();
     if trimmed.is_empty() {
         return "Usage: /addmodel <name> context:<int> output:<int> \
-                [input_price:<float>] [output_price:<float>]\n\n\
+                [input_price:<float>] [output_price:<float>] [vision:true|false|unknown]\n\n\
                 Example: /addmodel qwen3-coder-30b-a3b context:262144 output:65536\n\
                 Example: /addmodel glm-4.7 context:200000 output:131072 \
                 input_price:0.5 output_price:2.0"
@@ -1126,6 +1122,9 @@ fn handle_addmodel_command(args: &str) -> String {
         }
     };
 
+    let mut image_input =
+        temm1e_core::config::custom_models::lookup_custom_model(&active_provider, &name)
+            .and_then(|model| model.image_input);
     let mut context_window: Option<usize> = None;
     let mut max_output_tokens: Option<usize> = None;
     let mut input_price_per_1m: f64 = 0.0;
@@ -1137,11 +1136,17 @@ fn handle_addmodel_command(args: &str) -> String {
         let Some((k, v)) = token.split_once(':') else {
             return format!(
                 "Unexpected token `{}`. All arguments after the model name \
-                 must be k:v pairs (context:, output:, input_price:, output_price:).",
+                 must be k:v pairs (context:, output:, input_price:, output_price:, vision:).",
                 token
             );
         };
         match k.to_lowercase().as_str() {
+            "vision" | "image_input" => match v {
+                "true" => image_input = Some(true),
+                "false" => image_input = Some(false),
+                "unknown" => image_input = None,
+                _ => return "vision: must be true, false or unknown.".into(),
+            },
             "context" | "context_window" | "ctx" => match v.parse::<usize>() {
                 Ok(n) => context_window = Some(n),
                 Err(_) => return format!("Invalid context value `{}` — expected integer.", v),
@@ -1177,7 +1182,7 @@ fn handle_addmodel_command(args: &str) -> String {
             other => {
                 return format!(
                     "Unknown key `{}`. Accepted keys: context:, output:, \
-                     input_price:, output_price:",
+                     input_price:, output_price:, vision:",
                     other
                 );
             }
@@ -1204,6 +1209,7 @@ fn handle_addmodel_command(args: &str) -> String {
     }
     let pricing_verified = input_price_set && output_price_set;
     let model = CustomModel {
+        image_input,
         provider: active_provider.clone(),
         name: name.clone(),
         context_window,
@@ -1282,8 +1288,14 @@ fn handle_listmodels_command() -> String {
                 } else {
                     ""
                 };
-                let price = if m.input_price_per_1m == 0.0 && m.output_price_per_1m == 0.0 {
-                    " · free".to_string()
+                let price = if matches!(p.name.as_str(), "openai-codex" | "zai-coding-plan") {
+                    " · subscription (quota unknown)".to_string()
+                } else if m.input_price_per_1m == 0.0 && m.output_price_per_1m == 0.0 {
+                    if m.pricing_verified {
+                        " · verified zero token rate".to_string()
+                    } else {
+                        " · pricing unknown".to_string()
+                    }
                 } else {
                     format!(
                         " · ${:.2}/1M in · ${:.2}/1M out",
@@ -1291,8 +1303,9 @@ fn handle_listmodels_command() -> String {
                     )
                 };
                 lines.push(format!(
-                    "    {} — {}K ctx · {}K out{}{}",
+                    "    {}{} — {}K ctx · {}K out{}{}",
                     m.name,
+                    image_input_badge(&p.name, &m.name),
                     m.context_window / 1000,
                     m.max_output_tokens / 1000,
                     price,
@@ -1305,7 +1318,7 @@ fn handle_listmodels_command() -> String {
 
     lines.push(
         "Add a custom model: /addmodel <name> context:<int> output:<int> \
-         [input_price:<float>] [output_price:<float>]"
+         [input_price:<float>] [output_price:<float>] [vision:true|false|unknown]"
             .to_string(),
     );
     lines.push("Remove a custom model: /removemodel <name>".to_string());
@@ -4247,7 +4260,7 @@ Available commands:\n\n\
 /model — Show current model and available models\n\
 /model <name> — Switch to a different model\n\
 /removekey <provider> — Remove a provider's API key\n\
-/addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] — Register a custom model (LM Studio, Ollama, vLLM, …)\n\
+/addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] [vision:true|false|unknown] — Register a custom model (LM Studio, Ollama, vLLM, …)\n\
 /listmodels — Show hardcoded + custom models grouped by provider\n\
 /removemodel <name> — Remove a custom model from the active provider\n\
 /usage — Show token usage and cost summary\n\
@@ -7222,7 +7235,7 @@ Just type a message to chat with the AI agent.",
                          /model — Show current model and available models\n\
                          /model <name> — Switch to a different model\n\
                          /removekey <provider> — Remove a provider's API key\n\
-                         /addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] — Register a custom model\n\
+                         /addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] [vision:true|false|unknown] — Register a custom model\n\
                          /listmodels — Show hardcoded + custom models grouped by provider\n\
                          /removemodel <name> — Remove a custom model from the active provider\n\
                          /usage — Show token usage and cost summary\n\

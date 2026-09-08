@@ -543,8 +543,63 @@ pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
     }
 }
 
-/// Quick vision check for model display.
+/// Provider-scoped image capability. Explicit custom registration takes
+/// precedence; omitted custom capability is unknown, never inherited by name.
+pub fn image_input_for(provider: &str, model: &str) -> Option<bool> {
+    let custom = crate::config::custom_models::lookup_custom_model(provider, model);
+    image_input_resolved(provider, model, custom.as_ref())
+}
+
+fn image_input_resolved(
+    provider: &str,
+    model: &str,
+    custom: Option<&crate::config::custom_models::CustomModel>,
+) -> Option<bool> {
+    if let Some(custom) = custom {
+        return custom.image_input;
+    }
+    let provider = match provider {
+        "openai-codex" => "openai",
+        "zai-coding-plan" => "zai",
+        other => other,
+    };
+    super::model_catalog::lookup(provider, model).and_then(|fact| fact.image_input)
+}
+
+pub fn image_input_badge(provider: &str, model: &str) -> &'static str {
+    match image_input_for(provider, model) {
+        Some(true) => " [vision]",
+        Some(false) => " [text only]",
+        None => " [image support unknown]",
+    }
+}
+
+/// Model-only display helper. This is known metadata, not account entitlement.
+/// Only documented namespace prefixes are stripped; arbitrary proxies stay unknown.
+pub fn known_image_input(model: &str) -> Option<bool> {
+    if let Some((prefix, id)) = model.split_once('/') {
+        let provider = match prefix {
+            "google" => "gemini",
+            "xai" => "grok",
+            "openai" | "anthropic" | "gemini" | "zai" => prefix,
+            _ => return None,
+        };
+        return super::model_catalog::lookup(provider, id).and_then(|row| row.image_input);
+    }
+    super::model_catalog::CATALOG
+        .iter()
+        .find(|row| row.model == model || row.aliases.iter().any(|alias| alias == model))
+        .and_then(|row| row.image_input)
+}
+
+/// UI badge: unknown is not proof of vision support.
 pub fn is_vision_model(model: &str) -> bool {
+    known_image_input(model) == Some(true)
+}
+
+/// Legacy image forwarding policy for unverified models. This compatibility
+/// policy is not capability evidence and must not be used for UI badges.
+pub fn legacy_image_forwarding(model: &str) -> bool {
     let m = model.rsplit('/').next().unwrap_or(model).to_lowercase();
     if m == "glm-5.3-flash" {
         return true;
@@ -567,6 +622,38 @@ pub fn is_vision_model(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_capabilities_do_not_leak_across_namespaces_or_custom_overrides() {
+        assert_eq!(known_image_input("openai/o3-mini"), Some(false));
+        assert_eq!(known_image_input("openai/gpt-4.1"), Some(true));
+        for model in ["anthropic/gpt-4.1", "proxy/gpt-4.1", "gpt-4.1-invented"] {
+            assert_eq!(known_image_input(model), None);
+            assert!(!is_vision_model(model));
+        }
+        assert_eq!(image_input_resolved("ollama", "gpt-4.1", None), None);
+        assert_eq!(
+            image_input_resolved("openai-codex", "gpt-4.1", None),
+            Some(true)
+        );
+        let mut custom = crate::config::custom_models::CustomModel {
+            provider: "openai".into(),
+            name: "gpt-4.1".into(),
+            image_input: None,
+            context_window: 8192,
+            max_output_tokens: 1024,
+            input_price_per_1m: 0.0,
+            output_price_per_1m: 0.0,
+            pricing_verified: false,
+        };
+        for capability in [None, Some(false), Some(true)] {
+            custom.image_input = capability;
+            assert_eq!(
+                image_input_resolved("openai", "gpt-4.1", Some(&custom)),
+                capability
+            );
+        }
+    }
 
     #[test]
     fn known_anthropic_models() {

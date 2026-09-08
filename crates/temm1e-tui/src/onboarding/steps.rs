@@ -173,17 +173,17 @@ pub fn default_base_url_for_provider(provider: &str) -> Option<&'static str> {
 /// Create the model selection list for a provider.
 pub fn model_select_items(provider: &str) -> Vec<SelectItem<String>> {
     use temm1e_core::types::model_registry::{
-        available_models_for_provider, is_vision_model, model_limits,
+        available_models_for_provider, image_input_for, model_limits,
     };
 
     available_models_for_provider(provider)
         .into_iter()
         .map(|model| {
             let (ctx_window, max_output) = model_limits(model);
-            let vision = if is_vision_model(model) {
-                " | Vision"
-            } else {
-                ""
+            let vision = match image_input_for(provider, model) {
+                Some(true) => " | Vision",
+                Some(false) => " | Text only",
+                None => " | Images unknown",
             };
             SelectItem {
                 value: model.to_string(),

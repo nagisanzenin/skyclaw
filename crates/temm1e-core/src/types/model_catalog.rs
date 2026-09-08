@@ -29,6 +29,9 @@ pub struct LongContextRate {
 
 #[derive(Debug, Deserialize)]
 pub struct ModelFact {
+    pub image_input: Option<bool>,
+    pub image_input_source: Option<String>,
+    pub image_input_checked: Option<String>,
     #[serde(default)]
     pub responses_tools: bool,
     pub protocol_source: Option<String>,
@@ -203,6 +206,28 @@ impl CostEstimate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_image_facts_require_a_source_and_verification_date() {
+        for row in CATALOG.iter() {
+            if row.image_input.is_some() {
+                assert!(
+                    row.image_input_source
+                        .as_deref()
+                        .is_some_and(|s| s.starts_with("https://")),
+                    "{}",
+                    row.model
+                );
+                assert!(
+                    row.image_input_checked
+                        .as_deref()
+                        .is_some_and(|s| s.len() == 10),
+                    "{}",
+                    row.model
+                );
+            }
+        }
+    }
 
     fn usage(input: u32, output: u32, read: Option<u32>, write: Option<u32>) -> Usage {
         Usage {

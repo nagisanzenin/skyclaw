@@ -29,7 +29,10 @@
     },
     "capability_source": "https://developers.openai.com/api/docs/models/gpt-6-astra",
     "responses_tools": true,
-    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-6-astra"
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -63,7 +66,10 @@
     },
     "capability_source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
     "responses_tools": true,
-    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -94,7 +100,10 @@
     },
     "capability_source": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
     "responses_tools": true,
-    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.6-terra"
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -125,7 +134,10 @@
     },
     "capability_source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
     "responses_tools": true,
-    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -151,7 +163,10 @@
       }
     },
     "responses_tools": true,
-    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.5"
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.5",
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.5",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -175,7 +190,10 @@
         "cache_write_max": null,
         "output": 270.0
       }
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.5-pro",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -201,7 +219,10 @@
       }
     },
     "responses_tools": true,
-    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.4"
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.4",
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.4",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -215,7 +236,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 4.5
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -229,7 +253,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 1.25
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.4-nano",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -253,7 +280,10 @@
         "cache_write_max": null,
         "output": 270.0
       }
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.4-pro",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -267,7 +297,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 14.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.2",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -281,7 +314,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 168.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.2-pro",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -295,7 +331,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 10.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5.1",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -309,7 +348,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 10.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -323,7 +365,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 2.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5-mini",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -337,7 +382,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 0.4
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5-nano",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -351,7 +399,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 120.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-5-pro",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -365,7 +416,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 8.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-4.1",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -379,7 +433,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 1.6
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-4.1-mini",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -393,7 +450,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 0.4
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-4.1-nano",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -407,7 +467,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 10.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-4o",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -435,7 +498,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 0.6
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-4o-mini",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -449,7 +515,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 60.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/o1",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -463,7 +532,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 600.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/o1-pro",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -477,7 +549,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 80.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/o3-pro",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -491,7 +566,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 8.0
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/o3",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -505,7 +583,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 4.4
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://developers.openai.com/api/docs/models/o4-mini",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -519,7 +600,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 4.4
-    }
+    },
+    "image_input": false,
+    "image_input_source": "https://developers.openai.com/api/docs/models/o3-mini",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -561,7 +645,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 1.5
-    }
+    },
+    "image_input": false,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-3.5-turbo",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -603,7 +690,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 2.0
-    }
+    },
+    "image_input": false,
+    "image_input_source": "https://developers.openai.com/api/docs/models/gpt-3.5-turbo-instruct",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -617,7 +707,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 2.0
-    }
+    },
+    "image_input": false,
+    "image_input_source": "https://developers.openai.com/api/docs/models/davinci-002",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "openai",
@@ -631,7 +724,10 @@
       "cache_write_min": null,
       "cache_write_max": null,
       "output": 0.4
-    }
+    },
+    "image_input": false,
+    "image_input_source": "https://developers.openai.com/api/docs/models/babbage-002",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "anthropic",
@@ -650,7 +746,10 @@
       "context_window": 1000000,
       "max_output_tokens": 128000
     },
-    "capability_source": "https://platform.claude.com/docs/en/models/overview"
+    "capability_source": "https://platform.claude.com/docs/en/models/overview",
+    "image_input": true,
+    "image_input_source": "https://platform.claude.com/docs/en/models/overview",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "anthropic",
@@ -669,7 +768,10 @@
       "context_window": 1000000,
       "max_output_tokens": 128000
     },
-    "capability_source": "https://platform.claude.com/docs/en/models/overview"
+    "capability_source": "https://platform.claude.com/docs/en/models/overview",
+    "image_input": true,
+    "image_input_source": "https://platform.claude.com/docs/en/models/overview",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "anthropic",
@@ -746,7 +848,10 @@
       "context_window": 1000000,
       "max_output_tokens": 128000
     },
-    "capability_source": "https://platform.claude.com/docs/en/models/overview"
+    "capability_source": "https://platform.claude.com/docs/en/models/overview",
+    "image_input": true,
+    "image_input_source": "https://platform.claude.com/docs/en/models/overview",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "anthropic",
@@ -792,7 +897,10 @@
       "cache_write_min": 1.25,
       "cache_write_max": 2,
       "output": 5
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://platform.claude.com/docs/en/models/overview",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "grok",
@@ -812,7 +920,10 @@
         "cache_read": 1,
         "output": 12
       }
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://docs.x.ai/developers/models/grok-4.6",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "gemini",
@@ -824,7 +935,10 @@
     "limits": {
       "context_window": 1048576,
       "max_output_tokens": 65536
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash",
+    "image_input_checked": "2026-09-09"
   },
   {
     "provider": "zai",
@@ -836,6 +950,9 @@
     "limits": {
       "context_window": 1000000,
       "max_output_tokens": 128000
-    }
+    },
+    "image_input": true,
+    "image_input_source": "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+    "image_input_checked": "2026-09-09"
   }
 ]

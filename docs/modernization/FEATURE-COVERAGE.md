@@ -2,13 +2,13 @@
 
 Every original FEATURES.md entry is mapped below, followed by later feature families and the complete source/document inventory. Coverage means design/source audit and a defined acceptance path; it does not mean every native platform, external account, integration or mathematical claim was experimentally validated. The baseline workspace library tests ran, but binary/integration/feature-flag tests and live services have separate limits in VALIDATION. No feature is declared healthy merely because no defect was found.
 
-## Implementation evidence through checkpoint 33
+## Implementation evidence through checkpoint 34
 
 The tables below preserve the initial baseline audit. They are not the current implementation status. Use the linked implementation documents and checkpoint log for repairs and remaining limits:
 
 | Feature families | Implemented evidence | Remaining acceptance boundary |
 |---|---|---|
-| Provider protocols, subscriptions and model pricing | `MODEL-CATALOG-IMPLEMENTATION.md`, `RESPONSES-IMPLEMENTATION.md`, `ANTHROPIC-NATIVE-IMPLEMENTATION.md`, `GEMINI-NATIVE-IMPLEMENTATION.md`; modern menu IDs and production native observer integration through checkpoints 30–32 | Capability-knownness/immutable model resolution, Google Interactions and live accounts other than authorized Z.ai remain separate. |
+| Provider protocols, subscriptions and model pricing | `MODEL-CATALOG-IMPLEMENTATION.md`, `RESPONSES-IMPLEMENTATION.md`, `ANTHROPIC-NATIVE-IMPLEMENTATION.md`, `GEMINI-NATIVE-IMPLEMENTATION.md`; modern menu IDs, native observer integration and sourced image knownness through checkpoint 34 | Other capability knownness/endpoint-aware immutable model resolution, Google Interactions and live accounts other than authorized Z.ai remain separate. |
 | Context, compaction, recall and cache metadata | `CONTEXT-IMPLEMENTATION.md`; guarded final fit, provenance/source retention and knownness-aware usage | Semantic retention breadth, auxiliary-call budgets and provider cache acceptance still require broader tests. |
 | Conversation recovery, final delivery and TUI history | `SESSION-RECOVERY-IMPLEMENTATION.md`, `DELIVERY-IMPLEMENTATION.md`, `SESSION-IMPLEMENTATION.md`; checkpoints 18–19 and 28 | A committed transcript is not a completed durable goal; final outbox coverage does not include every interim/control/platform receipt. |
 | Shutdown, routing, steering and background ownership | Checkpoints 17, 20 and 25 in `IMPLEMENTATION-STATUS.md`; actual CLI/server lifecycle and typed Mission Control tests | Crash-durable intake, shared goal/effect/budget composition and real channel reconnect remain broader work. |

@@ -226,6 +226,8 @@ pub type PendingMessages = temm1e_core::types::message::PendingMessages;
 /// The core agent runtime. Holds references to the AI provider, memory backend,
 /// and registered tools.
 pub struct AgentRuntime {
+    /// Capability snapshot resolved with provider/custom registration at construction.
+    image_input: Option<bool>,
     provider: Arc<dyn Provider>,
     background: crate::background::BackgroundTasks,
     memory: Arc<dyn Memory>,
@@ -350,6 +352,7 @@ impl AgentRuntime {
     ) -> Self {
         let model_pricing = budget::get_pricing_with_custom(provider.name(), &model);
         Self {
+            image_input: model_registry::image_input_for(provider.name(), &model),
             provider,
             memory,
             tools,
@@ -542,6 +545,7 @@ impl AgentRuntime {
         }
 
         Self {
+            image_input: model_registry::image_input_for(provider.name(), &model),
             provider,
             memory,
             tools,
@@ -585,6 +589,16 @@ impl AgentRuntime {
             auto_seal_planner_oath: false,
             tool_filter: None,
             self_audit_enabled: false,
+        }
+    }
+
+    fn forwards_images(&self) -> bool {
+        match self.image_input {
+            Some(supported) => supported,
+            None => {
+                tracing::warn!(model = %self.model, provider = self.provider.name(), "Image capability is unverified; using legacy forwarding policy. Set image_input in custom_models.toml to declare this endpoint's capability.");
+                model_registry::legacy_image_forwarding(&self.model)
+            }
         }
     }
 
@@ -1112,20 +1126,19 @@ impl AgentRuntime {
         // If the user sent images but the current model doesn't support
         // vision, strip the images and prepend a notice so the user gets
         // a helpful message instead of an API error.
-        if !image_parts.is_empty() && !model_supports_vision(&self.model) {
+        if !image_parts.is_empty() && !self.forwards_images() {
             let count = image_parts.len();
             image_parts.clear();
+            let reason = if self.image_input == Some(false) {
+                "image input is marked unsupported for this provider/model"
+            } else {
+                "image support is unverified and the legacy forwarding policy excludes this model"
+            };
             let notice = format!(
-                "[{} image(s) received but your current model ({}) does not support vision. \
-                 Switch to a vision-capable model to analyze images. \
-                 Examples: claude-sonnet-4-6, gpt-5.2, gemini-3-flash-preview, glm-4.6v-flash]",
-                count, self.model
+                "[{count} image(s) omitted for {}: {reason}. Select a verified image-capable model, or declare the custom endpoint's image_input capability in custom_models.toml.]",
+                self.model
             );
-            warn!(
-                model = %self.model,
-                images_stripped = count,
-                "Images stripped — model does not support vision"
-            );
+            warn!(model = %self.model, images_stripped = count, %reason, "Images omitted");
             user_text = format!("{}\n\n{}", notice, user_text);
         }
 
@@ -3595,7 +3608,7 @@ impl AgentRuntime {
                 // Only works with vision-capable models; silently skipped otherwise.
                 if let Some(tool_ref) = self.tools.iter().find(|t| t.name() == tool_name) {
                     if let Some(img) = tool_ref.take_last_image() {
-                        if model_supports_vision(&self.model) {
+                        if self.forwards_images() {
                             info!(
                                 tool = %tool_name,
                                 media_type = %img.media_type,
@@ -3609,10 +3622,8 @@ impl AgentRuntime {
                         } else {
                             warn!(
                                 model = %self.model,
-                                "Tool produced image but model '{}' does not support vision — image discarded. \
-                                 Switch to a vision-capable model (claude-3.5-sonnet, gpt-4o, gemini-2.0-flash, etc.) \
-                                 for visual browser interaction.",
-                                self.model
+                                image_input = ?self.image_input,
+                                "Tool image omitted by configured capability or legacy forwarding policy; verify custom endpoint capability before enabling image input"
                             );
                         }
                     }
@@ -4286,11 +4297,12 @@ async fn run_social_evaluation(
     Ok(())
 }
 
-/// Returns `true` for models known to accept image content parts,
-/// `false` for models known to be text-only.  Unknown models default
-/// to `true` so we never accidentally strip images from a capable model.
+/// Compatibility forwarding decision for model-only callers. Published
+/// capability wins; unknown models retain legacy forwarding. This is not a
+/// vision capability badge or an account-specific entitlement check.
 pub fn model_supports_vision(model: &str) -> bool {
-    model_registry::is_vision_model(model)
+    model_registry::known_image_input(model)
+        .unwrap_or_else(|| model_registry::legacy_image_forwarding(model))
 }
 
 #[cfg(test)]
@@ -4516,7 +4528,7 @@ mod tests {
         assert!(model_supports_vision("gpt-5.2"));
         assert!(model_supports_vision("gpt-4o"));
         assert!(model_supports_vision("gpt-4.1"));
-        assert!(model_supports_vision("o3-mini"));
+        assert!(!model_supports_vision("o3-mini")); // Official model page: image input unsupported.
         assert!(!model_supports_vision("gpt-3.5-turbo"));
     }
 
