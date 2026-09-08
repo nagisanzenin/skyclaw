@@ -20,6 +20,7 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
         ("history", "Show the latest saved transcript page"),
         ("history-more", "Load the preceding saved transcript page"),
         ("delivery-status", "Inspect saved reply delivery states"),
+        ("goal-assessment", "Inspect recorded checks by goal ID"),
         (
             "goal-status",
             "Inspect saved goals and unverified achievement",

@@ -56,7 +56,10 @@ impl ExecutionJournal {
             document TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(goal_id,hash));
             CREATE TABLE IF NOT EXISTS goal_criteria (
             goal_id TEXT PRIMARY KEY REFERENCES goal_records(id), hash TEXT NOT NULL,
-            document TEXT NOT NULL, created_at TEXT NOT NULL);".split(';').filter(|s| !s.trim().is_empty()) {
+            document TEXT NOT NULL, created_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS goal_assessments (
+            goal_id TEXT PRIMARY KEY REFERENCES goal_records(id), criteria_hash TEXT NOT NULL,
+            hash TEXT NOT NULL, document TEXT NOT NULL, created_at TEXT NOT NULL);".split(';').filter(|s| !s.trim().is_empty()) {
  sqlx::query(statement).execute(&mut *tx).await.map_err(error)?;
 }
         tx.commit().await.map_err(error)?;

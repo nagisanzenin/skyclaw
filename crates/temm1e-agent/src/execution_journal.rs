@@ -466,10 +466,20 @@ impl ExecutionJournal {
                 "execution missing or already terminal; transition rejected",
             ));
         }
+        let assessment_saved: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM goal_assessments WHERE goal_id=?)")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(error)?;
         let (goal_state, reason) = if state == "reply_returned" {
             (
                 temm1e_core::types::goal::GoalState::AwaitingEvidence,
-                "Reply returned; required criteria and evidence have not been assessed",
+                if assessment_saved {
+                    "Reply returned; declared checks recorded, full request coverage remains unverified"
+                } else {
+                    "Reply returned; required criteria and evidence have not been assessed"
+                },
             )
         } else {
             (

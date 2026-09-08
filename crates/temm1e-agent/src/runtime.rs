@@ -2735,6 +2735,14 @@ impl AgentRuntime {
                 {
                     match witness.verify_oath(oath).await {
                         Ok(verdict) => {
+                            if let Some((journal, id)) = execution {
+                                if let Err(error) = journal
+                                    .record_goal_assessment(id, session, oath, &verdict, 1)
+                                    .await
+                                {
+                                    tracing::warn!(%error, "durable assessment unavailable; goal remains unverified");
+                                }
+                            }
                             tracing::info!(
                                 session_id = %session.session_id,
                                 outcome = ?verdict.outcome,

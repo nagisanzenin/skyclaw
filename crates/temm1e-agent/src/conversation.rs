@@ -477,6 +477,52 @@ pub async fn handle_owner_command(
 ) -> Result<Option<String>, Temm1eError> {
     let args: Vec<_> = text.split_whitespace().collect();
     match args.first().copied() {
+        Some("/goal-assessment") => {
+            if args.len() != 2 {
+                return Ok(Some(
+                    "Usage: /goal-assessment <goal-id> (IDs: /goal-status)".into(),
+                ));
+            }
+            let Some(saved) = journal.goal_assessment(scope, args[1]).await? else {
+                return Ok(Some("No saved assessment in this conversation scope. Missing verification is not a pass.".into()));
+            };
+            use std::fmt::Write;
+            let mut report = format!(
+                "Recorded declared checks: {:?}. Full request coverage: unverified.\n",
+                saved.declared_outcome
+            );
+            for (index, entry) in saved.observations.iter().take(12).enumerate() {
+                let observation = &entry.observation;
+                let detail: String = observation
+                    .result
+                    .detail
+                    .chars()
+                    .flat_map(|c| {
+                        if c.is_control() {
+                            c.escape_default().collect::<Vec<_>>()
+                        } else {
+                            vec![c]
+                        }
+                    })
+                    .take(160)
+                    .collect();
+                let _ = writeln!(
+                    report,
+                    "Check {}: {:?} | tier {} | advisory={} | {}\n{}",
+                    index + 1,
+                    observation.result.outcome,
+                    observation.result.tier,
+                    observation.result.advisory,
+                    observation.evaluator_version,
+                    detail
+                );
+            }
+            if saved.observations.len() > 12 {
+                report.push_str("Showing the first 12 checks; full records remain saved.\n");
+            }
+            report.push_str("These are evaluator reports, not raw artifact snapshots or proof of complete achievement. Model reports without resolved evidence remain inconclusive in the declared assessment.");
+            Ok(Some(report))
+        }
         Some("/goal-status") => {
             if args.len() != 1 {
                 return Ok(Some("Usage: /goal-status".into()));

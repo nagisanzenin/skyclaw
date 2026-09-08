@@ -601,6 +601,16 @@ async fn automatic_oath_is_persisted_with_the_active_goal_before_return() {
     assert_eq!(saved["coverage"], "unverified");
     assert_eq!(saved["oath"]["goal"], original);
     assert_eq!(saved["oath"]["root_goal_id"], id);
+    let assessment: String =
+        sqlx::query_scalar("SELECT document FROM goal_assessments WHERE goal_id=?")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let assessment: serde_json::Value = serde_json::from_str(&assessment).unwrap();
+    assert_eq!(assessment["declared_outcome"], "passed");
+    assert_eq!(assessment["coverage"], "unverified");
+    assert_eq!(assessment["observations"].as_array().unwrap().len(), 3);
     assert_eq!(state, "awaiting_evidence");
-    assert_eq!(revision, 2);
+    assert_eq!(revision, 3);
 }

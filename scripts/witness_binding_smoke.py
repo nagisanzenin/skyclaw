@@ -38,6 +38,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 draft['postconditions'].append({'kind': 'not_of', 'predicate': {
                     'kind': 'all_of', 'predicates': [{'kind': 'elapsed_under', 'start_marker': 'unset', 'max_secs': 1}]}})
                 content = json.dumps(draft)
+            if self.server.failing_check:
+                draft = json.loads(content)
+                draft['postconditions'].append({'kind': 'file_exists', 'path': 'never-created-required.txt'})
+                content = json.dumps(draft)
         else:
             with sqlite3.connect(self.server.profile / 'executions.db') as db:
                 active = db.execute("SELECT COUNT(*) FROM goal_criteria c JOIN goal_records g ON g.id=c.goal_id WHERE g.state='running'").fetchone()[0]
@@ -122,10 +126,27 @@ pricing_verified = true
                 assert saved['oath']['goal'] == goals[goal_id]
                 assert saved['workspace'] == str((profile / 'workspace').resolve())
             assert not db.execute("SELECT id FROM goal_records WHERE state='succeeded'").fetchall()
-        restart = subprocess.run([str(binary), 'chat'], input='/goal-status\n/quit\n', text=True,
+            assessments = db.execute('SELECT goal_id,hash,document FROM goal_assessments').fetchall()
+            assert len(assessments) == (0 if limited else 2), assessments
+            expected = 'failed' if server.failing_check else 'inconclusive' if server.unknown_composite else 'passed'
+            for goal_id, digest, document in assessments:
+                assert hashlib.sha256(document.encode()).hexdigest() == digest
+                saved = json.loads(document)
+                assert saved['coverage'] == 'unverified' and saved['declared_outcome'] == expected, saved
+                for entry in saved['observations']:
+                    raw = json.dumps(entry['observation'], ensure_ascii=False, separators=(',', ':')).encode()
+                    assert hashlib.sha256(raw).hexdigest() == entry['hash']
+                    assert entry['observation']['kind'] == 'evaluator_report'
+        inspect = '/goal-status\n' + ''.join('/goal-assessment ' + goal_id + '\n' for goal_id in goals) + '/quit\n'
+        restart = subprocess.run([str(binary), 'chat'], input=inspect, text=True,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=root, timeout=30)
         assert restart.returncode == 0, restart.stdout[-3000:]
         assert 'model criteria saved; coverage unverified' in restart.stdout
+        if limited:
+            assert 'No saved assessment' in restart.stdout
+        else:
+            assert f'Recorded declared checks: {expected.capitalize()}.' in restart.stdout
+            assert 'Full request coverage: unverified' in restart.stdout
         assert len(server.requests) - before == requests, 'inspection must not call provider'
         with sqlite3.connect(profile / 'witness.db') as db:
             rows = db.execute("SELECT root_goal_id,subtask_id,payload_json FROM witness_ledger WHERE entry_type='oath_sealed'").fetchall()
@@ -135,24 +156,26 @@ pricing_verified = true
             for goal_id, _, payload in rows:
                 oath = json.loads(payload)
                 assert oath['goal'] == goals[goal_id], oath
-            if server.unknown_composite:
+            if server.unknown_composite or server.failing_check:
                 verdicts = [json.loads(row[0]) for row in db.execute("SELECT payload_json FROM witness_ledger WHERE entry_type='verdict_rendered'")]
                 assert len(verdicts) == (0 if limited else 2), verdicts
                 for verdict in verdicts:
-                    assert verdict['outcome'] == 'inconclusive', verdict
-                    assert verdict['per_predicate'][-1]['outcome'] == 'inconclusive', verdict
+                    assert verdict['outcome'] == ('fail' if server.failing_check else 'inconclusive'), verdict
+                    assert verdict['per_predicate'][-1]['outcome'] == ('fail' if server.failing_check else 'inconclusive'), verdict
         return {'passed': True, 'limited': limited, 'requests': requests, 'planner_requests': planners,
-                'unique_execution_bound_oaths': len(rows), 'original_objectives_preserved': True, 'criteria_frozen_before_foreground': True, 'restart_inspection_provider_calls': 0, 'unknown_composite_checked': server.unknown_composite}
+                'unique_execution_bound_oaths': len(rows), 'original_objectives_preserved': True, 'criteria_frozen_before_foreground': True, 'restart_inspection_provider_calls': 0, 'unknown_composite_checked': server.unknown_composite, 'declared_assessment': None if limited else expected}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('binary', type=Path)
     parser.add_argument('--unknown-composite', action='store_true')
+    parser.add_argument('--failing-check', action='store_true')
     args = parser.parse_args()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
     server.requests, server.planners = [], 0
     server.unknown_composite = args.unknown_composite
+    server.failing_check = args.failing_check
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

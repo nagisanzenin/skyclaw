@@ -68,5 +68,6 @@ pub use task_decomposition::{SubTask, SubTaskStatus, TaskGraph};
 pub use task_queue::{TaskQueue, TaskStatus};
 pub use watchdog::{HealthReport, SubsystemStatus, Watchdog, WatchdogConfig};
 
+pub mod goal_assessment;
 pub mod goal_criteria;
 pub mod goal_ledger;
