@@ -1,3 +1,4 @@
+pub mod connection;
 pub mod credentials;
 pub mod custom_models;
 mod env;

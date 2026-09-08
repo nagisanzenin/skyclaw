@@ -930,7 +930,6 @@ pub async fn validate_provider_key(
     // See src/main.rs::validate_provider_key for full rationale.
     if base_url.is_some() {
         tracing::debug!(
-            base_url = ?base_url,
             model = %model,
             "Skipping TUI validate_provider_key test call — custom base_url set"
         );
@@ -971,7 +970,7 @@ pub async fn validate_provider_key(
             {
                 Err(err_str)
             } else {
-                // Non-auth errors mean the key IS valid
+                // Preserve configuration after other errors; authentication remains unverified.
                 Ok(())
             }
         }

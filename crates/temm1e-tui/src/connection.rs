@@ -1,87 +1,20 @@
 //! Capture one connection before starting a bridge. No credential store reads
 //! are permitted while constructing a provider from this snapshot.
 use crate::agent_bridge::AgentSetup;
-use temm1e_core::config::credentials::{self, CredentialsFile};
+use temm1e_core::config::credentials::CredentialsFile;
 use temm1e_core::types::config::{ProviderConfig, Temm1eConfig};
-use temm1e_core::types::model_registry::default_model;
-
-fn configured_key(key: &str) -> bool {
-    !key.is_empty() && !key.starts_with("${")
-}
 
 pub(crate) fn resolve(
     config: &Temm1eConfig,
     saved: Option<&CredentialsFile>,
 ) -> Option<AgentSetup> {
-    let explicit = config
-        .provider
-        .api_key
-        .as_deref()
-        .is_some_and(configured_key)
-        || config.provider.keys.iter().any(|key| configured_key(key))
-        || config.provider.name.as_deref() == Some("openai-codex");
-    if explicit {
-        let name = config
-            .provider
-            .name
-            .clone()
-            .unwrap_or_else(|| "anthropic".into());
-        let mut keys: Vec<String> = config
-            .provider
-            .keys
-            .iter()
-            .filter(|key| configured_key(key))
-            .cloned()
-            .collect();
-        if let Some(key) = config
-            .provider
-            .api_key
-            .as_ref()
-            .filter(|key| configured_key(key) && !keys.contains(key))
-        {
-            keys.insert(0, key.clone());
-        }
-        return Some(AgentSetup {
-            model: config
-                .provider
-                .model
-                .clone()
-                .unwrap_or_else(|| default_model(&name).into()),
-            provider_name: name,
-            api_key: keys.first().cloned().unwrap_or_default(),
-            keys,
-            base_url: config.provider.base_url.clone(),
-            config: config.clone(),
-            mode: None,
-        });
-    }
-    let saved = saved?;
-    let provider = saved
-        .providers
-        .iter()
-        .find(|p| p.name == saved.active)
-        .or_else(|| saved.providers.first())?;
-    let keys: Vec<String> = provider
-        .keys
-        .iter()
-        .filter(|key| {
-            if provider.base_url.is_some() {
-                !credentials::is_placeholder_key_lenient(key)
-            } else {
-                !credentials::is_placeholder_key(key)
-            }
-        })
-        .cloned()
-        .collect();
-    if provider.name.is_empty() || (keys.is_empty() && provider.name != "openai-codex") {
-        return None;
-    }
+    let connection = temm1e_core::config::connection::resolve(&config.provider, saved)?;
     Some(AgentSetup {
-        provider_name: provider.name.clone(),
-        api_key: keys.first().cloned().unwrap_or_default(),
-        keys,
-        model: provider.model.clone(),
-        base_url: provider.base_url.clone(),
+        provider_name: connection.name?,
+        api_key: connection.api_key.unwrap_or_default(),
+        keys: connection.keys,
+        model: connection.model?,
+        base_url: connection.base_url,
         config: config.clone(),
         mode: None,
     })
@@ -115,13 +48,11 @@ pub(crate) fn provider_config(setup: &AgentSetup) -> ProviderConfig {
     }
     // Headers can contain credentials too. Only inherit them from the exact
     // configured provider/endpoint; a saved/onboarded connection is independent.
-    let headers = if setup.config.provider.name.as_deref() == Some(&setup.provider_name)
-        && setup.config.provider.base_url == setup.base_url
-    {
-        setup.config.provider.extra_headers.clone()
-    } else {
-        Default::default()
-    };
+    let headers = temm1e_core::config::connection::scoped_headers(
+        &setup.config.provider,
+        &setup.provider_name,
+        &setup.base_url,
+    );
     ProviderConfig {
         name: Some(setup.provider_name.clone()),
         api_key: keys.first().cloned(),
@@ -135,18 +66,7 @@ pub(crate) fn provider_config(setup: &AgentSetup) -> ProviderConfig {
 /// Update only a still-matching saved selection. A config-owned connection is
 /// session-only here: changing credentials would not override its config model.
 pub(crate) fn update_saved_model(setup: &AgentSetup, saved: &mut CredentialsFile) -> bool {
-    if setup
-        .config
-        .provider
-        .api_key
-        .as_deref()
-        .is_some_and(configured_key)
-        || setup
-            .config
-            .provider
-            .keys
-            .iter()
-            .any(|key| configured_key(key))
+    if temm1e_core::config::connection::configured(&setup.config.provider)
         || saved.active != setup.provider_name
     {
         return false;

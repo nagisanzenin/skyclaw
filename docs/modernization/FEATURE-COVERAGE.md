@@ -2,7 +2,7 @@
 
 Every original FEATURES.md entry is mapped below, followed by later feature families and the complete source/document inventory. Coverage means design/source audit and a defined acceptance path; it does not mean every native platform, external account, integration or mathematical claim was experimentally validated. The baseline workspace library tests ran, but binary/integration/feature-flag tests and live services have separate limits in VALIDATION. No feature is declared healthy merely because no defect was found.
 
-## Implementation evidence through checkpoint 38
+## Implementation evidence through checkpoint 39
 
 The tables below preserve the initial baseline audit. They are not the current implementation status. Use the linked implementation documents and checkpoint log for repairs and remaining limits:
 
@@ -102,3 +102,5 @@ The generated [source inventory](evidence/source-inventory.tsv) lists every prod
 Preservation rule: an implementing model may repair/deprecate an unused module only after mapping its advertised behavior to a tested replacement. A library-only feature is not automatically unwanted; cloud tenancy and identity remain part of the original vision until the creator retires them.
 
 TUI connection identity/model-switch acceptance: `TUI-CONNECTION-IMPLEMENTATION.md` (checkpoint35). Checkpoint36 adds spending continuity across TUI replacement; Checkpoint37 retains classifier usage on parse failure; Checkpoint38 binds root reconstruction budgets; remaining shared factory/connection identity is next.
+
+Shared startup connection identity: `CONNECTION-RESOLUTION-IMPLEMENTATION.md` (checkpoint39). Root reload and runtime feature-policy propagation remain open.

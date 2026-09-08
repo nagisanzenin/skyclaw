@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 use futures::FutureExt;
 use temm1e_core::config::credentials::{
     credentials_path, detect_api_key, is_placeholder_key, is_placeholder_key_lenient,
-    load_active_provider_keys, load_credentials_file, load_saved_credentials, save_credentials,
+    load_active_provider_keys, load_credentials_file, save_credentials,
 };
 use temm1e_core::types::model_registry::{
     available_models_for_provider, default_model, image_input_badge,
@@ -239,7 +239,6 @@ async fn validate_provider_key(
     // below matches 404 as an auth failure).
     if config.base_url.is_some() {
         tracing::debug!(
-            base_url = ?config.base_url,
             model = ?config.model,
             "Skipping validate_provider_key test call — custom base_url set"
         );
@@ -279,10 +278,10 @@ async fn validate_provider_key(
             {
                 Err(err_str)
             } else {
-                // Non-auth errors (400 max_tokens, 429 rate limit, etc.) mean
-                // the key IS valid — the API accepted the auth, just rejected
-                // the request params. This is fine for validation.
-                tracing::debug!(error = %err_str, "Key validation got non-auth error — key is valid");
+                // A transient/parameter failure does not verify authentication.
+                // Preserve configuration, and let the first real turn report
+                // availability; callers must not describe this as verified.
+                tracing::debug!("Connection configured without a successful authentication probe");
                 Ok(provider_arc)
             }
         }
@@ -2106,27 +2105,18 @@ async fn main() -> Result<()> {
 
             // ── Resolve API credentials ────────────────────────
             // Priority: config file > saved credentials > onboarding
-            let credentials: Option<(String, String, String)> = {
-                if let Some(ref key) = config.provider.api_key {
-                    if !key.is_empty() && !key.starts_with("${") {
-                        let name = config
-                            .provider
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| "anthropic".to_string());
-                        let model = config
-                            .provider
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| default_model(&name).to_string());
-                        Some((name, key.clone(), model))
-                    } else {
-                        load_saved_credentials()
-                    }
-                } else {
-                    load_saved_credentials()
-                }
-            };
+            let saved_credentials = load_credentials_file();
+            let resolved_connection = temm1e_core::config::connection::resolve(
+                &config.provider,
+                saved_credentials.as_ref(),
+            );
+            let credentials = resolved_connection.as_ref().map(|connection| {
+                (
+                    connection.name.clone().unwrap_or_default(),
+                    connection.api_key.clone().unwrap_or_default(),
+                    connection.model.clone().unwrap_or_default(),
+                )
+            });
 
             // ── Memory backend ─────────────────────────────────
             let memory_url = config.memory.path.clone().unwrap_or_else(|| {
@@ -2726,56 +2716,22 @@ async fn main() -> Result<()> {
                 };
 
             if let Some((ref pname, ref key, ref model)) = credentials {
-                // Filter out placeholder/invalid keys at startup. Use lenient
-                // mode for custom-endpoint providers so short LM Studio / Ollama
-                // keys pass — otherwise this check would wrongly reject keys
-                // that load_saved_credentials already approved via lenient filter.
-                let has_custom_endpoint = load_credentials_file()
-                    .and_then(|c| {
-                        c.providers
-                            .iter()
-                            .find(|p| p.name == *pname)
-                            .and_then(|p| p.base_url.clone())
-                    })
-                    .is_some();
-                let is_placeholder_start = if has_custom_endpoint {
-                    is_placeholder_key_lenient(key)
-                } else {
-                    is_placeholder_key(key)
-                };
+                let has_custom_endpoint = resolved_connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.base_url.is_some());
+                let is_placeholder_start = pname != "openai-codex"
+                    && if has_custom_endpoint {
+                        is_placeholder_key_lenient(key)
+                    } else {
+                        is_placeholder_key(key)
+                    };
                 if is_placeholder_start {
                     tracing::warn!(provider = %pname, "Primary API key is a placeholder — starting in onboarding mode");
                     // Fall through to onboarding
                 } else {
-                    // Load all keys and saved base_url for this provider.
-                    // Inside the filter closure, gate lenient vs strict on the
-                    // saved base_url so proxy providers keep their short keys.
-                    let (all_keys, saved_base_url) = load_active_provider_keys()
-                        .map(|(_, keys, _, burl)| {
-                            let has_custom = burl.is_some();
-                            let valid: Vec<String> = keys
-                                .into_iter()
-                                .filter(|k| {
-                                    if has_custom {
-                                        !is_placeholder_key_lenient(k)
-                                    } else {
-                                        !is_placeholder_key(k)
-                                    }
-                                })
-                                .collect();
-                            (valid, burl)
-                        })
-                        .unwrap_or_else(|| (vec![key.clone()], None));
-                    let effective_base_url =
-                        saved_base_url.or_else(|| config.provider.base_url.clone());
-                    let provider_config = temm1e_core::types::config::ProviderConfig {
-                        name: Some(pname.clone()),
-                        api_key: Some(key.clone()),
-                        keys: all_keys,
-                        model: Some(model.clone()),
-                        base_url: effective_base_url,
-                        extra_headers: config.provider.extra_headers.clone(),
-                    };
+                    let provider_config = resolved_connection
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("Resolved connection unavailable"))?;
                     // Create provider — route to Codex OAuth if configured
                     let provider: Arc<dyn temm1e_core::Provider> = {
                         #[cfg(feature = "codex-oauth")]
@@ -5260,7 +5216,7 @@ Just type a message to chat with the AI agent.",
                                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                                 chat_id: msg.chat_id.clone(),
                                                                 text: format!(
-                                                                    "API key securely received and verified! Configured {} with model {}.\n\nTEMM1E is online.",
+                                                                    "Credentials securely received. Configured {} with model {}.\n\nTEMM1E is online.",
                                                                     cred.provider, model
                                                                 ),
                                                                 reply_to: Some(msg.id.clone()),
@@ -5385,7 +5341,7 @@ Just type a message to chat with the AI agent.",
 
                                             match validate_provider_key(&test_config).await {
                                                 Ok(_validated_provider) => {
-                                                    // Key is valid — now save and reload with all keys
+                                                    // Setup policy permits this connection; save and reload its keys.
                                                     if let Err(e) = save_credentials(cred.provider, &cred.api_key, &model, cred.base_url.as_deref()).await {
                                                         tracing::error!(error = %e, "Failed to save new key");
                                                     } else if let Some((name, keys, mdl, saved_base_url)) = load_active_provider_keys() {
@@ -5416,7 +5372,7 @@ Just type a message to chat with the AI agent.",
                                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                                 chat_id: msg.chat_id.clone(),
                                                                 text: format!(
-                                                                    "Key verified and added for {}! Now using {} key{} with model {}.",
+                                                                    "Connection configured for {}. Now using {} key{} with model {}.",
                                                                     name, key_count,
                                                                     if key_count > 1 { "s (rotation on error)" } else { "" },
                                                                     mdl
@@ -5434,11 +5390,11 @@ Just type a message to chat with the AI agent.",
                                                     }
                                                 }
                                                 Err(err) => {
-                                                    // Key is invalid — DO NOT save, DO NOT switch
+                                                    // Setup failed — preserve the current connection.
                                                     let reply = temm1e_core::types::message::OutboundMessage {
                                                         chat_id: msg.chat_id.clone(),
                                                         text: format!(
-                                                            "Invalid API key — {} returned an error:\n{}\n\nThe current provider is still active. Check the key and try again.",
+                                                            "Invalid API key — {} returned an error:\n{}\n\nThe current provider is still active. Check the provider, model and connection settings.",
                                                             cred.provider, err
                                                         ),
                                                         reply_to: Some(msg.id.clone()),
@@ -6029,7 +5985,7 @@ Just type a message to chat with the AI agent.",
                                                     // Use shared validation (handles auth vs non-auth errors)
                                                     match validate_provider_key(&provider_config).await {
                                                         Ok(validated_provider) => {
-                                                            // Key is valid — create agent and go online
+                                                            // Setup policy permits this connection; create its runtime.
                                                             let new_agent = Arc::new(temm1e_agent::AgentRuntime::with_limits(
                                                                 validated_provider,
                                                                 memory.clone(),
@@ -6056,7 +6012,7 @@ Just type a message to chat with the AI agent.",
                                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                                 chat_id: msg.chat_id.clone(),
                                                                 text: format!(
-                                                                    "API key verified! Configured {}{} with model {}.\n\nTEMM1E is online! You can:\n- Add more keys anytime (just paste them)\n- Use a proxy: \"proxy openai https://your-proxy/v1 your-key\"\n- Change settings in natural language\n\nHow can I help?",
+                                                                    "Configured {}{} with model {}.\n\nTEMM1E is online! You can:\n- Add more keys anytime (just paste them)\n- Use a proxy: \"proxy openai https://your-proxy/v1 your-key\"\n- Change settings in natural language\n\nHow can I help?",
                                                                     provider_name, proxy_note, model
                                                                 ),
                                                                 reply_to: Some(msg.id.clone()),
@@ -6370,27 +6326,18 @@ Just type a message to chat with the AI agent.",
                 };
 
             // ── Resolve API credentials ────────────────────────
-            let credentials: Option<(String, String, String)> = {
-                if let Some(ref key) = config.provider.api_key {
-                    if !key.is_empty() && !key.starts_with("${") {
-                        let name = config
-                            .provider
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| "anthropic".to_string());
-                        let model = config
-                            .provider
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| default_model(&name).to_string());
-                        Some((name, key.clone(), model))
-                    } else {
-                        load_saved_credentials()
-                    }
-                } else {
-                    load_saved_credentials()
-                }
-            };
+            let saved_credentials = load_credentials_file();
+            let resolved_connection = temm1e_core::config::connection::resolve(
+                &config.provider,
+                saved_credentials.as_ref(),
+            );
+            let credentials = resolved_connection.as_ref().map(|connection| {
+                (
+                    connection.name.clone().unwrap_or_default(),
+                    connection.api_key.clone().unwrap_or_default(),
+                    connection.model.clone().unwrap_or_default(),
+                )
+            });
 
             // ── Memory backend ─────────────────────────────────
             let memory_url = config.memory.path.clone().unwrap_or_else(|| {
@@ -6589,50 +6536,19 @@ Just type a message to chat with the AI agent.",
                 "CLI Chat: checking credentials for agent init"
             );
             if let Some((pname, key, model)) = credentials {
-                // Filter out placeholder/invalid keys at startup. Use lenient
-                // mode for custom-endpoint providers so short LM Studio / Ollama
-                // keys pass — otherwise this check would wrongly reject keys
-                // that load_saved_credentials already approved via lenient filter.
-                let has_custom_endpoint = load_credentials_file()
-                    .and_then(|c| {
-                        c.providers
-                            .iter()
-                            .find(|p| p.name == pname)
-                            .and_then(|p| p.base_url.clone())
-                    })
-                    .is_some();
-                let is_placeholder_start = if has_custom_endpoint {
-                    is_placeholder_key_lenient(&key)
-                } else {
-                    is_placeholder_key(&key)
-                };
-                if !is_placeholder_start {
-                    let (all_keys, saved_base_url) = load_active_provider_keys()
-                        .map(|(_, keys, _, burl)| {
-                            let has_custom = burl.is_some();
-                            let valid: Vec<String> = keys
-                                .into_iter()
-                                .filter(|k| {
-                                    if has_custom {
-                                        !is_placeholder_key_lenient(k)
-                                    } else {
-                                        !is_placeholder_key(k)
-                                    }
-                                })
-                                .collect();
-                            (valid, burl)
-                        })
-                        .unwrap_or_else(|| (vec![key.clone()], None));
-                    let effective_base_url =
-                        saved_base_url.or_else(|| config.provider.base_url.clone());
-                    let provider_config = temm1e_core::types::config::ProviderConfig {
-                        name: Some(pname.clone()),
-                        api_key: Some(key.clone()),
-                        keys: all_keys,
-                        model: Some(model.clone()),
-                        base_url: effective_base_url,
-                        extra_headers: config.provider.extra_headers.clone(),
+                let has_custom_endpoint = resolved_connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.base_url.is_some());
+                let is_placeholder_start = pname != "openai-codex"
+                    && if has_custom_endpoint {
+                        is_placeholder_key_lenient(&key)
+                    } else {
+                        is_placeholder_key(&key)
                     };
+                if !is_placeholder_start {
+                    let provider_config = resolved_connection
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("Resolved connection unavailable"))?;
                     // Create provider — route to Codex OAuth if configured
                     let provider_result: Result<Arc<dyn temm1e_core::Provider>, String> = {
                         #[cfg(feature = "codex-oauth")]
@@ -7957,7 +7873,7 @@ Just type a message to chat with the AI agent.",
                                             .with_witness_attachments(witness_attachments.as_ref()),
                                         );
                                         println!(
-                                            "\nAPI key securely received and verified! Configured {} with model {}.",
+                                            "\nCredentials securely received. Configured {} with model {}.",
                                             cred.provider, model
                                         );
                                         println!("TEMM1E is online.\n");
@@ -8044,15 +7960,12 @@ Just type a message to chat with the AI agent.",
                                 )
                                 .with_witness_attachments(witness_attachments.as_ref()),
                             );
-                            println!(
-                                "\nAPI key verified! Configured {} with model {}.",
-                                cred.provider, model
-                            );
+                            println!("\nConfigured {} with model {}.", cred.provider, model);
                             println!("TEMM1E is online.\n");
                         }
                         Err(err) => {
                             eprintln!(
-                                "\nInvalid API key — {} returned:\n{}\nCheck the key and try again.\n",
+                                "\nConnection setup failed — {} returned:\n{}\nCheck the provider, model and connection settings.\n",
                                 cred.provider, err
                             );
                         }

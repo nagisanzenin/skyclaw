@@ -12,7 +12,7 @@ import threading
 from tui_pty_smoke import Provider
 
 
-def run(binary, server, limited):
+def run(binary, server, trap, limited):
     with tempfile.TemporaryDirectory(prefix='temm1e-cli-budget-') as directory:
         root = Path(directory)
         profile = root / 'profile'
@@ -37,12 +37,12 @@ enabled = false
 [consciousness]
 enabled = false
 ''')
-        (profile / 'credentials.toml').write_text(f'''active = "openai"
+        (profile / 'credentials.toml').write_text(f'''active = "anthropic"
 [[providers]]
-name = "openai"
-model = "pty-fixture"
-keys = ["local-fixture-only"]
-base_url = "{endpoint}"
+name = "anthropic"
+model = "unrelated-saved-model"
+keys = ["synthetic-unrelated-key"]
+base_url = "http://127.0.0.1:{trap.server_port}/v1"
 ''')
         (profile / 'credentials.toml').chmod(0o600)
         (profile / 'custom_models.toml').write_text(''.join(f'''[[models]]
@@ -75,8 +75,9 @@ pricing_verified = true
             assert 'PTY_REPLY_43' in result.stdout, result.stdout[-3000:]
             assert len(requests) == 4, f'unexpected request count: {len(requests)}'
             assert requests[-1].get('model') == 'pty-fixture-next'
+        assert not trap.requests, 'unrelated saved endpoint received a request'
         assert all(auth == 'Bearer local-fixture-only' for auth in server.authorizations)
-        return {'passed': True, 'limited': limited, 'provider_requests': len(requests),
+        return {'connection_isolation': True, 'passed': True, 'limited': limited, 'provider_requests': len(requests),
                 'replacement_requests': sum(r.get('model') == 'pty-fixture-next' for r in requests),
                 'unicode_input': any('CLI_INPUT_42' in json.dumps(r) for r in requests)}
 
@@ -89,9 +90,16 @@ def main():
     server.requests, server.authorizations = [], []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    trap = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
+    trap.requests, trap.authorizations = [], []
+    trap_thread = threading.Thread(target=trap.serve_forever, daemon=True)
+    trap_thread.start()
     try:
-        print(json.dumps([run(args.binary.resolve(), server, limited) for limited in [False, True]], indent=2))
+        print(json.dumps([run(args.binary.resolve(), server, trap, limited) for limited in [False, True]], indent=2))
     finally:
+        trap.shutdown()
+        trap.server_close()
+        trap_thread.join()
         server.shutdown()
         server.server_close()
         thread.join()
