@@ -137,6 +137,7 @@ impl ExecutionJournal {
         .execute(&pool)
         .await
         .map_err(error)?;
+        Self::init_goals(&pool).await?;
         Ok(Self {
             pool,
             path: path.canonicalize().map_err(error)?,
@@ -291,6 +292,11 @@ impl ExecutionJournal {
                 "inbound message has prior execution {prior}; reconciliation is required"
             )));
         }
+        if msg.text.as_deref().unwrap_or("").len() > 1024 * 1024 {
+            return Err(error(
+                "objective exceeds 1 MiB; prior records are preserved",
+            ));
+        }
         let checkpoint = Self::store_history(&mut transaction, &scope, &session.history).await?;
         sqlx::query("INSERT INTO executions (id,scope,inbound_id,goal,state,checkpoint,created_at,updated_at) VALUES (?,?,?,?,'running',?,?,?)")
             .bind(&id).bind(scope).bind(&msg.id).bind(msg.text.as_deref().unwrap_or(""))
@@ -300,6 +306,19 @@ impl ExecutionJournal {
         // string session IDs are never guessed into a conversation.
         sqlx::query("INSERT INTO execution_conversations(execution_id,epoch,revision) SELECT ?,epoch,revision FROM conversation_heads WHERE epoch=? AND busy_owner IS NOT NULL")
             .bind(&id).bind(&session.session_id).execute(&mut *transaction).await.map_err(error)?;
+        sqlx::query("INSERT INTO goal_records(id,schema_version,scope,conversation_scope,principal,objective,state,revision,reason,created_at,updated_at)
+            SELECT e.id,1,e.scope,c.scope,?,e.goal,'running',0,'Request admitted; achievement has not been assessed',e.created_at,e.updated_at
+            FROM executions e LEFT JOIN execution_conversations ec ON ec.execution_id=e.id
+            LEFT JOIN conversation_heads c ON c.epoch=ec.epoch WHERE e.id=?")
+            .bind(serde_json::to_string(&(session.user_id.clone(), session.role)).map_err(error)?).bind(&id)
+            .execute(&mut *transaction).await.map_err(error)?;
+        Self::goal_event(
+            &mut transaction,
+            &id,
+            "admitted",
+            serde_json::json!({"inbound_id":msg.id}),
+        )
+        .await?;
         transaction.commit().await.map_err(error)?;
         Ok(id)
     }
@@ -350,6 +369,7 @@ impl ExecutionJournal {
         if updated.rows_affected() != 1 {
             return Err(error("execution is no longer running; intent rejected"));
         }
+        Self::goal_event(&mut tx, execution, "tool_intent", serde_json::json!({"operation_id":operation,"tool":tool,"arguments_sha256":hex::encode(Sha256::digest(arguments.to_string().as_bytes()))})).await?;
         tx.commit().await.map_err(error)?;
         Ok(())
     }
@@ -361,6 +381,8 @@ impl ExecutionJournal {
         output: &str,
         is_error: bool,
     ) -> Result<(), Temm1eError> {
+        let original_bytes = output.len();
+        let original_sha256 = hex::encode(Sha256::digest(output.as_bytes()));
         let mut end = output.len().min(65_536);
         while !output.is_char_boundary(end) {
             end -= 1;
@@ -374,14 +396,39 @@ impl ExecutionJournal {
         } else {
             output.to_owned()
         };
+        let mut tx = self.pool.begin().await.map_err(error)?;
         let updated = sqlx::query("UPDATE execution_operations SET state='result_recorded', output=?, is_error=?, updated_at=? WHERE execution_id=? AND operation_id=? AND state='outcome_unknown'")
-            .bind(output).bind(is_error).bind(chrono::Utc::now().to_rfc3339()).bind(execution).bind(operation)
-            .execute(&self.pool).await.map_err(error)?;
+            .bind(&output).bind(is_error).bind(chrono::Utc::now().to_rfc3339()).bind(execution).bind(operation)
+            .execute(&mut *tx).await.map_err(error)?;
         if updated.rows_affected() != 1 {
             return Err(error(
                 "operation missing or already resolved; result rejected",
             ));
         }
+        let tool: String = sqlx::query_scalar(
+            "SELECT tool FROM execution_operations WHERE execution_id=? AND operation_id=?",
+        )
+        .bind(execution)
+        .bind(operation)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(error)?;
+        Self::goal_result_evidence(
+            &mut tx,
+            execution,
+            &temm1e_core::types::goal::ToolResultEvidence {
+                schema_version: 1,
+                operation_id: operation.into(),
+                tool,
+                is_error,
+                original_bytes,
+                original_sha256,
+                truncated: end < original_bytes,
+                content: output,
+            },
+        )
+        .await?;
+        tx.commit().await.map_err(error)?;
         Ok(())
     }
 
@@ -419,6 +466,27 @@ impl ExecutionJournal {
                 "execution missing or already terminal; transition rejected",
             ));
         }
+        let (goal_state, reason) = if state == "reply_returned" {
+            (
+                temm1e_core::types::goal::GoalState::AwaitingEvidence,
+                "Reply returned; required criteria and evidence have not been assessed",
+            )
+        } else {
+            (
+                temm1e_core::types::goal::GoalState::Recovering,
+                "Execution stopped; reconcile recorded and uncertain effects before resuming",
+            )
+        };
+        sqlx::query("UPDATE goal_records SET state=?,reason=?,revision=revision+1,updated_at=? WHERE id=? AND state='running'")
+            .bind(goal_state.as_str()).bind(reason).bind(chrono::Utc::now().to_rfc3339()).bind(id)
+            .execute(&mut *tx).await.map_err(error)?;
+        Self::goal_event(
+            &mut tx,
+            id,
+            state,
+            serde_json::json!({"achievement":"unverified"}),
+        )
+        .await?;
         tx.commit().await.map_err(error)?;
         Ok(())
     }
@@ -554,6 +622,61 @@ impl ExecutionJournal {
 mod tests {
     use super::*;
     use temm1e_test_utils::{make_inbound_msg, make_session};
+
+    #[tokio::test]
+    async fn oversized_objective_rolls_back_claim_and_preserves_original_retry_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = ExecutionJournal::open(&directory.path().join("executions.db"))
+            .await
+            .unwrap();
+        let mut session = make_session();
+        session.workspace_path = directory.path().into();
+        let mut msg = make_inbound_msg(&"x".repeat(1024 * 1024 + 1));
+        assert!(journal.begin(&msg, &session).await.is_err());
+        assert!(journal
+            .for_inbound(&session, &msg.id)
+            .await
+            .unwrap()
+            .is_empty());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM goal_records")
+            .fetch_one(&journal.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+        msg.text = Some("bounded retry".into());
+        assert!(journal.begin(&msg, &session).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn returned_done_prose_remains_a_durable_unverified_goal() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("executions.db");
+        let journal = ExecutionJournal::open(&path).await.unwrap();
+        let mut session = make_session();
+        session.workspace_path = directory.path().into();
+        let msg = make_inbound_msg("Implement the requested behavior and prove its tests pass");
+        let id = journal.begin(&msg, &session).await.unwrap();
+        journal
+            .finish(
+                &id,
+                "reply_returned",
+                &session.history,
+                Some("DONE, all tests passed"),
+            )
+            .await
+            .unwrap();
+        drop(journal);
+        let reopened = ExecutionJournal::open(&path).await.unwrap();
+        let (state, objective, revision): (String, String, i64) =
+            sqlx::query_as("SELECT state,objective,revision FROM goal_records WHERE id=?")
+                .bind(id)
+                .fetch_one(&reopened.pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "awaiting_evidence");
+        assert_eq!(objective, msg.text.unwrap());
+        assert_eq!(revision, 1);
+    }
 
     #[tokio::test]
     async fn oversized_history_rolls_back_admission_without_discarding_evidence() {

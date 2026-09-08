@@ -6988,6 +6988,7 @@ Just type a message to chat with the AI agent.",
             )?;
             println!("  Workspace: {}", workspace.display());
             println!("  /history-import previews preserved old chats; /session-new starts a new conversation.");
+            println!("  /goal-status inspects saved objectives, evidence counts and unverified achievement.");
 
             while let Some(msg) = rx.recv().await {
                 let msg_text = msg.text.as_deref().unwrap_or("");

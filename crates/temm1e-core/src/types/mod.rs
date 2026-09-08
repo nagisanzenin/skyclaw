@@ -2,6 +2,7 @@ pub mod cambium;
 pub mod config;
 pub mod error;
 pub mod file;
+pub mod goal;
 pub mod message;
 pub mod model_catalog;
 pub mod model_registry;

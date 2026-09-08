@@ -477,6 +477,35 @@ pub async fn handle_owner_command(
 ) -> Result<Option<String>, Temm1eError> {
     let args: Vec<_> = text.split_whitespace().collect();
     match args.first().copied() {
+        Some("/goal-status") => {
+            if args.len() != 1 {
+                return Ok(Some("Usage: /goal-status".into()));
+            }
+            let goals = journal.goal_status(scope).await?;
+            if goals.is_empty() {
+                return Ok(Some("No typed goal records in this conversation scope. Legacy history was not reinterpreted as verified goals.".into()));
+            }
+            let mut report = String::from(
+                "Saved goal states (up to 20; objective previews up to 512 characters):\n",
+            );
+            for goal in goals {
+                use std::fmt::Write;
+                let objective: String = goal
+                    .objective
+                    .chars()
+                    .flat_map(|c| {
+                        if c.is_control() && c != '\n' && c != '\t' {
+                            c.escape_default().collect::<Vec<_>>()
+                        } else {
+                            vec![c]
+                        }
+                    })
+                    .collect();
+                let _ = writeln!(report, "{} | {} | revision {} | {} evidence snapshots | {} uncertain operations\n{}\n{}", goal.id, goal.state.as_str(), goal.revision, goal.evidence_count, goal.unresolved_operations, objective, goal.reason);
+            }
+            report.push_str("A returned/delivered reply or recorded tool output does not prove achievement. Running is the last saved state, not a liveness or replay guarantee.");
+            Ok(Some(report))
+        }
         Some("/delivery-status") => {
             if args.len() != 1 {
                 return Ok(Some("Usage: /delivery-status".into()));

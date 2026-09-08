@@ -52,7 +52,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def run(binary, root, server, trap, onboarding=False, restore_only=False, budget_limit=False, engram_enabled=None):
+def run(binary, root, server, trap, onboarding=False, restore_only=False, budget_limit=False, engram_enabled=None, goal_check=False):
     profile = root / 'profile'
     profile.mkdir(mode=0o700, exist_ok=restore_only)
     config = profile / 'config.toml'
@@ -160,6 +160,12 @@ base_url = "http://127.0.0.1:{trap.server_port}/v1"
                 assert len(server.requests) == before_second, 'model switch reopened exhausted budget'
             else:
                 until(b'PTY_REPLY_43')
+        if goal_check and not onboarding:
+            time.sleep(0.3)
+            before_goal = len(server.requests)
+            os.write(master, b'/goal-status\r')
+            until(b'awaiting_evidence')
+            assert len(server.requests) == before_goal, 'goal inspection called provider'
         # Force a resize while the event stream and renderer are active.
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 18, 60, 0, 0))
         os.kill(process.pid, signal.SIGWINCH)
@@ -186,7 +192,7 @@ base_url = "http://127.0.0.1:{trap.server_port}/v1"
             assert saved_path.read_text() == saved_text, 'config-owned switch overwrote saved credentials'
         if not onboarding and not restore_only and not budget_limit:
             assert any(request.get('model') == 'pty-fixture-next' for request in server.requests[requests_before:]), 'replacement runtime did not use the selected custom model'
-        return {'engram_enabled': engram_enabled, 'budget_continuity': budget_limit, 'connection_isolation': True, 'model_switch': not onboarding and not restore_only, 'passed': True, 'input_echo_seconds': round(input_latency, 4) if input_latency is not None else None,
+        return {'goal_status_checked': goal_check, 'engram_enabled': engram_enabled, 'budget_continuity': budget_limit, 'connection_isolation': True, 'model_switch': not onboarding and not restore_only, 'passed': True, 'input_echo_seconds': round(input_latency, 4) if input_latency is not None else None,
                 'provider_requests': len(server.requests) - requests_before, 'request_models': [request.get('model') for request in server.requests[requests_before:]], 'onboarding': onboarding, 'restore_only': restore_only, 'terminal_bytes': len(output),
                 'terminal_attributes_restored': True, 'resize_and_exit': True}
     finally:

@@ -21,6 +21,10 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
         ("history-more", "Load the preceding saved transcript page"),
         ("delivery-status", "Inspect saved reply delivery states"),
         (
+            "goal-status",
+            "Inspect saved goals and unverified achievement",
+        ),
+        (
             "delivery-show",
             "Review a saved reply without changing its delivery state",
         ),
