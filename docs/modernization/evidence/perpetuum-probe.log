@@ -1,0 +1,51 @@
+   Compiling rand v0.8.5
+   Compiling tokio v1.50.0
+   Compiling icu_normalizer v2.1.1
+   Compiling tracing-serde v0.2.0
+   Compiling string_cache v0.8.9
+   Compiling chrono-tz v0.10.4
+   Compiling cron v0.13.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling idna_adapter v1.2.1
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling phf_generator v0.11.3
+   Compiling phf_codegen v0.11.3
+   Compiling phf_macros v0.11.3
+   Compiling string_cache_codegen v0.5.4
+   Compiling sqlx-core v0.8.6
+   Compiling selectors v0.26.0
+   Compiling markup5ever v0.14.1
+   Compiling opentelemetry_sdk v0.27.1
+   Compiling phf v0.11.3
+   Compiling cssparser v0.34.0
+   Compiling tracing-appender v0.2.4
+   Compiling tracing-opentelemetry v0.28.0
+   Compiling tokio-stream v0.1.18
+   Compiling hyper v1.8.1
+   Compiling sqlx-postgres v0.8.6
+   Compiling sqlx-sqlite v0.8.6
+   Compiling temm1e-core v5.8.1 (<REPO>/crates/temm1e-core)
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.26.4
+   Compiling tokio-util v0.7.18
+   Compiling tower-http v0.6.8
+   Compiling html5ever v0.29.1
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling scraper v0.22.0
+   Compiling sqlx-macros-core v0.8.6
+   Compiling temm1e-skills v5.8.1 (<REPO>/crates/temm1e-skills)
+   Compiling temm1e-observable v5.8.1 (<REPO>/crates/temm1e-observable)
+   Compiling temm1e-test-utils v5.8.1 (<REPO>/crates/temm1e-test-utils)
+   Compiling temm1e-providers v5.8.1 (<REPO>/crates/temm1e-providers)
+   Compiling sqlx-macros v0.8.6
+   Compiling sqlx v0.8.6
+   Compiling temm1e-anima v5.8.1 (<REPO>/crates/temm1e-anima)
+   Compiling temm1e-tools v5.8.1 (<REPO>/crates/temm1e-tools)
+   Compiling temm1e-perpetuum v5.8.1 (<REPO>/crates/temm1e-perpetuum)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.03s
+     Running `target/debug/examples/modernization_probe`
+activity_after_one_record=1
+unicode_report_panics=true
