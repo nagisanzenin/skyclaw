@@ -33,6 +33,11 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 {'kind': 'file_exists', 'path': 'fixture.txt'},
                 {'kind': 'grep_count_at_least', 'pattern': 'token', 'path_glob': '*.txt', 'n': 2},
                 {'kind': 'grep_absent', 'pattern': 'TODO', 'path_glob': '*.txt'}]})
+            if self.server.unknown_composite:
+                draft = json.loads(content)
+                draft['postconditions'].append({'kind': 'not_of', 'predicate': {
+                    'kind': 'all_of', 'predicates': [{'kind': 'elapsed_under', 'start_marker': 'unset', 'max_secs': 1}]}})
+                content = json.dumps(draft)
         else:
             with sqlite3.connect(self.server.profile / 'executions.db') as db:
                 active = db.execute("SELECT COUNT(*) FROM goal_criteria c JOIN goal_records g ON g.id=c.goal_id WHERE g.state='running'").fetchone()[0]
@@ -130,16 +135,24 @@ pricing_verified = true
             for goal_id, _, payload in rows:
                 oath = json.loads(payload)
                 assert oath['goal'] == goals[goal_id], oath
+            if server.unknown_composite:
+                verdicts = [json.loads(row[0]) for row in db.execute("SELECT payload_json FROM witness_ledger WHERE entry_type='verdict_rendered'")]
+                assert len(verdicts) == (0 if limited else 2), verdicts
+                for verdict in verdicts:
+                    assert verdict['outcome'] == 'inconclusive', verdict
+                    assert verdict['per_predicate'][-1]['outcome'] == 'inconclusive', verdict
         return {'passed': True, 'limited': limited, 'requests': requests, 'planner_requests': planners,
-                'unique_execution_bound_oaths': len(rows), 'original_objectives_preserved': True, 'criteria_frozen_before_foreground': True, 'restart_inspection_provider_calls': 0}
+                'unique_execution_bound_oaths': len(rows), 'original_objectives_preserved': True, 'criteria_frozen_before_foreground': True, 'restart_inspection_provider_calls': 0, 'unknown_composite_checked': server.unknown_composite}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('binary', type=Path)
+    parser.add_argument('--unknown-composite', action='store_true')
     args = parser.parse_args()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
     server.requests, server.planners = [], 0
+    server.unknown_composite = args.unknown_composite
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

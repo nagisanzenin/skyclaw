@@ -4,6 +4,7 @@ A formula can be algebraically valid and still optimize the wrong quantity. Sepa
 
 | System | Implementation / intended idea | Verdict and better implementation | Required validation |
 |---|---|---|---|
+| Witness logic | AllOf/AnyOf plus Inconclusive and negation | Checkpoint50 repairs unknown-to-failure collapse and false negated passes using three-valued conjunction/disjunction. Empty/all-advisory sets stay Inconclusive under explicit non-vacuous verification policy. See WITNESS-KNOWNNESS-IMPLEMENTATION.md. | All9real primitive input pairs, nested negation, empty sets, required/advisory controls and actual CLI |
 | Finite brain | estimated bytes/4 ASCII, /2 other text, fixed image estimate; fractional allocation | A useful heuristic, not a capacity guarantee. P04 final wire-token invariant with estimator uncertainty; count tool schemas/volatile additions. | actual token fixtures across languages, images, huge fixed prompt; never send oversize |
 | λ decay | exponential decay with lambda .01/hour | half-life ln(2)/lambda =69.3147h=2.888d, not29d. Preserve tiered recall, expose units and configure half-life directly. | boundary times, future timestamps, repeated recall and GC |
 | Artifact value | Q×R×U priority | A ranking heuristic, not proof that a greedy token pack is globally most valuable. Define utility target and compare value-density/knapsack approximations on replay. Multiplicative floors can hide invalid negative values. | finite values, monotonicity, recall success at equal budget, task/user strata |

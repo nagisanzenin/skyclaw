@@ -357,6 +357,14 @@ impl Witness {
             return Err(WitnessError::NoSealedOath(oath.subtask_id.clone()));
         }
 
+        // Validate integrity before any verifier can inspect or affect state.
+        let actual = crate::oath::hash_oath(oath);
+        if actual != oath.sealed_hash {
+            return Err(WitnessError::TamperDetected {
+                expected: oath.sealed_hash.clone(),
+                actual,
+            });
+        }
         let start = Instant::now();
         let ctx = CheckContext::new(&self.workspace_root);
         let mut per_predicate: Vec<PredicateResult> = Vec::new();
@@ -671,6 +679,9 @@ impl Witness {
 /// - All PASS (ignoring advisory) → PASS.
 /// - Otherwise → Inconclusive.
 fn aggregate_outcome(per_predicate: &[PredicateResult]) -> VerdictOutcome {
+    if !per_predicate.iter().any(|r| !r.advisory) {
+        return VerdictOutcome::Inconclusive;
+    }
     let mut has_fail = false;
     let mut has_inconclusive = false;
     for r in per_predicate {
@@ -693,6 +704,9 @@ fn aggregate_outcome(per_predicate: &[PredicateResult]) -> VerdictOutcome {
 }
 
 fn build_reason(per_predicate: &[PredicateResult]) -> String {
+    if !per_predicate.iter().any(|r| !r.advisory) {
+        return "No required checks were assessed; achievement is unverified".into();
+    }
     let pass: u32 = per_predicate
         .iter()
         .filter(|r| r.outcome == VerdictOutcome::Pass && !r.advisory)
