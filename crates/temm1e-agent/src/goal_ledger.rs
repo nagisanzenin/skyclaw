@@ -21,6 +21,7 @@ pub struct GoalStatus {
     pub objective: String,
     pub reason: String,
     pub evidence_count: i64,
+    pub model_criteria_saved: bool,
     pub unresolved_operations: i64,
 }
 
@@ -52,7 +53,10 @@ impl ExecutionJournal {
             PRIMARY KEY(goal_id,sequence));
             CREATE TABLE IF NOT EXISTS goal_evidence (
             goal_id TEXT NOT NULL REFERENCES goal_records(id), hash TEXT NOT NULL,
-            document TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(goal_id,hash));".split(';').filter(|s| !s.trim().is_empty()) {
+            document TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(goal_id,hash));
+            CREATE TABLE IF NOT EXISTS goal_criteria (
+            goal_id TEXT PRIMARY KEY REFERENCES goal_records(id), hash TEXT NOT NULL,
+            document TEXT NOT NULL, created_at TEXT NOT NULL);".split(';').filter(|s| !s.trim().is_empty()) {
  sqlx::query(statement).execute(&mut *tx).await.map_err(error)?;
 }
         tx.commit().await.map_err(error)?;
@@ -115,10 +119,11 @@ impl ExecutionJournal {
         &self,
         scope: &ConversationScope,
     ) -> Result<Vec<GoalStatus>, Temm1eError> {
-        type Row = (String, i64, i64, String, String, String, i64, i64);
+        type Row = (String, i64, i64, String, String, String, i64, i64, bool);
         let rows: Vec<Row> = sqlx::query_as("SELECT id,schema_version,revision,state,substr(objective,1,512),reason,
             (SELECT COUNT(*) FROM goal_evidence e WHERE e.goal_id=g.id),
-            (SELECT COUNT(*) FROM execution_operations o WHERE o.execution_id=g.id AND o.state='outcome_unknown')
+            (SELECT COUNT(*) FROM execution_operations o WHERE o.execution_id=g.id AND o.state='outcome_unknown'),
+            EXISTS(SELECT 1 FROM goal_criteria c WHERE c.goal_id=g.id)
             FROM goal_records g WHERE conversation_scope=? ORDER BY updated_at DESC,id LIMIT 20")
             .bind(&scope.0).fetch_all(&self.pool).await.map_err(error)?;
         rows.into_iter()
@@ -132,6 +137,7 @@ impl ExecutionJournal {
                     reason,
                     evidence_count,
                     unresolved_operations,
+                    model_criteria_saved,
                 )| {
                     if schema_version != i64::from(GOAL_SCHEMA_VERSION) || revision < 0 {
                         return Err(error("unsupported or invalid goal record"));
@@ -147,6 +153,7 @@ impl ExecutionJournal {
                         reason,
                         evidence_count,
                         unresolved_operations,
+                        model_criteria_saved,
                     })
                 },
             )

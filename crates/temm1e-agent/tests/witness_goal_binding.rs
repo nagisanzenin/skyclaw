@@ -533,3 +533,74 @@ async fn restricted_witness_denies_command_checks_before_platform_process_launch
         assert!(verdict.per_predicate[0].detail.contains("shell permission"));
     }
 }
+
+#[tokio::test]
+async fn automatic_oath_is_persisted_with_the_active_goal_before_return() {
+    use temm1e_agent::{conversation::ConversationScope, execution_journal::ExecutionJournal};
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("fixture.txt"), "token token").unwrap();
+    let path = directory.path().join("executions.db");
+    let journal = Arc::new(ExecutionJournal::open(&path).await.unwrap());
+    let scope = ConversationScope::new(directory.path(), "test", "test-chat", "test-user").unwrap();
+    let turn = journal.acquire_conversation(&scope).await.unwrap();
+    let witness = Arc::new(Witness::new(
+        Ledger::open("sqlite::memory:").await.unwrap(),
+        directory.path().to_path_buf(),
+    ));
+    let provider = Arc::new(QueuedMockProvider::with_responses(vec![
+        QueuedMockProvider::text_response(&draft()),
+        QueuedMockProvider::text_response("DONE despite incomplete original request"),
+    ]));
+    let runtime = AgentRuntime::new(
+        provider,
+        Arc::new(MockMemory::new()),
+        vec![],
+        "fixture".into(),
+        Some("local fixture".into()),
+    )
+    .with_execution_journal(journal.clone())
+    .with_v2_optimizations(false)
+    .with_self_audit_enabled(false)
+    .with_witness(witness, WitnessStrictness::Observe, false)
+    .with_auto_planner_oath(true);
+    let mut session = make_session();
+    session.workspace_path = directory.path().into();
+    session.session_id = turn.epoch().into();
+    session.channel = "test".into();
+    session.chat_id = "test-chat".into();
+    session.user_id = "test-user".into();
+    let original = "In the workspace, write `demo.rs` with pub fn greet(name: &str) -> String. Preserve COMPLETE_REQUIREMENT.";
+    runtime
+        .process_message(
+            &make_inbound_msg(original),
+            &mut session,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let pool =
+        sqlx::SqlitePool::connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+            .await
+            .unwrap();
+    let (id, state, revision): (String, String, i64) =
+        sqlx::query_as("SELECT id,state,revision FROM goal_records")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let document: String = sqlx::query_scalar("SELECT document FROM goal_criteria WHERE goal_id=?")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&document).unwrap();
+    assert_eq!(saved["origin"], "model_proposed");
+    assert_eq!(saved["coverage"], "unverified");
+    assert_eq!(saved["oath"]["goal"], original);
+    assert_eq!(saved["oath"]["root_goal_id"], id);
+    assert_eq!(state, "awaiting_evidence");
+    assert_eq!(revision, 2);
+}

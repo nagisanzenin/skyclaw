@@ -501,7 +501,12 @@ pub async fn handle_owner_command(
                         }
                     })
                     .collect();
-                let _ = writeln!(report, "{} | {} | revision {} | {} evidence snapshots | {} uncertain operations\n{}\n{}", goal.id, goal.state.as_str(), goal.revision, goal.evidence_count, goal.unresolved_operations, objective, goal.reason);
+                let criteria = if goal.model_criteria_saved {
+                    "model criteria saved; coverage unverified"
+                } else {
+                    "no saved model criteria"
+                };
+                let _ = writeln!(report, "{} | {} | revision {} | {} evidence snapshots | {} uncertain operations | {}\n{}\n{}", goal.id, goal.state.as_str(), goal.revision, goal.evidence_count, goal.unresolved_operations, criteria, objective, goal.reason);
             }
             report.push_str("A returned/delivered reply or recorded tool output does not prove achievement. Running is the last saved state, not a liveness or replay guarantee.");
             Ok(Some(report))

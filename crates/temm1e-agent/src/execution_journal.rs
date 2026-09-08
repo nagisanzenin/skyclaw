@@ -145,7 +145,7 @@ impl ExecutionJournal {
     }
 
     /// Scope uses a structured tuple, so separator characters cannot alias users.
-    fn scope(session: &SessionContext) -> Result<String, Temm1eError> {
+    pub(crate) fn scope(session: &SessionContext) -> Result<String, Temm1eError> {
         let workspace = session.workspace_path.canonicalize().map_err(error)?;
         serde_json::to_string(&(
             &session.channel,

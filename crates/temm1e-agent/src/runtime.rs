@@ -1028,7 +1028,26 @@ impl AgentRuntime {
                                     postcondition_count = sealed.postconditions.len(),
                                     "phase4: planner oath sealed for session"
                                 );
-                                oath_sealed_this_turn = Some(sealed);
+                                // Freeze the exact proposal into the active goal before
+                                // using it. A failed durable binding must not yield a
+                                // verification claim from an unbound Oath.
+                                let bound = if let Some((journal, id)) = execution {
+                                    match journal
+                                        .record_goal_criteria(id, session, &sealed, 0)
+                                        .await
+                                    {
+                                        Ok(_) => true,
+                                        Err(error) => {
+                                            tracing::warn!(%error, "goal criteria binding unavailable; continuing unverified");
+                                            false
+                                        }
+                                    }
+                                } else {
+                                    true
+                                };
+                                if bound {
+                                    oath_sealed_this_turn = Some(sealed);
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!(

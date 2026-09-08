@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Actual CLI Witness: original objectives, execution IDs and planner budget."""
 import argparse
+import hashlib
 import http.server
 import json
 import os
@@ -33,6 +34,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 {'kind': 'grep_count_at_least', 'pattern': 'token', 'path_glob': '*.txt', 'n': 2},
                 {'kind': 'grep_absent', 'pattern': 'TODO', 'path_glob': '*.txt'}]})
         else:
+            with sqlite3.connect(self.server.profile / 'executions.db') as db:
+                active = db.execute("SELECT COUNT(*) FROM goal_criteria c JOIN goal_records g ON g.id=c.goal_id WHERE g.state='running'").fetchone()[0]
+                assert active == 1, 'criteria must be frozen before foreground model work'
             content = 'WITNESS_FOREGROUND_RETURNED'
         body = json.dumps({'id': 'local-witness', 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': content}, 'finish_reason': 'stop'}],
                            'usage': {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120}}).encode()
@@ -86,6 +90,7 @@ pricing_verified = true
         env = {k: v for k, v in os.environ.items() if not k.endswith(('_API_KEY', '_TOKEN')) and not k.startswith('TEMM1E_')}
         env['TEMM1E_DATA_DIR'] = str(profile)
         objectives = OBJECTIVES[:1] if limited else OBJECTIVES
+        server.profile = profile
         before, planners_before = len(server.requests), server.planners
         result = subprocess.run([str(binary), 'chat'], input='\n'.join(objectives + ['/quit', '']), text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=root, env=env, timeout=45)
@@ -102,6 +107,21 @@ pricing_verified = true
             goals = dict(db.execute('SELECT id,objective FROM goal_records').fetchall())
             assert len(goals) == len(objectives)
             assert sorted(goals.values()) == sorted(objectives)
+            criteria = db.execute('SELECT goal_id,hash,document FROM goal_criteria').fetchall()
+            assert len(criteria) == len(objectives)
+            for goal_id, digest, document in criteria:
+                assert hashlib.sha256(document.encode()).hexdigest() == digest
+                saved = json.loads(document)
+                assert saved['origin'] == 'model_proposed' and saved['coverage'] == 'unverified'
+                assert saved['oath']['root_goal_id'] == goal_id
+                assert saved['oath']['goal'] == goals[goal_id]
+                assert saved['workspace'] == str((profile / 'workspace').resolve())
+            assert not db.execute("SELECT id FROM goal_records WHERE state='succeeded'").fetchall()
+        restart = subprocess.run([str(binary), 'chat'], input='/goal-status\n/quit\n', text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=root, timeout=30)
+        assert restart.returncode == 0, restart.stdout[-3000:]
+        assert 'model criteria saved; coverage unverified' in restart.stdout
+        assert len(server.requests) - before == requests, 'inspection must not call provider'
         with sqlite3.connect(profile / 'witness.db') as db:
             rows = db.execute("SELECT root_goal_id,subtask_id,payload_json FROM witness_ledger WHERE entry_type='oath_sealed'").fetchall()
             assert len(rows) == len(objectives), rows
@@ -111,7 +131,7 @@ pricing_verified = true
                 oath = json.loads(payload)
                 assert oath['goal'] == goals[goal_id], oath
         return {'passed': True, 'limited': limited, 'requests': requests, 'planner_requests': planners,
-                'unique_execution_bound_oaths': len(rows), 'original_objectives_preserved': True}
+                'unique_execution_bound_oaths': len(rows), 'original_objectives_preserved': True, 'criteria_frozen_before_foreground': True, 'restart_inspection_provider_calls': 0}
 
 
 def main():
