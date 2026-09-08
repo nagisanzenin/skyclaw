@@ -21,6 +21,7 @@ pub mod history_pruning;
 pub mod lambda_memory;
 pub mod learning;
 pub mod llm_classifier;
+pub mod metered_provider;
 pub mod model_router;
 pub mod output_compression;
 pub mod proactive;

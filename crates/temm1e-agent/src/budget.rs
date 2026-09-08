@@ -2,6 +2,7 @@
 //! lifetime, and enforces a configurable spend limit (0.0 = unlimited).
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tracing::{info, warn};
 
 pub use temm1e_core::types::model_catalog::{CostEstimate, Pricing as ModelPricing};
@@ -50,6 +51,8 @@ pub fn calculate_cost(input_tokens: u32, output_tokens: u32, pricing: &ModelPric
 /// Uses atomic u64 storing cost in micro-cents (1 USD = 100_000_000 units)
 /// for lock-free operation.
 pub struct BudgetTracker {
+    /// Optional owning session; local counters remain useful per worker.
+    parent: Option<Arc<BudgetTracker>>,
     /// Cumulative cost in micro-cents (1 USD = 100_000_000).
     cumulative_micro_cents: AtomicU64,
     /// Maximum spend in micro-cents (0 = unlimited).
@@ -64,11 +67,17 @@ pub struct BudgetTracker {
 }
 
 const MICRO_CENTS_PER_USD: f64 = 100_000_000.0;
+fn add_saturating(counter: &AtomicU64, amount: u64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(amount))
+    });
+}
 
 impl BudgetTracker {
     /// Create a new tracker with a max spend in USD. 0.0 = unlimited.
     pub fn new(max_spend_usd: f64) -> Self {
         Self {
+            parent: None,
             cumulative_micro_cents: AtomicU64::new(0),
             max_micro_cents: ((max_spend_usd.max(0.0) * MICRO_CENTS_PER_USD).ceil()) as u64,
             valid_limit: max_spend_usd.is_finite() && max_spend_usd >= 0.0,
@@ -79,9 +88,20 @@ impl BudgetTracker {
         }
     }
 
+    /// A child keeps its own totals and forwards each charge/unknown outcome
+    /// once to its owner. Admission also checks the owner's remaining budget.
+    pub fn child(parent: Arc<BudgetTracker>) -> Self {
+        let mut child = Self::new(0.0);
+        child.parent = Some(parent);
+        child
+    }
+
     /// A USD cap cannot enforce a subscription quota or an unknown tariff.
     /// Reject before making a call rather than silently treating it as free.
     pub fn check_model_budget(&self, pricing: &ModelPricing) -> Result<(), String> {
+        if let Some(parent) = &self.parent {
+            parent.check_model_budget(pricing)?;
+        }
         if self.max_micro_cents > 0 && !pricing.has_usd_tariff() {
             return Err("USD budget cannot be enforced for this subscription or unknown tariff. Configure verified custom API rates, or use provider quota controls and set max_spend_usd = 0.".into());
         }
@@ -95,24 +115,31 @@ impl BudgetTracker {
     }
 
     pub fn record_estimate(&self, input: u32, output: u32, estimate: &CostEstimate) {
+        let invalid = matches!(estimate, CostEstimate::StandardTokens {lower_usd, upper_usd,..} if !lower_usd.is_finite() || !upper_usd.is_finite() || *lower_usd < 0.0 || upper_usd < lower_usd);
+        let estimate = if invalid {
+            &CostEstimate::Unavailable
+        } else {
+            estimate
+        };
+        if let Some(parent) = &self.parent {
+            parent.record_estimate(input, output, estimate);
+        }
         match estimate {
             CostEstimate::StandardTokens {
                 lower_usd,
                 upper_usd,
                 ..
             } => {
-                self.record_usage(input, output, *upper_usd);
+                self.record_usage_local(input, output, *upper_usd);
                 info!(
                     lower_usd,
                     upper_usd, "Standard token charge interval; not an invoice"
                 );
             }
             CostEstimate::Subscription => {
-                self.subscription_calls.fetch_add(1, Ordering::Relaxed);
-                self.total_input_tokens
-                    .fetch_add(u64::from(input), Ordering::Relaxed);
-                self.total_output_tokens
-                    .fetch_add(u64::from(output), Ordering::Relaxed);
+                add_saturating(&self.subscription_calls, 1);
+                add_saturating(&self.total_input_tokens, u64::from(input));
+                add_saturating(&self.total_output_tokens, u64::from(output));
                 info!(
                     input_tokens = input,
                     output_tokens = output,
@@ -120,11 +147,9 @@ impl BudgetTracker {
                 );
             }
             CostEstimate::Unavailable => {
-                self.unpriced_calls.fetch_add(1, Ordering::Relaxed);
-                self.total_input_tokens
-                    .fetch_add(u64::from(input), Ordering::Relaxed);
-                self.total_output_tokens
-                    .fetch_add(u64::from(output), Ordering::Relaxed);
+                add_saturating(&self.unpriced_calls, 1);
+                add_saturating(&self.total_input_tokens, u64::from(input));
+                add_saturating(&self.total_output_tokens, u64::from(output));
                 warn!(
                     input_tokens = input,
                     output_tokens = output,
@@ -140,16 +165,27 @@ impl BudgetTracker {
             self.record_estimate(input_tokens, output_tokens, &CostEstimate::Unavailable);
             return 0.0;
         }
+        self.record_estimate(
+            input_tokens,
+            output_tokens,
+            &CostEstimate::StandardTokens {
+                lower_usd: cost_usd,
+                upper_usd: cost_usd,
+                source: "legacy scalar estimate".into(),
+            },
+        );
+        cost_usd
+    }
+
+    fn record_usage_local(&self, input_tokens: u32, output_tokens: u32, cost_usd: f64) -> f64 {
         let micro_cents = (cost_usd * MICRO_CENTS_PER_USD).ceil() as u64;
         let _ = self.cumulative_micro_cents.fetch_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.saturating_add(micro_cents)),
         );
-        self.total_input_tokens
-            .fetch_add(input_tokens as u64, Ordering::Relaxed);
-        self.total_output_tokens
-            .fetch_add(output_tokens as u64, Ordering::Relaxed);
+        add_saturating(&self.total_input_tokens, u64::from(input_tokens));
+        add_saturating(&self.total_output_tokens, u64::from(output_tokens));
 
         let total = self.total_spend_usd();
         info!(
@@ -165,6 +201,9 @@ impl BudgetTracker {
 
     /// Check if the budget allows another API call. Returns Ok(()) or an error message.
     pub fn check_budget(&self) -> Result<(), String> {
+        if let Some(parent) = &self.parent {
+            parent.check_budget()?;
+        }
         if !self.valid_limit {
             return Err("max_spend_usd must be finite and nonnegative; zero disables the USD estimate limit.".into());
         }
@@ -211,10 +250,9 @@ impl BudgetTracker {
         )
     }
 
-    /// Atomic snapshot of current input/output/cost. Safe to call concurrently.
-    /// Each field is read atomically; the three reads are not mutually atomic,
-    /// but they're always monotonically non-decreasing so a consistent-enough
-    /// snapshot emerges in practice.
+    /// Each field is atomic and monotonic, but this is not a mutually
+    /// consistent snapshot during concurrent writes. Join contributing tasks
+    /// before using it as a final accounting total.
     pub fn snapshot(&self) -> BudgetSnapshot {
         BudgetSnapshot {
             input_tokens: self.total_input_tokens.load(Ordering::Relaxed),
@@ -416,6 +454,40 @@ mod tests {
             tracker.record_usage(100, 50, 0.001);
         }
         // Should be at or slightly above the limit due to floating point
+        assert!(tracker.check_budget().is_err());
+    }
+    #[test]
+    fn sibling_workers_share_admission_without_double_charging_local_totals() {
+        let parent = Arc::new(BudgetTracker::new(1.0));
+        let a = BudgetTracker::child(parent.clone());
+        let b = BudgetTracker::child(parent.clone());
+        a.record_usage(10, 2, 0.4);
+        b.record_usage(20, 3, 0.6);
+        assert_eq!(a.snapshot().input_tokens, 10);
+        assert_eq!(b.snapshot().input_tokens, 20);
+        assert_eq!(parent.snapshot().input_tokens, 30);
+        assert_eq!(parent.snapshot().cost_usd, 1.0);
+        assert!(a.check_budget().is_err());
+        assert!(b.check_budget().is_err());
+        let parent = Arc::new(BudgetTracker::new(1.0));
+        let child = BudgetTracker::child(parent.clone());
+        child.record_estimate(5, 1, &CostEstimate::Unavailable);
+        assert_eq!(parent.snapshot().unpriced_calls, 1);
+        assert!(parent.check_budget().is_err());
+        assert!(child
+            .check_model_budget(&ModelPricing::Subscription)
+            .is_err());
+    }
+    #[test]
+    fn accounting_counters_saturate_instead_of_reopening_admission() {
+        let tracker = BudgetTracker::new(1.0);
+        tracker.unpriced_calls.store(u64::MAX, Ordering::Relaxed);
+        tracker
+            .total_input_tokens
+            .store(u64::MAX, Ordering::Relaxed);
+        tracker.record_estimate(1, 1, &CostEstimate::Unavailable);
+        assert_eq!(tracker.snapshot().unpriced_calls, u64::MAX);
+        assert_eq!(tracker.snapshot().input_tokens, u64::MAX);
         assert!(tracker.check_budget().is_err());
     }
 }

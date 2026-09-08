@@ -39,7 +39,7 @@ pub const IN_SWARM_ENV: &str = "TEMM1E_IN_SWARM";
 const WORKER_MAX_TURNS: usize = 10;
 const WORKER_MAX_CONTEXT_TOKENS: usize = 30_000;
 /// 0 = unlimited (matches post-P4 behaviour). Workers still respect parent
-/// BudgetTracker via the dispatcher's record_usage after swarm completes.
+/// BudgetTracker through per-call child accounting before further admission.
 const WORKER_MAX_TOOL_ROUNDS: usize = 0;
 /// Hard wall-clock cap per worker (5 minutes) — independent of parent agent.
 const WORKER_MAX_TASK_DURATION: u64 = 300;
@@ -233,6 +233,7 @@ impl Tool for SpawnSwarmTool {
         let witness_attachments_for_closure = swarm_ctx.witness_attachments.clone();
         let workspace_for_closure = swarm_ctx.workspace_path.clone();
         let shared_context = args.shared_context.clone();
+        let parent_budget = swarm_ctx.parent_budget.clone();
 
         let execute_fn = Arc::new(
             move |task: temm1e_hive::types::HiveTask, dep_results: Vec<(String, String)>| {
@@ -243,6 +244,7 @@ impl Tool for SpawnSwarmTool {
                 let shared_context = shared_context.clone();
                 let witness_for_worker = witness_attachments_for_closure.clone();
                 let workspace_for_worker = workspace_for_closure.clone();
+                let worker_budget = Arc::new(BudgetTracker::child(parent_budget.clone()));
                 async move {
                     // Tool filter: strip spawn_swarm so the worker can't recurse.
                     let filter: crate::runtime::ToolFilter =
@@ -260,6 +262,7 @@ impl Tool for SpawnSwarmTool {
                         WORKER_MAX_TASK_DURATION,
                         0.0,
                     )
+                    .with_budget(worker_budget)
                     .with_tool_filter(filter)
                     .with_witness_attachments(witness_for_worker.as_ref());
 
@@ -313,16 +316,23 @@ impl Tool for SpawnSwarmTool {
                                 error: None,
                             })
                         }
-                        Err(e) => Ok(temm1e_hive::worker::TaskResult {
-                            summary: String::new(),
-                            tokens_used: 0,
-                            input_tokens: 0,
-                            output_tokens: 0,
-                            cost_usd: 0.0,
-                            artifacts: vec![],
-                            success: false,
-                            error: Some(e.to_string()),
-                        }),
+                        Err(e) => {
+                            let snap = worker.budget_snapshot();
+                            Ok(temm1e_hive::worker::TaskResult {
+                                summary: String::new(),
+                                tokens_used: snap
+                                    .input_tokens
+                                    .saturating_add(snap.output_tokens)
+                                    .min(u64::from(u32::MAX))
+                                    as u32,
+                                input_tokens: snap.input_tokens,
+                                output_tokens: snap.output_tokens,
+                                cost_usd: snap.cost_usd,
+                                artifacts: vec![],
+                                success: false,
+                                error: Some(e.to_string()),
+                            })
+                        }
                     }
                 }
             },
@@ -356,15 +366,8 @@ impl Tool for SpawnSwarmTool {
             })
             .await?;
 
-        // Record swarm cost against the PARENT's budget tracker — workers
-        // had their own isolated trackers, so no double-count.
-        if swarm_result.total_input_tokens > 0 || swarm_result.total_output_tokens > 0 {
-            swarm_ctx.parent_budget.record_usage(
-                swarm_result.total_input_tokens.min(u32::MAX as u64) as u32,
-                swarm_result.total_output_tokens.min(u32::MAX as u64) as u32,
-                swarm_result.total_cost_usd,
-            );
-        }
+        // Workers now propagate typed usage/unknownness to the parent per
+        // call. Re-adding the final scalar aggregate here would double-charge.
 
         info!(
             order_id = %order_id,
@@ -401,7 +404,10 @@ impl SpawnSwarmTool {
         swarm_ctx: &SpawnSwarmContext,
         goal: &str,
     ) -> Result<Option<String>, Temm1eError> {
-        let provider = swarm_ctx.provider.clone();
+        let provider: Arc<dyn Provider> = Arc::new(crate::metered_provider::MeteredProvider::new(
+            swarm_ctx.provider.clone(),
+            swarm_ctx.parent_budget.clone(),
+        ));
         let model = swarm_ctx.model.clone();
         let provider_call = move |prompt: String| {
             let provider = provider.clone();
@@ -434,8 +440,8 @@ impl SpawnSwarmTool {
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        let total_tokens =
-                            (resp.usage.input_tokens + resp.usage.output_tokens) as u64;
+                        let total_tokens = u64::from(resp.usage.input_tokens)
+                            + u64::from(resp.usage.output_tokens);
                         Ok((text, total_tokens))
                     }
                     Err(e) => Err(e),

@@ -588,6 +588,12 @@ impl AgentRuntime {
         }
     }
 
+    /// Bind a composed runtime to its owning session's accounting before use.
+    pub fn with_budget(mut self, budget: Arc<BudgetTracker>) -> Self {
+        self.budget = budget;
+        self
+    }
+
     /// Get a shared reference to the budget tracker (for TemDOS core sharing).
     pub fn budget(&self) -> Arc<BudgetTracker> {
         self.budget.clone()

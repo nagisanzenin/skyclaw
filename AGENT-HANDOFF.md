@@ -22,11 +22,13 @@
 
 ## Current position
 
-This commit completes **checkpoint 32**: Hive stale dependency publication and transactional completion accounting, plus the production Gemini observer/collector integration. Read `HIVE-IMPLEMENTATION.md` and the checkpoint 32 addition to `GEMINI-NATIVE-IMPLEMENTATION.md`. Combined tests passed **80 Hive + 83 provider unit tests and nine HTTP/retry fixtures**; six existing Hive benchmark tests remain ignored. Scoped all-target lint passed, cleaning 897.2 MiB. No Cargo process from this batch remains.
+This commit completes **checkpoint 33**, shared initial composition and auxiliary/delegated accounting. Read `SHARED-ACCOUNTING-IMPLEMENTATION.md`. BudgetTracker children retain local totals and propagate typed estimates once; JIT final scalar re-add is removed. Initial CLI/server TemDOS/Perpetuum/JIT paths share the active budget, and MeteredProvider covers only auxiliary callers that otherwise discard usage. **Do not wrap already-accounted foreground calls and double-charge.** Provider-internal retries, durable reservations, alternate rebuild/dispatch paths and all auxiliary consumers are still incomplete.
 
-Previous pushes: **31 `df4e6bd`** (CI 34263300717 running), **30 `9df96c9`** (CI 34261794031 fully green), **29 `06d9bbd`** (CI 34261489651 failed on Windows Hive DAG test). Actual failed job 102180270464 counted four completions for three tasks; log `implementation-browser-windows-job.log`. A later green run did not negate the race. Checkpoint 32 repairs the stale pending-snapshot write and adds deterministic regression cases; its CI must still be verified.
+Validation passed **787 agent, 15 TemDOS and 79 root minimal-feature tests**; full workspace/all-feature/all-target clippy passed and cleaned 2.2 GiB. Final failed-worker reporting was refined after the agent test run and compiled/linted in that final workspace check. Root minimal-feature tests have four pre-existing cfg-dependent unused-mut warnings. No Cargo process remains.
 
-Next concrete priority: shared accounting/entrypoint composition. Source inspection confirms TemDOS and JIT Hive parent contexts still allocate separate budgets instead of sharing the active runtime budget, and Perpetuum's String-only provider bridge drops usage. Fix attribution/admission without double-counting existing foreground or delegated accounting. Durable global reservations and attempt journaling remain distinct larger gates. Do not advertise accounting as solved by checkpoint 21’s price catalog.
+Previous push **32 `816a75d`**, CI **34263918328**: Windows, Linux, MSRV, lint and both Linux builds passed; Docker still running at last inspection. **31 `df4e6bd`**, CI 34263300717, fully green. **30 `9df96c9`**, CI 34261794031, fully green. **29 `06d9bbd`**, CI 34261489651, remains a recorded Windows failure (Hive stale readiness race, repaired in 32), not erased by a later intermittent pass.
+
+Next concrete priorities: complete remaining shared runtime/usage paths and persistent attempt/effect/goal contracts; capability-knownness/model resolution (unknown vision is still assumed by legacy code); final feature acceptance matrix and broad held-out A/B. Preserve pending D01/D02 defaults; typed records/evidence can progress without enabling new automatic pursuit or changing host privilege defaults. Do not mark the many unfinished implementation-packet acceptance criteria complete merely because a package suite passed.
 
 Final browser-feature tests passed **493 tests, one ignored real-Chrome test** (`implementation-browser-post-review-tests.log`). Eleven obsolete typed-accessibility formatter tests were removed with the unused formatter; schema tests remain. The real-Chrome test was separately invoked and passed (`implementation-browser-real-auth-final.log`): wrong origin rejected without submission, valid form submitted once, authentication explicitly unverified, reflected credentials redacted and owned profile removed. Final workspace/all-feature/all-target clippy passed (`implementation-browser-final-workspace-clippy.log`); the guard removed 1.2 GiB. Earlier lint failures are retained as evidence. No Cargo process from this validation is running.
 
@@ -39,7 +41,7 @@ Files for checkpoint 29:
 - `Cargo.toml`/lock: tools adds already-locked `fs2 0.4.3`. Cargo may rewrite lock format 3 to 4; keep format 3 if that is the only unrelated change.
 - `BROWSER-IMPLEMENTATION.md`: detailed behavior, migration/environment options, evidence and remaining boundaries. Review it against final code.
 
-After pushing checkpoint 32, inspect CI and continue shared accounting/entrypoint composition. Keep the following boundaries visible; the browser checkpoint is not complete product acceptance.
+After pushing checkpoint 33, inspect CI and continue remaining shared accounting/model capability/evidence contracts. Keep the following boundaries visible; the browser checkpoint is not complete product acceptance.
 
 ## Validation evidence currently available locally
 

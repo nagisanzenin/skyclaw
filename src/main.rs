@@ -2782,6 +2782,9 @@ async fn main() -> Result<()> {
                             Arc::from(temm1e_providers::create_provider(&provider_config)?)
                         }
                     };
+                    let runtime_budget = Arc::new(temm1e_agent::budget::BudgetTracker::new(
+                        config.agent.max_spend_usd,
+                    ));
                     // TemDOS: register invoke_core tool now that provider is available
                     if !core_registry.read().await.is_empty() {
                         // Custom-model aware pricing lookup — tries the active
@@ -2793,12 +2796,7 @@ async fn main() -> Result<()> {
                             core_registry.clone(),
                             provider.clone(),
                             tools.clone(), // all tools — invoke_core filters itself out
-                            // Note: this is a SEPARATE budget for core tracking.
-                            // The main agent's budget is inside AgentRuntime.
-                            // Both ultimately deduct from the user's wallet via provider calls.
-                            Arc::new(temm1e_agent::budget::BudgetTracker::new(
-                                config.agent.max_spend_usd,
-                            )),
+                            runtime_budget.clone(),
                             model_pricing,
                             model.clone(),
                             config.agent.max_context_tokens,
@@ -2820,6 +2818,7 @@ async fn main() -> Result<()> {
                         config.agent.max_task_duration_secs,
                         config.agent.max_spend_usd,
                     )
+                    .with_budget(runtime_budget.clone())
                     .with_durable_execution()
                     .with_v2_optimizations(config.agent.v2_optimizations)
                     .with_self_audit_enabled(config.agent.self_audit_enabled)
@@ -2897,7 +2896,10 @@ async fn main() -> Result<()> {
 
                         match temm1e_perpetuum::Perpetuum::new(
                             perp_config,
-                            provider.clone(),
+                            Arc::new(temm1e_agent::metered_provider::MeteredProvider::new(
+                                provider.clone(),
+                                runtime_budget.clone(),
+                            )),
                             model.clone(),
                             channel_map.clone(),
                             &db_url,
@@ -3159,9 +3161,7 @@ async fn main() -> Result<()> {
                         memory: memory.clone(),
                         tools_template: tools.clone(),
                         model: agent.model().to_string(),
-                        parent_budget: Arc::new(temm1e_agent::budget::BudgetTracker::new(
-                            config.agent.max_spend_usd,
-                        )),
+                        parent_budget: agent.budget(),
                         cancel: shutdown_token.child_token(),
                         workspace_path: std::env::current_dir()
                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -6639,6 +6639,8 @@ Just type a message to chat with the AI agent.",
                     };
                     match provider_result {
                         Ok(provider) => {
+                            let runtime_budget =
+                                Arc::new(temm1e_agent::budget::BudgetTracker::new(max_spend));
                             // TemDOS: register invoke_core tool for CLI chat
                             if !cli_core_registry.read().await.is_empty() {
                                 // Custom-model aware pricing lookup.
@@ -6648,7 +6650,7 @@ Just type a message to chat with the AI agent.",
                                     cli_core_registry.clone(),
                                     provider.clone(),
                                     tools_template.clone(),
-                                    Arc::new(temm1e_agent::budget::BudgetTracker::new(max_spend)),
+                                    runtime_budget.clone(),
                                     model_pricing,
                                     model.clone(),
                                     max_ctx,
@@ -6764,6 +6766,7 @@ Just type a message to chat with the AI agent.",
                                 max_task_duration,
                                 max_spend,
                             )
+                            .with_budget(runtime_budget.clone())
                             .with_durable_execution()
                             .with_v2_optimizations(v2_opt)
                             .with_self_audit_enabled(self_audit_opt)
@@ -6851,7 +6854,10 @@ Just type a message to chat with the AI agent.",
 
                                 match temm1e_perpetuum::Perpetuum::new(
                                     perp_config,
-                                    consciousness_provider.clone(),
+                                    Arc::new(temm1e_agent::metered_provider::MeteredProvider::new(
+                                        consciousness_provider.clone(),
+                                        runtime_budget.clone(),
+                                    )),
                                     model.clone(),
                                     cli_channel_map,
                                     &db_url,
@@ -6879,6 +6885,7 @@ Just type a message to chat with the AI agent.",
                                             max_task_duration,
                                             max_spend,
                                         )
+                                        .with_budget(runtime_budget.clone())
                                         .with_durable_execution()
                                         .with_v2_optimizations(v2_opt)
                                         .with_self_audit_enabled(self_audit_opt)
@@ -6942,9 +6949,7 @@ Just type a message to chat with the AI agent.",
                                     memory: memory.clone(),
                                     tools_template: cli_swarm_snapshot.clone(),
                                     model: rt.model().to_string(),
-                                    parent_budget: Arc::new(
-                                        temm1e_agent::budget::BudgetTracker::new(max_spend),
-                                    ),
+                                    parent_budget: rt.budget(),
                                     cancel: tokio_util::sync::CancellationToken::new(),
                                     workspace_path: std::env::current_dir()
                                         .unwrap_or_else(|_| std::path::PathBuf::from(".")),
