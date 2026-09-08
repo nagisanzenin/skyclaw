@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Event channel — spawn_agent pushes AgentResponseEvent via this.
-    // We read them here to drive the exhaustive end-to-end test.
+    // Read bridge events here; rendering and keyboard behavior need separate tests.
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
 
     eprintln!(
@@ -148,13 +148,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 got_response = true;
                 response_text = resp.message.text;
                 let elapsed = t_send.elapsed();
+                let billing =
+                    if matches!(provider_name.as_str(), "zai-coding-plan" | "openai-codex") {
+                        "subscription; charge/quota unknown".to_owned()
+                    } else if resp.cost_usd > 0.0 {
+                        format!("known token estimate ${:.4}", resp.cost_usd)
+                    } else {
+                        "USD estimate unavailable".to_owned()
+                    };
                 eprintln!(
-                    "[SMOKE] wall={}.{}s usage: in={} out={} cost=${:.4}",
+                    "[SMOKE] wall={}.{}s usage: in={} out={} billing={}",
                     elapsed.as_secs(),
                     elapsed.subsec_millis() / 100,
                     resp.input_tokens,
                     resp.output_tokens,
-                    resp.cost_usd
+                    billing
                 );
                 break;
             }

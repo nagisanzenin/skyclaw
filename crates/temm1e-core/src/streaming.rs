@@ -18,6 +18,7 @@ pub async fn collect_completion(
         ..Usage::default()
     };
     let mut retained = 0usize;
+    let mut provider_state = None;
     let mut tool_ids = std::collections::HashSet::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
@@ -64,6 +65,29 @@ pub async fn collect_completion(
             }
             content.push(tool);
         }
+        if let Some(state) = chunk.provider_state {
+            if !matches!(state, ContentPart::ProviderState { .. })
+                || provider_state.is_some()
+                || chunk.stop_reason.is_none()
+            {
+                return Err(Temm1eError::Provider(
+                    "Invalid or provisional native response state".into(),
+                ));
+            }
+            retained = retained.saturating_add(
+                serde_json::to_vec(&state)
+                    .map_err(|_| {
+                        Temm1eError::Provider("Cannot serialize native response state".into())
+                    })?
+                    .len(),
+            );
+            if retained > 32 * 1024 * 1024 {
+                return Err(Temm1eError::Provider(
+                    "Native response exceeds retention limit".into(),
+                ));
+            }
+            provider_state = Some(state);
+        }
         if let Some(snapshot) = chunk.usage {
             usage = snapshot;
         }
@@ -79,6 +103,9 @@ pub async fn collect_completion(
     if !text.is_empty() {
         content.push(ContentPart::Text { text });
     }
+    if let Some(state) = provider_state {
+        content.push(state);
+    }
     Ok(CompletionResponse {
         id,
         content,
@@ -92,6 +119,7 @@ mod tests {
     use super::*;
     fn chunk(delta: Option<&str>, stop: Option<&str>, usage: Option<Usage>) -> StreamChunk {
         StreamChunk {
+            provider_state: None,
             delta: delta.map(str::to_owned),
             stop_reason: stop.map(str::to_owned),
             usage,

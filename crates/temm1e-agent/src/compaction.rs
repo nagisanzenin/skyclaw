@@ -65,6 +65,7 @@ fn source_text(message: &ChatMessage) -> Result<String, Temm1eError> {
                 }
                 match part {
                     ContentPart::Text{text:t}|ContentPart::ToolResult{content:t,..}=>text.push_str(t),
+                    ContentPart::ProviderState{..}=>text.push_str("[Opaque provider replay state retained in raw source; not textual evidence.]"),
                     ContentPart::Image{..}=>text.push_str("[Image data retained in raw source; no visual claim can be validated by a text quote.]"),
                     _=>text.push_str(&json(part)?),
                 }

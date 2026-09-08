@@ -47,6 +47,7 @@ struct Decoder {
 impl Decoder {
     fn chunk(&self) -> StreamChunk {
         StreamChunk {
+            provider_state: None,
             response_id: self.id.clone(),
             delta: None,
             tool_use: None,

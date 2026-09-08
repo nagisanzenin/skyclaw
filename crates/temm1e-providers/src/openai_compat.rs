@@ -114,11 +114,21 @@ impl OpenAICompatProvider {
     }
 
     /// Build the JSON body for the OpenAI Chat Completions API.
+    fn uses_responses(&self, model: &str) -> bool {
+        self.provider_name == "openai"
+            && temm1e_core::types::model_catalog::lookup("openai", model)
+                .is_some_and(|fact| fact.responses_tools)
+    }
+
     fn build_request_body(
         &self,
         request: &CompletionRequest,
         stream: bool,
     ) -> Result<serde_json::Value, Temm1eError> {
+        if self.uses_responses(&request.model) {
+            return crate::responses::build_request(request, "openai", false);
+        }
+
         let mut messages: Vec<serde_json::Value> = Vec::new();
 
         // Consolidate ALL system content into a single leading system message.
@@ -223,7 +233,12 @@ impl OpenAICompatProvider {
             // OpenAI deprecated max_tokens in favor of max_completion_tokens
             // for newer models (GPT-4o, o1, etc.). Other OpenAI-compatible
             // providers (Gemini, Grok, OpenRouter) still use max_tokens.
-            if self.base_url.contains("api.openai.com") {
+            if reqwest::Url::parse(&self.base_url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .as_deref()
+                == Some("api.openai.com")
+            {
                 body["max_completion_tokens"] = serde_json::json!(max_tokens);
             } else {
                 body["max_tokens"] = serde_json::json!(max_tokens);
@@ -558,7 +573,7 @@ fn convert_message_to_openai(
                         ContentPart::ToolResult { .. } => {
                             // Should not appear in assistant messages
                         }
-                        ContentPart::Image { .. } => {
+                        ContentPart::Image { .. } | ContentPart::ProviderState { .. } => {
                             // Should not appear in assistant messages
                         }
                     }
@@ -744,9 +759,16 @@ impl Provider for OpenAICompatProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, Temm1eError> {
+        if self.uses_responses(&request.model) {
+            return temm1e_core::streaming::collect_completion(
+                self.stream(request).await?,
+                std::sync::Arc::new(|_| {}),
+            )
+            .await;
+        }
         let body = self.build_request_body(&request, false)?;
 
-        debug!(provider = "openai-compat", model = %request.model, base_url = %self.base_url, "Sending completion request");
+        debug!(provider = "openai-compat", model = %request.model, "Sending completion request");
 
         // Body-read retry: handles transient body-read failures (connection drop after 200 OK).
         const MAX_BODY_RETRIES: u32 = 2;
@@ -996,6 +1018,7 @@ impl Provider for OpenAICompatProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<BoxStream<'_, Result<StreamChunk, Temm1eError>>, Temm1eError> {
+        let native = self.uses_responses(&request.model);
         let body = self.build_request_body(&request, true)?;
 
         debug!(provider = "openai-compat", model = %request.model, "Sending streaming request");
@@ -1006,24 +1029,33 @@ impl Provider for OpenAICompatProvider {
             for attempt in 0..=crate::rate_limit::MAX_RATELIMIT_RETRIES {
                 let mut req = self
                     .client
-                    .post(format!("{}/chat/completions", self.base_url))
+                    .post(format!(
+                        "{}/{}",
+                        self.base_url.trim_end_matches('/'),
+                        if native {
+                            "responses"
+                        } else {
+                            "chat/completions"
+                        }
+                    ))
                     .header("Authorization", format!("Bearer {}", self.current_key()))
                     .header("Content-Type", "application/json");
                 for (k, v) in &self.extra_headers {
                     req = req.header(k.as_str(), v.as_str());
                 }
                 let response = req.json(&body).send().await.map_err(|e| {
-                    Temm1eError::Provider(format!("OpenAI-compat stream request failed: {e}"))
+                    Temm1eError::Provider(format!(
+                        "OpenAI-compat stream request failed: {}",
+                        e.without_url()
+                    ))
                 })?;
 
                 let status = response.status();
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                     let wait = crate::rate_limit::parse_retry_after(&response)
                         .unwrap_or_else(|| crate::rate_limit::default_backoff(attempt));
-                    let error_body = response
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "unknown error".into());
+                    // Do not log or echo provider bodies: they may include
+                    // prompts, credentials or unbounded diagnostic payloads.
                     self.rotate_key();
                     if attempt == crate::rate_limit::MAX_RATELIMIT_RETRIES
                         || wait > crate::rate_limit::MAX_INLINE_WAIT
@@ -1034,7 +1066,7 @@ impl Provider for OpenAICompatProvider {
                             "Rate limit (stream): retries exhausted"
                         );
                         return Err(Temm1eError::RateLimited(format!(
-                            "Retry after at least {} seconds; {error_body}",
+                            "Retry after at least {} seconds",
                             wait.as_secs()
                         )));
                     }
@@ -1049,16 +1081,16 @@ impl Provider for OpenAICompatProvider {
                 }
 
                 if !status.is_success() {
-                    let error_body = response
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "unknown error".into());
+                    // Do not log or echo provider bodies: they may include
+                    // prompts, credentials or unbounded diagnostic payloads.
                     if status == reqwest::StatusCode::UNAUTHORIZED {
                         self.rotate_key();
-                        return Err(Temm1eError::Auth(error_body));
+                        return Err(Temm1eError::Auth(format!(
+                            "Provider rejected authentication ({status})"
+                        )));
                     }
                     return Err(Temm1eError::Provider(format!(
-                        "OpenAI-compat API error ({status}): {error_body}"
+                        "OpenAI-compat API error ({status})"
                     )));
                 }
 
@@ -1067,7 +1099,11 @@ impl Provider for OpenAICompatProvider {
             unreachable!("rate-limit retry loop must exit via return or break")
         };
 
-        Ok(crate::chat_stream::stream(response))
+        if native {
+            Ok(crate::responses::stream(response, "openai", &request.model))
+        } else {
+            Ok(crate::chat_stream::stream(response))
+        }
     }
 
     async fn complete_with_observer(

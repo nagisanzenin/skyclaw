@@ -2390,7 +2390,9 @@ impl AgentRuntime {
                     } => {
                         tool_uses.push((id.clone(), name.clone(), input.clone()));
                     }
-                    ContentPart::ToolResult { .. } | ContentPart::Image { .. } => {
+                    ContentPart::ToolResult { .. }
+                    | ContentPart::Image { .. }
+                    | ContentPart::ProviderState { .. } => {
                         // Should not appear in provider response, ignore
                     }
                 }
@@ -2728,7 +2730,25 @@ impl AgentRuntime {
                 if !reply_text.trim().is_empty() {
                     session.history.push(ChatMessage {
                         role: Role::Assistant,
-                        content: MessageContent::Text(reply_text.clone()),
+                        content: {
+                            let mut parts = vec![ContentPart::Text {
+                                text: reply_text.clone(),
+                            }];
+                            parts.extend(
+                                response
+                                    .content
+                                    .iter()
+                                    .filter(|part| {
+                                        matches!(part, ContentPart::ProviderState { .. })
+                                    })
+                                    .cloned(),
+                            );
+                            if parts.len() == 1 {
+                                MessageContent::Text(reply_text.clone())
+                            } else {
+                                MessageContent::Parts(parts)
+                            }
+                        },
                     });
                 }
 

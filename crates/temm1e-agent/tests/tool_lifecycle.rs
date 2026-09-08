@@ -358,3 +358,51 @@ async fn usd_limit_with_unknown_tariff_stops_before_any_provider_call() {
     assert_eq!(*provider.call_count.lock().await, 0);
     assert_eq!(serde_json::to_value(&session.history).unwrap(), before);
 }
+
+#[tokio::test]
+async fn final_native_state_is_persisted_in_history_without_leaking_into_reply() {
+    use temm1e_core::types::message::{ContentPart, MessageContent};
+    let mut response = QueuedMockProvider::text_response("Visible answer");
+    let native = ContentPart::ProviderState {
+        provider: "openai".into(),
+        model: "gpt-6-astra".into(),
+        response_id: "resp_saved".into(),
+        output: vec![
+            serde_json::json!({"type":"reasoning","id":"rs_saved","encrypted_content":"private-replay-blob","summary":[]}),
+            serde_json::json!({"type":"message","id":"m_saved","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Visible answer"}]}),
+        ],
+    };
+    response.content.push(native.clone());
+    let provider = Arc::new(QueuedMockProvider::with_responses(vec![response]));
+    let runtime = AgentRuntime::new(
+        provider,
+        Arc::new(MockMemory::new()),
+        vec![],
+        "gpt-6-astra".into(),
+        None,
+    )
+    .with_v2_optimizations(false)
+    .with_self_audit_enabled(false);
+    let mut session = make_session();
+    let (reply, _) = runtime
+        .process_message(
+            &make_inbound_msg("Answer"),
+            &mut session,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.text, "Visible answer");
+    let MessageContent::Parts(parts) = &session.history.last().unwrap().content else {
+        panic!("native history was reduced to text")
+    };
+    assert_eq!(
+        serde_json::to_value(parts.last().unwrap()).unwrap(),
+        serde_json::to_value(native).unwrap()
+    );
+    assert!(!reply.text.contains("private-replay"));
+}

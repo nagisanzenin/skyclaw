@@ -19,6 +19,7 @@ pub mod chat_stream;
 pub mod gemini;
 pub mod openai_compat;
 pub mod rate_limit;
+pub mod responses;
 mod sse_transport;
 
 pub use anthropic::AnthropicProvider;

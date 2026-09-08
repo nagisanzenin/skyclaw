@@ -7145,6 +7145,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "temm1e-core",
+ "temm1e-providers",
  "temm1e-test-utils",
  "tempfile",
  "tokio",

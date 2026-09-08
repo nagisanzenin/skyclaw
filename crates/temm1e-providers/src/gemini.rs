@@ -360,7 +360,7 @@ impl GeminiProvider {
                         }),
                         thought_signature: None,
                     }),
-                    ContentPart::ToolResult { .. } => None, // handled in Tool role
+                    ContentPart::ToolResult { .. } | ContentPart::ProviderState { .. } => None, // handled in Tool role
                 })
                 .collect(),
         };
@@ -509,6 +509,7 @@ impl Provider for GeminiProvider {
             .collect::<String>();
 
         let chunks = vec![Ok(StreamChunk {
+            provider_state: None,
             usage: None,
             response_id: None,
             delta: Some(text),

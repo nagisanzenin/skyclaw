@@ -27,7 +27,9 @@
       "max_input_tokens": 922000,
       "max_output_tokens": 128000
     },
-    "capability_source": "https://developers.openai.com/api/docs/models/gpt-6-astra"
+    "capability_source": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+    "responses_tools": true,
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-6-astra"
   },
   {
     "provider": "openai",
@@ -59,7 +61,9 @@
       "max_input_tokens": 922000,
       "max_output_tokens": 128000
     },
-    "capability_source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+    "capability_source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+    "responses_tools": true,
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
   },
   {
     "provider": "openai",
@@ -88,7 +92,9 @@
       "context_window": 1050000,
       "max_output_tokens": 128000
     },
-    "capability_source": "https://developers.openai.com/api/docs/models/gpt-5.6-terra"
+    "capability_source": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+    "responses_tools": true,
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.6-terra"
   },
   {
     "provider": "openai",
@@ -117,7 +123,9 @@
       "context_window": 1050000,
       "max_output_tokens": 128000
     },
-    "capability_source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+    "capability_source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+    "responses_tools": true,
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
   },
   {
     "provider": "openai",
@@ -141,7 +149,9 @@
         "cache_write_max": null,
         "output": 45.0
       }
-    }
+    },
+    "responses_tools": true,
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.5"
   },
   {
     "provider": "openai",
@@ -189,7 +199,9 @@
         "cache_write_max": null,
         "output": 22.5
       }
-    }
+    },
+    "responses_tools": true,
+    "protocol_source": "https://developers.openai.com/api/docs/models/gpt-5.4"
   },
   {
     "provider": "openai",

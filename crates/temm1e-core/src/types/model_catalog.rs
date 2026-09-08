@@ -29,6 +29,9 @@ pub struct LongContextRate {
 
 #[derive(Debug, Deserialize)]
 pub struct ModelFact {
+    #[serde(default)]
+    pub responses_tools: bool,
+    pub protocol_source: Option<String>,
     pub provider: String,
     pub model: String,
     pub aliases: Vec<String>,
@@ -297,6 +300,12 @@ mod tests {
                 );
             }
             assert!(row.source.starts_with("https://"));
+            if row.responses_tools {
+                assert!(row
+                    .protocol_source
+                    .as_deref()
+                    .is_some_and(|source| source.starts_with("https://")));
+            }
             assert_eq!(row.checked, "2026-09-08");
             for rates in row
                 .standard

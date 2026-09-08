@@ -510,6 +510,10 @@ fn classify_content_part(role: &Role, part: &ContentPart) -> (MessageImportance,
             }
         }
         ContentPart::Image { .. } => (MessageImportance::High, "Image content".to_string()),
+        ContentPart::ProviderState { .. } => (
+            MessageImportance::High,
+            "Native provider replay state".to_string(),
+        ),
     }
 }
 
@@ -893,7 +897,7 @@ pub fn generate_pruned_summary(dropped: &[&ChatMessage]) -> String {
                                 had_errors = true;
                             }
                         }
-                        ContentPart::Image { .. } => {}
+                        ContentPart::Image { .. } | ContentPart::ProviderState { .. } => {}
                     }
                 }
             }

@@ -1,7 +1,7 @@
 //! CodexResponsesProvider — Provider trait implementation using the OpenAI Responses API.
 //!
-//! This is NOT a modification of `OpenAICompatProvider`. The Responses API has a
-//! fundamentally different request/response shape than Chat Completions:
+//! Uses the shared stateless Responses codec and bounded stream collector.
+//! The wire format differs from Chat Completions:
 //! - `input` + `instructions` instead of `messages`
 //! - `output` items instead of `choices[0].message`
 //! - Different tool call schema (function_call / function_call_output)
@@ -9,7 +9,6 @@
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use futures::StreamExt;
 use std::sync::Arc;
 use temm1e_core::types::error::Temm1eError;
 use temm1e_core::types::message::*;
@@ -40,166 +39,14 @@ impl CodexResponsesProvider {
         }
     }
 
-    /// Build the Responses API request body from a CompletionRequest.
     fn build_request_body(
         &self,
         request: &CompletionRequest,
         stream: bool,
     ) -> Result<serde_json::Value, Temm1eError> {
-        // Extract system message → "instructions" field
-        let instructions = request
-            .system_flattened()
-            .or_else(|| {
-                request.messages.iter().find_map(|m| {
-                    if matches!(m.role, Role::System) {
-                        Some(m.content.as_text().to_string())
-                    } else {
-                        None
-                    }
-                })
-            })
-            .unwrap_or_default();
-
-        // Convert messages → "input" items (skip system messages)
-        let input: Vec<serde_json::Value> = request
-            .messages
-            .iter()
-            .filter(|m| !matches!(m.role, Role::System))
-            .flat_map(|m| self.convert_message(m))
-            .collect();
-
-        let mut body = serde_json::json!({
-            "model": request.model,
-            "input": input,
-            "stream": stream,
-            "store": false,
-        });
-
-        if !instructions.is_empty() {
-            body["instructions"] = serde_json::Value::String(instructions);
-        }
-
-        // Note: Codex backend does not support max_output_tokens or temperature
-
-        // Convert tools — Codex backend requires strict: true on function tools
-        if !request.tools.is_empty() {
-            let tools: Vec<serde_json::Value> = request
-                .tools
-                .iter()
-                .map(|t| {
-                    // Ensure parameters conform to strict mode:
-                    // - must have "additionalProperties": false
-                    // - all properties must be in "required"
-                    let mut params = t.parameters.clone();
-                    if let Some(obj) = params.as_object_mut() {
-                        obj.entry("additionalProperties".to_string())
-                            .or_insert(serde_json::Value::Bool(false));
-                        // If properties exist but required is missing, add all properties as required
-                        if obj.contains_key("properties") && !obj.contains_key("required") {
-                            if let Some(props) = obj.get("properties").and_then(|p| p.as_object()) {
-                                let required: Vec<serde_json::Value> = props
-                                    .keys()
-                                    .map(|k| serde_json::Value::String(k.clone()))
-                                    .collect();
-                                obj.insert(
-                                    "required".to_string(),
-                                    serde_json::Value::Array(required),
-                                );
-                            }
-                        }
-                    }
-                    serde_json::json!({
-                        "type": "function",
-                        "name": t.name,
-                        "description": t.description,
-                        "strict": false,
-                        "parameters": params,
-                    })
-                })
-                .collect();
-            body["tools"] = serde_json::Value::Array(tools);
-        }
-
-        tracing::debug!(body = %serde_json::to_string_pretty(&body).unwrap_or_default(), "Codex Responses API request body");
-
+        let mut body = temm1e_providers::responses::build_request(request, "openai-codex", true)?;
+        body["stream"] = serde_json::Value::Bool(stream);
         Ok(body)
-    }
-
-    /// Convert a ChatMessage to one or more Responses API input items.
-    fn convert_message(&self, msg: &ChatMessage) -> Vec<serde_json::Value> {
-        match &msg.content {
-            MessageContent::Text(text) => {
-                match msg.role {
-                    Role::User => vec![serde_json::json!({
-                        "role": "user",
-                        "content": text,
-                    })],
-                    Role::Assistant => vec![serde_json::json!({
-                        "role": "assistant",
-                        "content": text,
-                    })],
-                    Role::Tool => {
-                        // Tool results — should not appear as Text in practice,
-                        // but handle gracefully
-                        vec![]
-                    }
-                    Role::System => vec![], // Filtered out above
-                }
-            }
-            MessageContent::Parts(parts) => {
-                let mut items = Vec::new();
-                for part in parts {
-                    match part {
-                        ContentPart::Text { text } => {
-                            items.push(serde_json::json!({
-                                "role": match msg.role {
-                                    Role::User => "user",
-                                    Role::Assistant => "assistant",
-                                    _ => "user",
-                                },
-                                "content": text,
-                            }));
-                        }
-                        ContentPart::ToolUse {
-                            id, name, input, ..
-                        } => {
-                            // Assistant requested a tool call → function_call item
-                            // Skip if name is empty (malformed history entry)
-                            if !name.is_empty() {
-                                items.push(serde_json::json!({
-                                    "type": "function_call",
-                                    "call_id": id,
-                                    "name": name,
-                                    "arguments": input.to_string(),
-                                }));
-                            }
-                        }
-                        ContentPart::ToolResult {
-                            tool_use_id,
-                            content,
-                            ..
-                        } => {
-                            // Tool result → function_call_output item
-                            items.push(serde_json::json!({
-                                "type": "function_call_output",
-                                "call_id": tool_use_id,
-                                "output": content,
-                            }));
-                        }
-                        ContentPart::Image { media_type, data } => {
-                            items.push(serde_json::json!({
-                                "role": "user",
-                                "content": [{
-                                    "type": "input_image",
-                                    "image_url": format!("data:{};base64,{}", media_type, data),
-                                }],
-                            }));
-                        }
-                    }
-                }
-                items
-            }
-        }
     }
 }
 
@@ -213,48 +60,16 @@ impl Provider for CodexResponsesProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, Temm1eError> {
-        // Codex backend requires streaming — collect stream into a single response
-        tracing::debug!(model = %request.model, "Codex Responses API request (stream-collected)");
+        temm1e_core::streaming::collect_completion(self.stream(request).await?, Arc::new(|_| {}))
+            .await
+    }
 
-        let mut stream = self.stream(request).await?;
-
-        let mut full_text = String::new();
-        let mut tool_uses = Vec::new();
-        let mut stop_reason = None;
-
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result?;
-            if let Some(delta) = chunk.delta {
-                full_text.push_str(&delta);
-            }
-            if let Some(tool_use) = chunk.tool_use {
-                tool_uses.push(tool_use);
-            }
-            if chunk.stop_reason.is_some() {
-                stop_reason = chunk.stop_reason;
-            }
-        }
-
-        let mut content = Vec::new();
-        if !full_text.is_empty() {
-            content.push(ContentPart::Text {
-                text: full_text.clone(),
-            });
-        }
-        content.extend(tool_uses);
-
-        Ok(CompletionResponse {
-            id: String::new(),
-            content,
-            stop_reason,
-            usage: Usage {
-                totals_reported: None,
-                input_tokens: 0,
-                output_tokens: 0,
-                cost_usd: 0.0,
-                ..Usage::default()
-            },
-        })
+    async fn complete_with_observer(
+        &self,
+        request: CompletionRequest,
+        observer: temm1e_core::streaming::TextObserver,
+    ) -> Result<CompletionResponse, Temm1eError> {
+        temm1e_core::streaming::collect_completion(self.stream(request).await?, observer).await
     }
 
     async fn stream(
@@ -274,338 +89,36 @@ impl Provider for CodexResponsesProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Temm1eError::Provider(format!("Responses API request failed: {}", e)))?;
+            .map_err(|e| {
+                Temm1eError::Provider(format!("Responses API request failed: {}", e.without_url()))
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body_text = resp.text().await.unwrap_or_default();
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let retry = temm1e_providers::rate_limit::parse_retry_after(&resp)
+                    .map(|wait| format!(" Retry after at least {} seconds.", wait.as_secs()))
+                    .unwrap_or_default();
+                return Err(Temm1eError::RateLimited(format!(
+                    "Codex subscription rate or plan limit reached.{retry}"
+                )));
+            }
+            // Error bodies can echo prompts or credentials. Expose only status.
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Err(Temm1eError::Auth(format!(
-                    "Codex OAuth token rejected ({}): {}",
-                    status, body_text
+                    "Codex OAuth rejected ({status}); reconnect the subscription account"
                 )));
             }
             return Err(Temm1eError::Provider(format!(
-                "Responses API error ({}): {}",
-                status, body_text
+                "Codex Responses request failed ({status})"
             )));
         }
 
-        let byte_stream = resp.bytes_stream();
-
-        // State for the streaming parser:
-        // (byte_stream, buffer, accumulated_tool_calls)
-        // ToolCallAcc: (item_id, call_id, name, arguments)
-        // item_id is used as the lookup key (matches delta events' item_id)
-        // call_id is the actual ID used in the ToolUse output
-        type ToolCallAcc = (String, String, String, String);
-        let stream = futures::stream::unfold(
-            (
-                Box::pin(byte_stream),
-                String::new(),
-                Vec::<ToolCallAcc>::new(),
-            ),
-            |(mut byte_stream, mut buffer, mut tool_calls)| async move {
-                loop {
-                    // Try to extract complete SSE events from buffer
-                    while let Some(event_end) = buffer.find("\n\n") {
-                        let event_block = buffer[..event_end].to_string();
-                        buffer = buffer[event_end + 2..].to_string();
-
-                        // Parse SSE event
-                        let mut event_type = String::new();
-                        let mut data_line = String::new();
-                        for line in event_block.lines() {
-                            if let Some(et) = line.strip_prefix("event: ") {
-                                event_type = et.to_string();
-                            } else if let Some(d) = line.strip_prefix("data: ") {
-                                data_line = d.to_string();
-                            }
-                        }
-
-                        if data_line.is_empty() || data_line == "[DONE]" {
-                            // Flush accumulated tool calls one at a time (skip entries with empty names)
-                            while let Some((_item_id, call_id, name, args)) = tool_calls.pop() {
-                                if name.is_empty() {
-                                    continue; // Skip orphaned delta accumulations
-                                }
-                                let input: serde_json::Value = serde_json::from_str(&args)
-                                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-                                return Some((
-                                    Ok(StreamChunk {
-                                        usage: None,
-                                        response_id: None,
-                                        delta: None,
-                                        tool_use: Some(ContentPart::ToolUse {
-                                            id: call_id,
-                                            name,
-                                            input,
-                                            thought_signature: None,
-                                        }),
-                                        stop_reason: None,
-                                    }),
-                                    (byte_stream, buffer, tool_calls),
-                                ));
-                            }
-                            if data_line == "[DONE]" {
-                                return Some((
-                                    Ok(StreamChunk {
-                                        usage: None,
-                                        response_id: None,
-                                        delta: None,
-                                        tool_use: None,
-                                        stop_reason: Some("end_turn".to_string()),
-                                    }),
-                                    (byte_stream, buffer, tool_calls),
-                                ));
-                            }
-                            continue;
-                        }
-
-                        // Parse the JSON data
-                        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&data_line);
-                        let data = match parsed {
-                            Ok(d) => d,
-                            Err(e) => {
-                                tracing::warn!(error = %e, data = %data_line, "Failed to parse SSE data");
-                                continue;
-                            }
-                        };
-
-                        // Log all event types for debugging tool calls
-                        if event_type != "response.output_text.delta" {
-                            tracing::debug!(event = %event_type, data = %data_line, "Codex SSE event");
-                        }
-
-                        match event_type.as_str() {
-                            "response.output_text.delta" => {
-                                if let Some(delta) = data.get("delta").and_then(|d| d.as_str()) {
-                                    return Some((
-                                        Ok(StreamChunk {
-                                            usage: None,
-                                            response_id: None,
-                                            delta: Some(delta.to_string()),
-                                            tool_use: None,
-                                            stop_reason: None,
-                                        }),
-                                        (byte_stream, buffer, tool_calls),
-                                    ));
-                                }
-                            }
-                            "response.output_item.added" => {
-                                // A new output item is being created — capture name for function_call
-                                if let Some(item) = data.get("item") {
-                                    if item.get("type").and_then(|t| t.as_str())
-                                        == Some("function_call")
-                                    {
-                                        // item.id = item_id used by delta events
-                                        let item_id = item
-                                            .get("id")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        // item.call_id = the actual call ID for the ToolUse
-                                        let call_id = item
-                                            .get("call_id")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        let name = item
-                                            .get("name")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        if !item_id.is_empty() {
-                                            tracing::info!(item_id = %item_id, call_id = %call_id, name = %name, "Function call started");
-                                            tool_calls.push((
-                                                item_id,
-                                                call_id,
-                                                name,
-                                                String::new(),
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                            "response.function_call_arguments.delta" => {
-                                // Delta events use item_id to reference the function call
-                                let item_id = data
-                                    .get("item_id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let delta =
-                                    data.get("delta").and_then(|v| v.as_str()).unwrap_or("");
-
-                                // Match by item_id (field 0 of the accumulator)
-                                if let Some(existing) =
-                                    tool_calls.iter_mut().find(|tc| tc.0 == item_id)
-                                {
-                                    existing.3.push_str(delta);
-                                } else if !item_id.is_empty() {
-                                    // Orphaned delta — no matching added event. Store anyway
-                                    // with item_id as both keys, name will be filled by done event
-                                    tool_calls.push((
-                                        item_id.clone(),
-                                        item_id,
-                                        String::new(),
-                                        delta.to_string(),
-                                    ));
-                                }
-                            }
-                            "response.output_item.done" => {
-                                // Check if this is a function_call item completing
-                                if let Some(item) = data.get("item") {
-                                    if item.get("type").and_then(|t| t.as_str())
-                                        == Some("function_call")
-                                    {
-                                        // item.id matches item_id in delta events
-                                        let item_id = item
-                                            .get("id")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        let call_id = item
-                                            .get("call_id")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        let name = item
-                                            .get("name")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        let args = item
-                                            .get("arguments")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("{}")
-                                            .to_string();
-
-                                        // Remove from accumulator by item_id (field 0)
-                                        tool_calls.retain(|tc| tc.0 != item_id);
-
-                                        let input: serde_json::Value = serde_json::from_str(&args)
-                                            .unwrap_or(serde_json::Value::Object(
-                                                serde_json::Map::new(),
-                                            ));
-                                        return Some((
-                                            Ok(StreamChunk {
-                                                usage: None,
-                                                response_id: None,
-                                                delta: None,
-                                                tool_use: Some(ContentPart::ToolUse {
-                                                    id: call_id,
-                                                    name,
-                                                    input,
-                                                    thought_signature: None,
-                                                }),
-                                                stop_reason: None,
-                                            }),
-                                            (byte_stream, buffer, tool_calls),
-                                        ));
-                                    }
-                                }
-                            }
-                            "response.completed" => {
-                                // Final event — flush remaining tool calls (skip empty names)
-                                while let Some((_item_id, call_id, name, args)) = tool_calls.pop() {
-                                    if name.is_empty() {
-                                        continue; // Skip orphaned delta accumulations
-                                    }
-                                    let input: serde_json::Value = serde_json::from_str(&args)
-                                        .unwrap_or(serde_json::Value::Object(
-                                            serde_json::Map::new(),
-                                        ));
-                                    return Some((
-                                        Ok(StreamChunk {
-                                            usage: None,
-                                            response_id: None,
-                                            delta: None,
-                                            tool_use: Some(ContentPart::ToolUse {
-                                                id: call_id,
-                                                name,
-                                                input,
-                                                thought_signature: None,
-                                            }),
-                                            stop_reason: None,
-                                        }),
-                                        (byte_stream, buffer, tool_calls),
-                                    ));
-                                }
-
-                                let stop = data
-                                    .get("response")
-                                    .and_then(|r| r.get("status"))
-                                    .and_then(|s| s.as_str())
-                                    .map(|s| {
-                                        if s == "completed" {
-                                            "end_turn".to_string()
-                                        } else {
-                                            s.to_string()
-                                        }
-                                    })
-                                    .unwrap_or_else(|| "end_turn".to_string());
-
-                                return Some((
-                                    Ok(StreamChunk {
-                                        usage: None,
-                                        response_id: None,
-                                        delta: None,
-                                        tool_use: None,
-                                        stop_reason: Some(stop),
-                                    }),
-                                    (byte_stream, buffer, tool_calls),
-                                ));
-                            }
-                            _ => {
-                                // Ignore other event types (response.created, etc.)
-                            }
-                        }
-                    }
-
-                    // Need more data from the stream
-                    match byte_stream.next().await {
-                        Some(Ok(bytes)) => {
-                            buffer.push_str(&String::from_utf8_lossy(&bytes));
-                        }
-                        Some(Err(e)) => {
-                            return Some((
-                                Err(Temm1eError::Provider(format!("Stream error: {}", e))),
-                                (byte_stream, buffer, tool_calls),
-                            ));
-                        }
-                        None => {
-                            // Stream ended — flush remaining tool calls (skip empty names)
-                            while let Some((_item_id, call_id, name, args)) = tool_calls.pop() {
-                                if name.is_empty() {
-                                    continue; // Skip orphaned delta accumulations
-                                }
-                                let input: serde_json::Value = serde_json::from_str(&args)
-                                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-                                return Some((
-                                    Ok(StreamChunk {
-                                        usage: None,
-                                        response_id: None,
-                                        delta: None,
-                                        tool_use: Some(ContentPart::ToolUse {
-                                            id: call_id,
-                                            name,
-                                            input,
-                                            thought_signature: None,
-                                        }),
-                                        stop_reason: None,
-                                    }),
-                                    (byte_stream, buffer, tool_calls),
-                                ));
-                            }
-                            return None;
-                        }
-                    }
-                }
-            },
-        );
-
-        Ok(Box::pin(stream))
+        Ok(temm1e_providers::responses::stream(
+            resp,
+            "openai-codex",
+            &request.model,
+        ))
     }
 
     async fn health_check(&self) -> Result<bool, Temm1eError> {
@@ -627,28 +140,6 @@ impl Provider for CodexResponsesProvider {
             "gpt-5-codex-mini".to_string(),
             "gpt-5-mini".to_string(),
         ])
-    }
-}
-
-// ── Helper trait for MessageContent ──────────────────────────
-
-trait MessageContentExt {
-    fn as_text(&self) -> &str;
-}
-
-impl MessageContentExt for MessageContent {
-    fn as_text(&self) -> &str {
-        match self {
-            MessageContent::Text(t) => t.as_str(),
-            MessageContent::Parts(parts) => {
-                for p in parts {
-                    if let ContentPart::Text { text } = p {
-                        return text.as_str();
-                    }
-                }
-                ""
-            }
-        }
     }
 }
 
@@ -755,36 +246,6 @@ mod tests {
         assert_eq!(tools[0]["type"], "function");
         assert_eq!(tools[0]["name"], "shell");
         assert_eq!(tools[0]["strict"], false);
-        assert_eq!(tools[0]["parameters"]["additionalProperties"], false);
-        // Auto-generated required array from properties
-        let required = tools[0]["parameters"]["required"].as_array().unwrap();
-        assert!(required.contains(&serde_json::json!("command")));
-    }
-
-    #[test]
-    fn convert_tool_result_message() {
-        let store = Arc::new(TokenStore::new(crate::token_store::CodexOAuthTokens {
-            access_token: "test".into(),
-            refresh_token: "test".into(),
-            expires_at: u64::MAX,
-            email: "test@test.com".into(),
-            account_id: "org-test".into(),
-        }));
-        let provider = CodexResponsesProvider::new("gpt-5.3-codex".into(), store);
-
-        let msg = ChatMessage {
-            role: Role::Tool,
-            content: MessageContent::Parts(vec![ContentPart::ToolResult {
-                tool_use_id: "call_123".into(),
-                content: "file.txt found".into(),
-                is_error: false,
-            }]),
-        };
-
-        let items = provider.convert_message(&msg);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0]["type"], "function_call_output");
-        assert_eq!(items[0]["call_id"], "call_123");
-        assert_eq!(items[0]["output"], "file.txt found");
+        assert_eq!(tools[0]["parameters"], request.tools[0].parameters);
     }
 }

@@ -233,37 +233,40 @@ fn convert_message_to_anthropic(msg: &ChatMessage) -> Result<serde_json::Value, 
         MessageContent::Parts(parts) => {
             let blocks: Vec<serde_json::Value> = parts
                 .iter()
-                .map(|p| match p {
-                    ContentPart::Text { text } => serde_json::json!({
-                        "type": "text",
-                        "text": text,
-                    }),
-                    ContentPart::ToolUse {
-                        id, name, input, ..
-                    } => serde_json::json!({
-                        "type": "tool_use",
-                        "id": id,
-                        "name": name,
-                        "input": input,
-                    }),
-                    ContentPart::ToolResult {
-                        tool_use_id,
-                        content,
-                        is_error,
-                    } => serde_json::json!({
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": content,
-                        "is_error": is_error,
-                    }),
-                    ContentPart::Image { media_type, data } => serde_json::json!({
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": data,
-                        },
-                    }),
+                .filter_map(|p| {
+                    Some(match p {
+                        ContentPart::ProviderState { .. } => return None,
+                        ContentPart::Text { text } => serde_json::json!({
+                            "type": "text",
+                            "text": text,
+                        }),
+                        ContentPart::ToolUse {
+                            id, name, input, ..
+                        } => serde_json::json!({
+                            "type": "tool_use",
+                            "id": id,
+                            "name": name,
+                            "input": input,
+                        }),
+                        ContentPart::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } => serde_json::json!({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": content,
+                            "is_error": is_error,
+                        }),
+                        ContentPart::Image { media_type, data } => serde_json::json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": data,
+                            },
+                        }),
+                    })
                 })
                 .collect();
             serde_json::json!(blocks)

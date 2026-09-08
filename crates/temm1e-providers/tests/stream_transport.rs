@@ -205,3 +205,146 @@ async fn native_anthropic_transport_requires_message_stop_and_merges_usage() {
         server.await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn openai_native_transport_round_trips_reasoning_phase_and_tools_across_requests() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let native = serde_json::json!([
+        {"id":"rs","type":"reasoning","encrypted_content":"opaque-session-state","summary":[]},
+        {"id":"msg","type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Inspecting café","annotations":[]}]},
+        {"id":"fc","type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"a.txt\"}"}
+    ]);
+    let expected_native = native.clone();
+    let server = tokio::spawn(async move {
+        for turn in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut headers = Vec::new();
+            loop {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).await.unwrap();
+                headers.push(byte[0]);
+                assert!(headers.len() <= 16384);
+                if headers.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+            assert!(headers.starts_with("post /v1/responses http/1.1\r\n"));
+            let len: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            assert!(len < 65536);
+            let mut raw = vec![0; len];
+            socket.read_exact(&mut raw).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+            assert_eq!(body["model"], "gpt-6-astra");
+            assert_eq!(body["store"], false);
+            assert_eq!(body["stream"], true);
+            assert_eq!(body["max_output_tokens"], 32);
+            assert!(body.get("temperature").is_none());
+            assert!(body.get("messages").is_none());
+            if turn == 1 {
+                assert_eq!(
+                    &body["input"].as_array().unwrap()[..3],
+                    expected_native.as_array().unwrap()
+                );
+                assert_eq!(body["input"][3]["call_id"], "call_1");
+                assert_eq!(body["input"][3]["type"], "function_call_output");
+            }
+            let output = if turn == 0 {
+                expected_native.clone()
+            } else {
+                serde_json::json!([{"id":"final","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Done","annotations":[]}]}])
+            };
+            let data = serde_json::json!({"type":"response.completed","response":{"id":format!("resp_{turn}"),"status":"completed","output":output,"usage":{"input_tokens":40,"output_tokens":10,"input_tokens_details":{"cached_tokens":20}}}});
+            let wire = format!("event: response.completed\r\ndata: {data}\r\n\r\n");
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",wire.len()).as_bytes()).await.unwrap();
+            for byte in wire.bytes() {
+                socket.write_all(&[byte]).await.unwrap();
+            }
+        }
+    });
+    let provider = temm1e_providers::OpenAICompatProvider::new("fixture".into())
+        .with_name("openai")
+        .with_base_url(format!("http://{address}/v1/"));
+    let mut req = request();
+    req.model = "gpt-6-astra".into();
+    req.temperature = Some(0.7);
+    let first = tokio::time::timeout(Duration::from_secs(5), provider.complete(req.clone()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.usage.input_tokens, 40);
+    assert_eq!(first.usage.cache_read_tokens, Some(20));
+    assert!(
+        matches!(&first.content[2], ContentPart::ProviderState { output, .. } if output == native.as_array().unwrap())
+    );
+    req.messages = vec![
+        ChatMessage {
+            role: Role::Assistant,
+            content: MessageContent::Parts(first.content),
+        },
+        ChatMessage {
+            role: Role::Tool,
+            content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "file content".into(),
+                is_error: false,
+            }]),
+        },
+    ];
+    let second = tokio::time::timeout(Duration::from_secs(5), provider.complete(req))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.id, "resp_1");
+    assert!(matches!(&second.content[0], ContentPart::Text { text } if text == "Done"));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_transport_does_not_surface_provider_error_bodies() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut headers = Vec::new();
+        loop {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).await.unwrap();
+            headers.push(byte[0]);
+            assert!(headers.len() < 16384);
+            if headers.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+        let len: usize = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(len < 65536);
+        socket.read_exact(&mut vec![0; len]).await.unwrap();
+        socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 18\r\nConnection: close\r\n\r\nechoed-secret-body").await.unwrap();
+    });
+    let provider = temm1e_providers::OpenAICompatProvider::new("fixture".into())
+        .with_name("openai")
+        .with_base_url(format!("http://{address}"));
+    let mut req = request();
+    req.model = "gpt-6-astra".into();
+    let error = tokio::time::timeout(Duration::from_secs(5), provider.complete(req))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("401"));
+    assert!(!error.to_string().contains("echoed-secret"));
+    server.await.unwrap();
+}

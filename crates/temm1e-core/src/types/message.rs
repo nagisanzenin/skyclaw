@@ -177,6 +177,15 @@ pub enum ContentPart {
     },
     #[serde(rename = "image")]
     Image { media_type: String, data: String },
+    /// Opaque native response items, retained for same-route/model replay.
+    /// Not user-facing text and never tool instructions to execute directly.
+    #[serde(rename = "provider_state")]
+    ProviderState {
+        provider: String,
+        model: String,
+        response_id: String,
+        output: Vec<serde_json::Value>,
+    },
 }
 
 /// Tool definition for the AI model
@@ -199,6 +208,9 @@ pub struct CompletionResponse {
 /// Streaming chunk from an AI model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChunk {
+    /// Final native replay state. Accepted only with a confirmed terminal response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_state: Option<ContentPart>,
     /// Cumulative normalized usage for this request; absence is unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,

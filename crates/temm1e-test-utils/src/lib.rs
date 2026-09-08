@@ -108,6 +108,7 @@ impl Provider for MockProvider {
     ) -> Result<BoxStream<'_, Result<StreamChunk, Temm1eError>>, Temm1eError> {
         let chunks = vec![
             Ok(StreamChunk {
+                provider_state: None,
                 usage: None,
                 response_id: None,
                 delta: Some("mock stream".to_string()),
@@ -115,6 +116,7 @@ impl Provider for MockProvider {
                 stop_reason: None,
             }),
             Ok(StreamChunk {
+                provider_state: None,
                 usage: None,
                 response_id: None,
                 delta: None,

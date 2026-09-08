@@ -111,6 +111,9 @@ pub(crate) fn estimate_message_tokens(msg: &ChatMessage) -> usize {
                 ContentPart::ToolUse { input, .. } => estimate_tokens(&input.to_string()),
                 ContentPart::ToolResult { content, .. } => estimate_tokens(content),
                 ContentPart::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+                ContentPart::ProviderState { .. } => {
+                    estimate_tokens(&serde_json::to_string(p).unwrap_or_default())
+                }
             })
             .sum(),
     }
