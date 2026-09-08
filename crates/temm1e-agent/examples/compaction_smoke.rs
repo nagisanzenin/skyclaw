@@ -15,6 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("new output directory required")?,
     );
     let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(false); // Acceptance evidence requires a fresh directory.
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
