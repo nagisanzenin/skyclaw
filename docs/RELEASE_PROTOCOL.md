@@ -1,5 +1,16 @@
 # TEMM1E Release Protocol
 
+## Local disk budget (modernization requirement)
+
+On storage-constrained development machines, run build/test/check/clippy through `python3 scripts/cargo_guard.py -- <cargo command and arguments>`. It reserves 8 GiB of free space, caps total repository `target/` size at 8 GiB, and uses a disposable `target/guarded` directory. It stops a running command when a sampled limit is crossed (exit 75, **not a passing validation**) and removes guarded outputs afterward. Sampling is once per second; this is a practical guard, not a filesystem quota. Unmanaged Cargo invocations are outside its process lock and must not run alongside it.
+
+Use package/feature batches rather than retaining many build variants. Keep test logs and benchmark evidence outside `target/`. The dev/test profiles disable debug symbols and incremental caching by default; opt into debugging only when needed and clean that build afterward.
+
+For a local release build, use `--keep-cache` only long enough to copy and verify the intended release binary; then run `cargo clean --target-dir target/guarded`. Retain final distributable artifacts and evidence, not complete historical target directories. Before archiving or deleting anything outside generated build outputs, identify it explicitly; do not delete user profiles, credentials, source checkouts or benchmark records as a disk workaround.
+
+The installer and update smoke already use temporary directories with exit cleanup. A September 2026 local audit found 20.6 GiB of accumulated Rust build outputs, compared with about 705 MB of remaining operation files after cleanup. Do not confuse build-cache growth with installed-binary size. Heavy all-feature checks may exceed the local budget; split them or run on a suitable CI runner, and record unfinished checks honestly.
+
+
 **MANDATORY checklist before pushing any release to `main`.** Claude MUST execute every step and verify results before committing.
 
 ## Pre-Release Verification

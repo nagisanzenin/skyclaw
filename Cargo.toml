@@ -227,6 +227,15 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# Keep local validation caches small; opt into debug symbols explicitly when needed.
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
+
 [profile.release]
 opt-level = "z"
 lto = true
