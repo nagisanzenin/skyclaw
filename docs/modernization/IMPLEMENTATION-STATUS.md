@@ -13,7 +13,7 @@ Work is active on `codex/modernize-temm1e-research`. Baseline: `da503c0`; resear
 - Removed the empty post-inference DONE reminder. Durable evidence-based completion remains unfinished.
 - Provider responses preserve reported cache reads/writes; Anthropic input totals include both additive cache categories. Streaming, aggregate usage and cache pricing remain unfinished.
 - Eigen-Tune sample caps produce inconclusive outcomes without graduation; terminal SPRT decisions stop sampling. Power estimation uses the correct one-sided power quantile and alternative variance. These are approximate one-sample calculations, not the paired A/B release analysis.
-- New banner and feature artwork follow the creator's pixel-art brief. Illustrations are conceptual and contain no unverified benchmark claims. README integration is in progress.
+- New banner and feature artwork follow the creator's pixel-art brief. Illustrations are conceptual and contain no unverified benchmark claims. README integration is complete; broader runtime modernization is still in progress.
 
 ## Second implementation checkpoint
 
@@ -22,6 +22,12 @@ Work is active on `codex/modernize-temm1e-research`. Baseline: `da503c0`; resear
 - The TUI materializes only visible transcript rows on redraw. Tool start/completion events carry distinct execution IDs through the real agent bridge, including repeated calls to the same tool. Tool rows are compact by default; Ctrl+T expands/collapses details, Ctrl+O controls the optional activity panel. Provider text streaming and broader interaction polish remain unfinished.
 - Installer checksum verification now fails closed for absent/malformed/mismatched checksums or missing hash utilities, including fallback binaries. Three focused tests cover successful exact-filename verification and failure paths.
 - README is reduced to 100 lines, with a linked feature guide, CLI reference and preserved historical release notes. Eighteen matching concept images follow the creator's art direction and omit numerical performance claims.
+
+## Third implementation checkpoint
+
+- Slack uploads now allocate an external upload URL, transfer bytes without the bot token, then finalize the file with its channel and caption. HTTP failures stop the sequence; URL downloads and byte uploads enforce a 100 MiB application limit. Local HTTP fixtures verify all three requests and that a failed byte upload never finalizes. No live Slack messages or files were sent. See Slack's [allocation](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/) and [completion](https://docs.slack.dev/reference/methods/files.completeUploadExternal/) contracts. History pagination and ambiguous-outcome reconciliation remain unfinished.
+- Perpetuum estimates activity from matching weekday/hour slots across the previous four completed weeks, including inactive slots after its first recorded day, in the configured timezone. A Beta(1,1) prior prevents sparse observations from producing certainty. Tests cover inactive slots, weekday, timezone, stale observations and absent history. This estimates recorded activity, not online presence; existing UTC-hour buckets limit precision for fractional-hour timezones.
+- Focused checkpoint regression: 69 channel tests with Slack enabled and 80 Perpetuum tests pass. These overlap prior totals and are not additional independent workspace coverage.
 
 ## Validation
 

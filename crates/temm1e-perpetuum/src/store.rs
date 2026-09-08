@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use temm1e_core::types::error::Temm1eError;
 
@@ -541,29 +541,127 @@ impl Store {
         Ok(())
     }
 
-    pub async fn activity_probability(&self, hour: u32, _weekday: u32) -> Result<f64, Temm1eError> {
-        // Query all hour buckets matching this hour-of-day from the last 4 weeks
-        let pattern = format!("%T{:02}", hour);
-        let rows: Vec<(i64,)> = sqlx::query_as(
-            "SELECT interaction_count FROM perpetuum_activity_log
-             WHERE hour_bucket LIKE ? ORDER BY hour_bucket DESC LIMIT 28",
-        )
-        .bind(&pattern)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| Temm1eError::Memory(format!("Activity probability: {e}")))?;
+    /// Compatibility entrypoint for callers using UTC hour/weekday values.
+    pub async fn activity_probability(&self, hour: u32, weekday: u32) -> Result<f64, Temm1eError> {
+        self.activity_probability_at(hour, weekday, chrono_tz::UTC, Utc::now())
+            .await
+    }
 
-        if rows.is_empty() {
-            return Ok(0.5); // No data — assume 50%
+    /// Beta(1,1)-smoothed recorded activity frequency for matching local
+    /// hour/weekday slots in the previous 28 completed local calendar days.
+    /// Missing slots count as inactive after recording first began. This is a
+    /// behavioral estimate, not proof that the user or service was online.
+    /// Existing UTC-hour buckets have one-hour resolution; timezone offsets
+    /// that are not whole hours therefore remain approximate.
+    pub async fn activity_probability_at(
+        &self,
+        hour: u32,
+        weekday: u32,
+        timezone: chrono_tz::Tz,
+        now: DateTime<Utc>,
+    ) -> Result<f64, Temm1eError> {
+        if hour > 23 || weekday > 6 {
+            return Err(Temm1eError::Config(
+                "Activity hour/weekday out of range".into(),
+            ));
         }
-
-        let active_count = rows.iter().filter(|r| r.0 > 0).count();
-        Ok(active_count as f64 / rows.len() as f64)
+        let upper = now.format("%Y-%m-%dT%H").to_string();
+        let first: Option<String> = sqlx::query_scalar(
+            "SELECT MIN(hour_bucket) FROM perpetuum_activity_log WHERE hour_bucket <= ?",
+        )
+        .bind(&upper)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Temm1eError::Memory(format!("Activity coverage: {e}")))?;
+        let Some(first) = first else {
+            return Ok(0.5);
+        };
+        let parse = |bucket: &str| {
+            DateTime::parse_from_rfc3339(&format!("{bucket}:00:00Z"))
+                .map(|time| time.with_timezone(&timezone))
+                .map_err(|_| Temm1eError::Memory("Invalid activity bucket timestamp".into()))
+        };
+        let first_day = parse(&first)?.date_naive();
+        let today = now.with_timezone(&timezone).date_naive();
+        let mut slots = std::collections::HashSet::new();
+        for offset in 1..=28 {
+            let day = today - chrono::Duration::days(offset);
+            if day > first_day && day.weekday().num_days_from_monday() == weekday {
+                slots.insert(day);
+            }
+        }
+        if slots.is_empty() {
+            return Ok(0.5);
+        }
+        // Overfetch one day to cover timezone offsets and daylight transitions;
+        // local date membership below defines the actual observation window.
+        let lower = (now - chrono::Duration::days(30))
+            .format("%Y-%m-%dT%H")
+            .to_string();
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT hour_bucket, interaction_count FROM perpetuum_activity_log WHERE hour_bucket >= ? AND hour_bucket <= ?"
+        ).bind(lower).bind(upper).fetch_all(&self.pool).await
+            .map_err(|e| Temm1eError::Memory(format!("Activity probability: {e}")))?;
+        let mut active = std::collections::HashSet::new();
+        for (bucket, count) in rows {
+            let local = parse(&bucket)?;
+            if count > 0 && local.hour() == hour && slots.contains(&local.date_naive()) {
+                active.insert(local.date_naive());
+            }
+        }
+        Ok((active.len() as f64 + 1.0) / (slots.len() as f64 + 2.0))
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn activity_uses_inactive_slots_weekday_timezone_and_recent_window() {
+        let store = super::Store::new("sqlite::memory:").await.unwrap();
+        let utc = |text: &str| {
+            chrono::DateTime::parse_from_rfc3339(text)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        let now = utc("2026-09-08T12:00:00Z");
+        assert_eq!(
+            store
+                .activity_probability_at(6, 1, chrono_tz::Asia::Ho_Chi_Minh, now)
+                .await
+                .unwrap(),
+            0.5
+        );
+        // Establish observation history before the four-week window.
+        store
+            .record_activity(utc("2026-07-01T00:00:00Z"))
+            .await
+            .unwrap();
+        // Local Tuesday 06:00, although UTC is Monday 23:00.
+        store
+            .record_activity(utc("2026-08-31T23:10:00Z"))
+            .await
+            .unwrap();
+        store
+            .record_activity(utc("2026-07-27T23:10:00Z"))
+            .await
+            .unwrap(); // too old
+        let local = store
+            .activity_probability_at(6, 1, chrono_tz::Asia::Ho_Chi_Minh, now)
+            .await
+            .unwrap();
+        assert!((local - 2.0 / 6.0).abs() < 1e-12);
+        let wrong_weekday = store
+            .activity_probability_at(6, 0, chrono_tz::Asia::Ho_Chi_Minh, now)
+            .await
+            .unwrap();
+        assert!((wrong_weekday - 1.0 / 6.0).abs() < 1e-12);
+        let wrong_zone = store
+            .activity_probability_at(6, 1, chrono_tz::UTC, now)
+            .await
+            .unwrap();
+        assert!((wrong_zone - 1.0 / 6.0).abs() < 1e-12);
+    }
     use super::*;
 
     async fn test_store() -> Store {

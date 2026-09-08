@@ -164,7 +164,7 @@ impl Chronos {
         let weekday = now.weekday().num_days_from_monday();
 
         self.store
-            .activity_probability(hour, weekday)
+            .activity_probability_at(hour, weekday, self.timezone, now.with_timezone(&Utc))
             .await
             .unwrap_or(0.5)
     }

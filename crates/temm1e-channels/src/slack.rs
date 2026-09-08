@@ -1,7 +1,7 @@
 //! Slack channel — uses the Slack Web API with poll-based message retrieval.
 //!
 //! This channel polls Slack conversations for new messages and sends responses
-//! via the `chat.postMessage` API. File transfer is supported via `files.upload`
+//! via the `chat.postMessage` API. File transfer is supported via Slack’s external-upload workflow
 //! (sending) and authenticated downloads from `url_private` (receiving).
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures::stream::BoxStream;
+use futures::{stream::BoxStream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -194,7 +194,7 @@ fn persist_allowlist(
 /// Implements the `Channel` and `FileTransfer` traits for Slack bot
 /// integration via the Slack Web API. Uses poll-based message retrieval
 /// with `conversations.history`, sending via `chat.postMessage`, and
-/// file transfer via `files.upload` / authenticated `url_private` downloads.
+/// file transfer via Slack’s external-upload workflow / authenticated `url_private` downloads.
 pub struct SlackChannel {
     /// Bot OAuth token for API calls.
     token: String,
@@ -516,61 +516,55 @@ impl FileTransfer for SlackChannel {
     }
 
     async fn send_file(&self, chat_id: &str, file: OutboundFile) -> Result<(), Temm1eError> {
+        let too_large = || {
+            Temm1eError::FileTransfer("Slack upload exceeds the configured 100 MiB limit".into())
+        };
         let data = match &file.data {
-            FileData::Bytes(b) => b.to_vec(),
+            FileData::Bytes(bytes) => {
+                if bytes.len() > SLACK_UPLOAD_LIMIT {
+                    return Err(too_large());
+                }
+                bytes.to_vec()
+            }
             FileData::Url(url) => {
-                let response = reqwest::get(url).await.map_err(|e| {
-                    Temm1eError::FileTransfer(format!("Failed to download file from URL: {e}"))
-                })?;
-                response
-                    .bytes()
+                let response = self
+                    .client
+                    .get(url)
+                    .timeout(std::time::Duration::from_secs(120))
+                    .send()
                     .await
-                    .map_err(|e| {
-                        Temm1eError::FileTransfer(format!("Failed to read file bytes: {e}"))
-                    })?
-                    .to_vec()
+                    .map_err(|e| Temm1eError::FileTransfer(e.without_url().to_string()))?
+                    .error_for_status()
+                    .map_err(|e| Temm1eError::FileTransfer(e.without_url().to_string()))?;
+                if response
+                    .content_length()
+                    .is_some_and(|n| n > SLACK_UPLOAD_LIMIT as u64)
+                {
+                    return Err(too_large());
+                }
+                let mut stream = response.bytes_stream();
+                let mut data = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk
+                        .map_err(|e| Temm1eError::FileTransfer(e.without_url().to_string()))?;
+                    if chunk.len() > SLACK_UPLOAD_LIMIT.saturating_sub(data.len()) {
+                        return Err(too_large());
+                    }
+                    data.extend_from_slice(&chunk);
+                }
+                data
             }
         };
 
-        // Use files.upload API (v1) for simplicity.
-        let mut form = reqwest::multipart::Form::new()
-            .text("channels", chat_id.to_string())
-            .text("filename", file.name.clone());
-
-        if let Some(ref caption) = file.caption {
-            form = form.text("initial_comment", caption.clone());
-        }
-
-        let part = reqwest::multipart::Part::bytes(data)
-            .file_name(file.name.clone())
-            .mime_str(&file.mime_type)
-            .map_err(|e| Temm1eError::FileTransfer(format!("Invalid MIME type: {e}")))?;
-
-        form = form.part("file", part);
-
-        let response = self
-            .client
-            .post(format!("{SLACK_API_BASE}/files.upload"))
-            .bearer_auth(&self.token)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| {
-                Temm1eError::FileTransfer(format!("Failed to upload file to Slack: {e}"))
-            })?;
-
-        let result: SlackApiResponse<serde_json::Value> = response.json().await.map_err(|e| {
-            Temm1eError::FileTransfer(format!("Failed to parse Slack files.upload response: {e}"))
-        })?;
-
-        if !result.ok {
-            return Err(Temm1eError::FileTransfer(format!(
-                "Slack files.upload failed: {}",
-                result.error.unwrap_or_else(|| "unknown error".into())
-            )));
-        }
-
-        Ok(())
+        upload_slack_file(
+            &self.client,
+            &self.token,
+            SLACK_API_BASE,
+            chat_id,
+            &file,
+            data,
+        )
+        .await
     }
 
     async fn send_file_stream(
@@ -591,6 +585,103 @@ impl FileTransfer for SlackChannel {
     fn max_file_size(&self) -> usize {
         SLACK_UPLOAD_LIMIT
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct SlackUploadTarget {
+    upload_url: String,
+    file_id: String,
+}
+
+/// Slack's three-stage external upload protocol. Only API calls carry the bot
+/// token; the returned upload URL receives raw file bytes without credentials.
+async fn upload_slack_file(
+    client: &reqwest::Client,
+    token: &str,
+    api_base: &str,
+    chat_id: &str,
+    file: &OutboundFile,
+    data: Vec<u8>,
+) -> Result<(), Temm1eError> {
+    let failure = |error: reqwest::Error| {
+        Temm1eError::FileTransfer(format!(
+            "Slack upload request failed: {}",
+            error.without_url()
+        ))
+    };
+    if data.len() > SLACK_UPLOAD_LIMIT {
+        return Err(Temm1eError::FileTransfer(
+            "Slack upload exceeds the configured 100 MiB limit".into(),
+        ));
+    }
+    let response: SlackApiResponse<SlackUploadTarget> = client
+        .post(format!("{api_base}/files.getUploadURLExternal"))
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(30))
+        .json(&serde_json::json!({"filename": file.name, "length": data.len()}))
+        .send()
+        .await
+        .map_err(failure)?
+        .error_for_status()
+        .map_err(failure)?
+        .json()
+        .await
+        .map_err(failure)?;
+    if !response.ok {
+        return Err(Temm1eError::FileTransfer(format!(
+            "Slack upload allocation failed: {}",
+            response.error.unwrap_or_else(|| "unknown error".into())
+        )));
+    }
+    let target = response
+        .data
+        .ok_or_else(|| Temm1eError::FileTransfer("Slack returned no upload target".into()))?;
+    let url = reqwest::Url::parse(&target.upload_url)
+        .map_err(|_| Temm1eError::FileTransfer("Slack returned an invalid upload URL".into()))?;
+    let local_fixture = cfg!(test)
+        && api_base.starts_with("http://127.0.0.1:")
+        && url.host_str() == Some("127.0.0.1");
+    if url.scheme() != "https" && !local_fixture {
+        return Err(Temm1eError::FileTransfer(
+            "Slack upload URL must use HTTPS".into(),
+        ));
+    }
+    client
+        .post(url)
+        .timeout(std::time::Duration::from_secs(120))
+        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+        .body(data)
+        .send()
+        .await
+        .map_err(failure)?
+        .error_for_status()
+        .map_err(failure)?;
+    let mut completion = serde_json::json!({
+        "files": [{"id": target.file_id, "title": file.name}], "channel_id": chat_id,
+    });
+    if let Some(caption) = &file.caption {
+        completion["initial_comment"] = caption.clone().into();
+    }
+    let result: SlackApiResponse<serde_json::Value> = client
+        .post(format!("{api_base}/files.completeUploadExternal"))
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(30))
+        .json(&completion)
+        .send()
+        .await
+        .map_err(failure)?
+        .error_for_status()
+        .map_err(failure)?
+        .json()
+        .await
+        .map_err(failure)?;
+    if !result.ok {
+        return Err(Temm1eError::FileTransfer(format!(
+            "Slack upload completion failed: {}",
+            result.error.unwrap_or_else(|| "unknown error".into())
+        )));
+    }
+    Ok(())
 }
 
 // ── Polling loop ──────────────────────────────────────────────────
@@ -959,6 +1050,111 @@ fn sanitize_filename(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    async fn external_upload_fixture(fail_upload: bool) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let upload_url = format!("{base}/upload");
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for step in 0..if fail_upload { 2 } else { 3 } {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let (header_end, length) = loop {
+                    let mut bytes = [0u8; 1024];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&bytes[..n]);
+                    if let Some(index) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&request[..index]).to_lowercase();
+                        let length: usize = header
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        break (index + 4, length);
+                    }
+                };
+                while request.len() < header_end + length {
+                    let mut bytes = [0u8; 1024];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&bytes[..n]);
+                }
+                let header = String::from_utf8_lossy(&request[..header_end]).to_string();
+                requests.push((header, request[header_end..header_end + length].to_vec()));
+                let body = match step {
+                    0 => serde_json::json!({"ok": true, "upload_url": upload_url, "file_id": "Ffixture"}).to_string(),
+                    1 => "uploaded".into(),
+                    _ => serde_json::json!({"ok": true, "files": [{"id": "Ffixture"}]}).to_string(),
+                };
+                let status = if step == 1 && fail_upload {
+                    "500 Internal Server Error"
+                } else {
+                    "200 OK"
+                };
+                let response = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        let file = super::OutboundFile {
+            name: "report.txt".into(),
+            mime_type: "text/plain".into(),
+            caption: Some("fixture caption".into()),
+            data: super::FileData::Bytes(super::Bytes::from_static(b"proof")),
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            super::upload_slack_file(
+                &reqwest::Client::new(),
+                "fixture-token",
+                &base,
+                "Cfixture",
+                &file,
+                b"proof".to_vec(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_err(), fail_upload);
+        let requests = server.await.unwrap();
+        assert!(requests[0]
+            .0
+            .starts_with("POST /files.getUploadURLExternal "));
+        assert!(requests[0]
+            .0
+            .to_lowercase()
+            .contains("authorization: bearer fixture-token"));
+        let allocation: serde_json::Value = serde_json::from_slice(&requests[0].1).unwrap();
+        assert_eq!(allocation["length"], 5);
+        assert_eq!(allocation["filename"], "report.txt");
+        assert!(requests[1].0.starts_with("POST /upload "));
+        assert!(!requests[1].0.to_lowercase().contains("authorization:"));
+        assert_eq!(requests[1].1, b"proof");
+        if !fail_upload {
+            assert!(requests[2]
+                .0
+                .starts_with("POST /files.completeUploadExternal "));
+            let completion: serde_json::Value = serde_json::from_slice(&requests[2].1).unwrap();
+            assert_eq!(completion["channel_id"], "Cfixture");
+            assert_eq!(completion["files"][0]["id"], "Ffixture");
+            assert_eq!(completion["initial_comment"], "fixture caption");
+        }
+    }
+
+    #[tokio::test]
+    async fn external_upload_preserves_file_caption_and_keeps_token_off_upload_host() {
+        external_upload_fixture(false).await;
+    }
+
+    #[tokio::test]
+    async fn failed_byte_upload_never_calls_complete() {
+        external_upload_fixture(true).await;
+    }
     use super::*;
 
     fn test_config(token: Option<&str>, allowlist: Vec<String>) -> ChannelConfig {
