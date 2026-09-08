@@ -38,7 +38,7 @@ use temm1e_core::Provider;
 /// - `"grok"` | `"xai"` -> `OpenAICompatProvider` with `https://api.x.ai/v1`
 /// - `"openrouter"` -> `OpenAICompatProvider` with `https://openrouter.ai/api/v1`
 /// - `"minimax"` -> `OpenAICompatProvider` with `https://api.minimax.io/v1`
-/// - anything else -> `OpenAICompatProvider` (defaults to OpenAI)
+/// - unknown names -> compatible adapter only with an explicit HTTP(S) base URL
 ///
 /// `api_key` must be set. `base_url` is optional (overrides the preset default).
 pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Temm1eError> {
@@ -181,6 +181,16 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             Ok(Box::new(provider))
         }
         _ => {
+            if !matches!(name, "openai" | "openai-compatible") {
+                let destination = config
+                    .base_url
+                    .as_deref()
+                    .and_then(|base| reqwest::Url::parse(base).ok())
+                    .filter(|url| matches!(url.scheme(), "https" | "http") && url.has_host());
+                if destination.is_none() {
+                    return Err(Temm1eError::Config("Unknown provider requires an explicit HTTP(S) base_url; refusing to send its credential to the default OpenAI endpoint".into()));
+                }
+            }
             let mut provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_extra_headers(config.extra_headers.clone())
@@ -288,6 +298,19 @@ mod tests {
     fn create_lmstudio_provider_dashed_alias() {
         let provider = create_provider(&config_with_name("lm-studio")).unwrap();
         assert_eq!(provider.name(), "lm-studio");
+    }
+
+    #[test]
+    fn unknown_provider_needs_an_explicit_destination() {
+        let mut config = config_with_name("antrhopic");
+        assert!(create_provider(&config).is_err());
+        for invalid in ["", "not a URL", "file:///tmp/provider"] {
+            config.base_url = Some(invalid.into());
+            assert!(create_provider(&config).is_err());
+        }
+        config.name = Some("private-vllm".into());
+        config.base_url = Some("http://localhost:8000/v1".into());
+        assert_eq!(create_provider(&config).unwrap().name(), "private-vllm");
     }
 
     #[test]

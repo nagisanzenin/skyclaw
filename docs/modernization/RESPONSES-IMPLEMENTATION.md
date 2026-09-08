@@ -28,3 +28,5 @@ A regression smoke through the real TUI bridge using the authorized Z.ai coding 
 ## Remaining boundaries
 
 Live OpenAI/Codex account acceptance is not established by fixtures. Dynamic provider model discovery, modern model menus/defaults, explicit reasoning controls, provider-native compaction, hosted tools, async tool calling and WebSocket steering remain separate work. Opaque state is not yet provided by Anthropic/Gemini adapters. Prompted JSON tool mode retains its older text-history behavior. The shared durable usage ledger must still cover canceled and background calls before total cost/quota accounting is complete.
+
+Endpoint binding follow-up: the direct OpenAI route identity includes its normalized endpoint origin and path. Changing `base_url` therefore prevents replay of the previous endpoint's opaque state even when the provider/model names remain the same. URL userinfo, query and fragment are not stored in that identity. Unknown provider names require an explicit destination instead of inheriting OpenAI's default URL.

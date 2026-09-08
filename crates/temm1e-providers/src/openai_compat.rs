@@ -114,6 +114,19 @@ impl OpenAICompatProvider {
     }
 
     /// Build the JSON body for the OpenAI Chat Completions API.
+    /// Bind opaque replay state to the selected endpoint as well as the model.
+    /// URL credentials and query strings are not copied into conversation metadata.
+    fn responses_route(&self) -> String {
+        let Ok(mut url) = reqwest::Url::parse(&self.base_url) else {
+            return "openai|invalid-endpoint".into();
+        };
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        format!("openai|{}", url.as_str().trim_end_matches('/'))
+    }
+
     fn uses_responses(&self, model: &str) -> bool {
         self.provider_name == "openai"
             && temm1e_core::types::model_catalog::lookup("openai", model)
@@ -126,7 +139,7 @@ impl OpenAICompatProvider {
         stream: bool,
     ) -> Result<serde_json::Value, Temm1eError> {
         if self.uses_responses(&request.model) {
-            return crate::responses::build_request(request, "openai", false);
+            return crate::responses::build_request(request, &self.responses_route(), false);
         }
 
         let mut messages: Vec<serde_json::Value> = Vec::new();
@@ -1100,7 +1113,11 @@ impl Provider for OpenAICompatProvider {
         };
 
         if native {
-            Ok(crate::responses::stream(response, "openai", &request.model))
+            Ok(crate::responses::stream(
+                response,
+                &self.responses_route(),
+                &request.model,
+            ))
         } else {
             Ok(crate::chat_stream::stream(response))
         }
@@ -1163,6 +1180,54 @@ impl Provider for OpenAICompatProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_replay_is_bound_to_endpoint_without_copying_url_credentials() {
+        let original = OpenAICompatProvider::new("fixture".into())
+            .with_name("openai")
+            .with_base_url(format!(
+                "https://{}:{}@api.openai.com/v1/?secret=hidden#fragment",
+                "user", "password"
+            ));
+        assert_eq!(
+            original.responses_route(),
+            "openai|https://api.openai.com/v1"
+        );
+        let other = OpenAICompatProvider::new("fixture".into())
+            .with_name("openai")
+            .with_base_url("https://proxy.example/v1".into());
+        let request = CompletionRequest {
+            model: "gpt-6-astra".into(),
+            tools: vec![],
+            max_tokens: Some(32),
+            temperature: None,
+            system: None,
+            system_volatile: None,
+            messages: vec![ChatMessage {
+                role: Role::Assistant,
+                content: MessageContent::Parts(vec![
+                    ContentPart::Text { text: "Hi".into() },
+                    ContentPart::ProviderState {
+                        provider: original.responses_route(),
+                        model: "gpt-6-astra".into(),
+                        response_id: "resp".into(),
+                        output: vec![
+                            serde_json::json!({"id":"reason","type":"reasoning","encrypted_content":"opaque-owned-state","summary":[]}),
+                            serde_json::json!({"id":"message","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Hi"}]}),
+                        ],
+                    },
+                ]),
+            }],
+        };
+        assert!(original
+            .build_request_body(&request, true)
+            .unwrap()
+            .to_string()
+            .contains("opaque-owned-state"));
+        let switched = other.build_request_body(&request, true).unwrap();
+        assert!(!switched.to_string().contains("opaque-owned-state"));
+        assert!(switched.to_string().contains("Hi"));
+    }
 
     #[test]
     fn build_request_body_basic() {
