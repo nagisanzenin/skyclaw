@@ -27,6 +27,7 @@ pub enum CommandResult {
     /// validates the name, tears down the current agent task, and
     /// spawns a new one with the new model.
     SwitchModel(String),
+    SessionCommand(String),
 }
 
 /// Overlay types that commands can trigger.

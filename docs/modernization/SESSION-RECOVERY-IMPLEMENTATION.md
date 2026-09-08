@@ -1,6 +1,6 @@
 # Session recovery and legacy history migration
 
-Implementation contract; **not implemented by this document**. Context handoffs and execution records exist, but entrypoint history persistence still needs this work. Do not claim restart continuity until the entrypoint tests below pass.
+Implementation contract with partial implementation recorded below. CLI/TUI now use canonical conversation heads; server parity and delivery outbox remain unfinished. Do not infer complete recovery coverage from the store tests.
 
 ## Compatibility policy
 
@@ -50,3 +50,15 @@ The execution journal now has a transactional inbound-claim table and an index f
 ## Execution checkpoint payloads now deduplicated
 
 New execution checkpoints use ordered references to immutable scoped message payloads. Readers reconstruct native messages and verify their hashes; legacy inline checkpoints still load. The same payload may appear repeatedly in one history without losing those repetitions. A transaction commits references together with the execution boundary. This implements the checkpoint storage portion of the contract, but entrypoint conversation selection and an append-only epoch event stream are still outstanding. Existing legacy rows are not rewritten or vacuumed automatically.
+
+## Canonical CLI/TUI checkpoint
+
+CLI and TUI now acquire an authoritative native history under a stable private OS file lock, use its UUID epoch as `SessionContext.session_id`, and commit an immutable revision boundary before presenting a final response. The head advances with owner/epoch/revision fencing. A failed commit, cancellation of the entrypoint future or process death leaves a durable busy marker. Read corruption fails explicitly before creating that marker. Commits reject shortened or rewritten saved prefixes.
+
+Both local interfaces share the same management command handler. Import requires a digest of the current source, an empty destination, and retains the legacy memory entry. Repeating the same import does not duplicate history. New conversation preserves prior epoch boundaries and prevents old context handoffs from appearing in the new epoch. TUI commands are blocked while a turn is active; display clear remains separate.
+
+Execution admission now links canonical epochs and their revision to exact execution IDs. Recovery reads only executions belonging to the interrupted revision. It previews recorded operation states and unmatched native calls; confirmation is bound to the evidence digest. Unmatched native calls receive explicit unknown-outcome results, even if another journal record exists whose operation ID cannot be mapped to that native call. No provider, tool or delivery is invoked by recovery. Recorded results remain distinct from task completion and delivery success.
+
+For local processes, ownership uses the OS lock lifetime instead of expiry-based takeover: a slow provider must not authorize a competing process while its tool may still be running. The durable marker survives lock release after process death, and recovery/reset require explicit user action. This is an intentional local-host implementation of the exclusion requirement, not a claim of distributed fencing on network filesystems. Multi-host leasing remains separate work.
+
+Still outstanding: server history migration, transactional tool-result/event-head integration, durable delivery outbox and platform reconciliation, complete process-kill/PTY acceptance, archive UI and total-storage retention policy. The existing server's 200-message deletion remains until its entrypoint is converted; this checkpoint does not claim parity.

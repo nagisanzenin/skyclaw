@@ -12,7 +12,8 @@ use temm1e_core::types::{
 };
 
 pub struct ExecutionJournal {
-    pool: SqlitePool,
+    pub(crate) pool: SqlitePool,
+    pub(crate) path: std::path::PathBuf,
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
@@ -104,6 +105,17 @@ impl ExecutionJournal {
             CREATE TABLE IF NOT EXISTS execution_history_payloads (
                 scope TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL,
                 PRIMARY KEY(scope,id));
+            CREATE TABLE IF NOT EXISTS execution_conversations (
+                execution_id TEXT PRIMARY KEY, epoch TEXT NOT NULL, revision INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS execution_conversations_epoch_revision ON execution_conversations(epoch,revision);
+            CREATE TABLE IF NOT EXISTS conversation_heads (
+                scope TEXT PRIMARY KEY, epoch TEXT NOT NULL, revision INTEGER NOT NULL,
+                checkpoint TEXT NOT NULL, busy_owner TEXT);
+            CREATE UNIQUE INDEX IF NOT EXISTS conversation_heads_epoch ON conversation_heads(epoch);
+            CREATE TABLE IF NOT EXISTS conversation_events (
+                epoch TEXT NOT NULL, revision INTEGER NOT NULL, kind TEXT NOT NULL,
+                checkpoint TEXT NOT NULL, created_at TEXT NOT NULL,
+                PRIMARY KEY(epoch,revision));
             CREATE TABLE IF NOT EXISTS context_heads (
                 scope TEXT PRIMARY KEY, generation INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS context_handoffs (
@@ -116,7 +128,10 @@ impl ExecutionJournal {
         .execute(&pool)
         .await
         .map_err(error)?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            path: path.canonicalize().map_err(error)?,
+        })
     }
 
     /// Scope uses a structured tuple, so separator characters cannot alias users.
@@ -131,7 +146,7 @@ impl ExecutionJournal {
         .map_err(error)
     }
 
-    async fn store_history(
+    pub(crate) async fn store_history(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         scope: &str,
         history: &[ChatMessage],
@@ -166,7 +181,7 @@ impl ExecutionJournal {
         .map_err(error)
     }
 
-    async fn hydrate_records(
+    pub(crate) async fn hydrate_records(
         &self,
         scope: &str,
         mut records: Vec<ExecutionRecord>,
@@ -263,6 +278,10 @@ impl ExecutionJournal {
             .bind(&id).bind(scope).bind(&msg.id).bind(msg.text.as_deref().unwrap_or(""))
             .bind(checkpoint).bind(&now).bind(&now)
             .execute(&mut *transaction).await.map_err(error)?;
+        // Only a canonical, currently admitted epoch can be linked. Legacy
+        // string session IDs are never guessed into a conversation.
+        sqlx::query("INSERT INTO execution_conversations(execution_id,epoch,revision) SELECT ?,epoch,revision FROM conversation_heads WHERE epoch=? AND busy_owner IS NOT NULL")
+            .bind(&id).bind(&session.session_id).execute(&mut *transaction).await.map_err(error)?;
         transaction.commit().await.map_err(error)?;
         Ok(id)
     }

@@ -22,7 +22,7 @@ use tracing::{debug, info, warn};
 
 /// Preserve incomplete tool calls as uncertainty, instead of silently stripping
 /// their intent from history or claiming their effects were rolled back.
-fn record_interrupted_tool_results(history: &mut Vec<ChatMessage>) {
+pub(crate) fn record_interrupted_tool_results(history: &mut Vec<ChatMessage>) {
     let mut pending: Vec<String> = Vec::new();
     for message in history.iter() {
         if let MessageContent::Parts(parts) = &message.content {

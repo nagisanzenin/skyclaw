@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, watch, Mutex, RwLock};
+use futures::FutureExt;
+use tokio::sync::{mpsc, watch, RwLock};
 
 use temm1e_agent::agent_task_status::AgentTaskStatus;
 use temm1e_agent::AgentRuntime;
@@ -588,18 +589,16 @@ pub async fn spawn_agent(
     let interrupt_flag = Arc::new(AtomicBool::new(false));
     let interrupt_for_task = interrupt_flag.clone();
 
-    // 8. Load conversation history
-    let cli_history_key = "chat_history:tui".to_string();
-    let history: Vec<temm1e_core::types::message::ChatMessage> =
-        match memory.get(&cli_history_key).await {
-            Ok(Some(entry)) => serde_json::from_str(&entry.content).unwrap_or_default(),
-            _ => Vec::new(),
-        };
-    let history = Arc::new(Mutex::new(history));
-
-    // 9. Spawn processing loop
-    let history_clone = history.clone();
-    let memory_clone = memory.clone();
+    // Canonical storage is loaded under the turn lock, including after restart.
+    let conversations =
+        Arc::new(temm1e_agent::execution_journal::ExecutionJournal::open_profile().await?);
+    let conversation_scope = temm1e_agent::conversation::ConversationScope::new(
+        &workspace,
+        "tui",
+        "tui",
+        "local-owner",
+    )?;
+    tracing::info!(workspace = %workspace.display(), "TUI conversation workspace");
     tokio::spawn(async move {
         while let Some(msg) = inbound_rx.recv().await {
             // CRITICAL: reset the interrupt flag before each turn.
@@ -607,18 +606,69 @@ pub async fn spawn_agent(
             // the new turn would cancel immediately. (Tier C.)
             interrupt_for_task.store(false, Ordering::Relaxed);
 
-            let current_history = history_clone.lock().await.clone();
+            let fail = |text: String| {
+                let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
+                    kind: crate::event::ResponseKind::Failed,
+                    message: OutboundMessage {
+                        chat_id: "tui".into(),
+                        text,
+                        reply_to: None,
+                        parse_mode: None,
+                    },
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_usd: 0.0,
+                }));
+            };
+            match temm1e_agent::conversation::handle_local_command(
+                &conversations,
+                &conversation_scope,
+                memory.as_ref(),
+                "chat_history:tui",
+                msg.text.as_deref().unwrap_or(""),
+            )
+            .await
+            {
+                Ok(Some(text)) => {
+                    let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
+                        kind: crate::event::ResponseKind::Final,
+                        message: OutboundMessage {
+                            chat_id: "tui".into(),
+                            text,
+                            reply_to: None,
+                            parse_mode: None,
+                        },
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cost_usd: 0.0,
+                    }));
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    fail(e.to_string());
+                    continue;
+                }
+            }
+            let turn = match conversations
+                .acquire_conversation(&conversation_scope)
+                .await
+            {
+                Ok(turn) => turn,
+                Err(e) => {
+                    fail(e.to_string());
+                    continue;
+                }
+            };
             let mut session = SessionContext {
-                session_id: "tui-tui".to_string(),
+                session_id: turn.epoch().to_string(),
                 user_id: msg.user_id.clone(),
                 channel: msg.channel.clone(),
                 chat_id: msg.chat_id.clone(),
                 role: temm1e_core::types::rbac::Role::Admin,
-                history: current_history.clone(),
+                history: turn.history().to_vec(),
                 workspace_path: workspace.clone(),
-                read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
-                    std::collections::HashSet::new(),
-                )),
+                read_tracker: Arc::new(RwLock::new(std::collections::HashSet::new())),
             };
 
             // Create early reply channel for classifier acknowledgments
@@ -636,18 +686,33 @@ pub async fn spawn_agent(
                 }
             });
 
-            let result = agent
-                .process_message(
-                    &msg,
-                    &mut session,
-                    Some(interrupt_for_task.clone()), // Tier C: real interrupt flag
-                    None,                             // pending
-                    Some(early_tx),                   // reply_tx (early replies)
-                    Some(status_tx.clone()),          // status_tx (real-time phase updates)
-                    None,                             // legacy interrupt is also observed in flight
-                )
-                .await;
+            let result = std::panic::AssertUnwindSafe(agent.process_message(
+                &msg,
+                &mut session,
+                Some(interrupt_for_task.clone()), // Tier C: real interrupt flag
+                None,                             // pending
+                Some(early_tx),                   // reply_tx (early replies)
+                Some(status_tx.clone()),          // status_tx (real-time phase updates)
+                None,                             // legacy interrupt is also observed in flight
+            ))
+            .catch_unwind()
+            .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(_) => {
+                    fail("The turn stopped after an internal error. Use /session-recover to inspect the saved evidence before continuing.".into());
+                    continue;
+                }
+            };
 
+            // Save the exact history before presenting a final response. A
+            // failed commit leaves the durable busy marker for reconciliation.
+            if let Err(e) = turn.commit(&session.history).await {
+                fail(format!(
+                    "Could not save this turn: {e}. Do not retry uncertain tool effects."
+                ));
+                continue;
+            }
             match result {
                 Ok((reply, usage)) => {
                     // Send response to TUI
@@ -674,24 +739,6 @@ pub async fn spawn_agent(
                         cost_usd: 0.0,
                     }));
                 }
-            }
-            // Persist progress and uncertain tool outcomes even when a turn
-            // ends with cancellation or an error.
-            // Update history
-            let mut hist = history_clone.lock().await;
-            *hist = session.history;
-
-            // Persist conversation history
-            if let Ok(json) = serde_json::to_string(&*hist) {
-                let entry = temm1e_core::MemoryEntry {
-                    id: cli_history_key.clone(),
-                    content: json,
-                    metadata: serde_json::json!({"chat_id": "tui"}),
-                    timestamp: chrono::Utc::now(),
-                    session_id: Some("tui".to_string()),
-                    entry_type: temm1e_core::MemoryEntryType::Conversation,
-                };
-                let _ = memory_clone.store(entry).await;
             }
         }
     });

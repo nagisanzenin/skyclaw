@@ -107,10 +107,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_send = std::time::Instant::now();
     let msg = InboundMessage {
         id: uuid::Uuid::new_v4().to_string(),
-        chat_id: "tui-smoke".into(),
-        user_id: "smoke-test".into(),
+        chat_id: "tui".into(),
+        user_id: "local".into(),
         username: Some("smoke".into()),
-        channel: "tui-smoke".into(),
+        channel: "tui".into(),
         text: Some(prompt_text.clone()),
         attachments: vec![],
         reply_to: None,
@@ -198,6 +198,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|arg| arg == "--require-stream") && streamed_deltas == 0 {
         eprintln!("[SMOKE FAIL] no actual text deltas reached the TUI event channel");
         std::process::exit(6);
+    }
+    if let Some(expected) = args
+        .iter()
+        .position(|a| a == "--expect")
+        .and_then(|i| args.get(i + 1))
+    {
+        if !response_text.contains(expected) {
+            eprintln!("[SMOKE FAIL] final response did not contain the expected fixture value");
+            std::process::exit(7);
+        }
     }
     eprintln!("[SMOKE] DONE — final response received; streamed_deltas={streamed_deltas}");
     Ok(())

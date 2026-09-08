@@ -10,6 +10,7 @@ pub mod compaction;
 pub mod consciousness;
 pub mod consciousness_engine;
 pub mod context;
+pub mod conversation;
 pub mod delegation;
 pub mod done_criteria;
 pub mod engram;

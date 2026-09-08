@@ -6973,26 +6973,42 @@ Just type a message to chat with the AI agent.",
                 eprintln!("CLI channel receiver unavailable");
                 return Ok(());
             };
-            // ── Restore CLI conversation history from memory backend ──
-            let cli_history_key = "chat_history:cli".to_string();
-            let mut history: Vec<temm1e_core::types::message::ChatMessage> =
-                match memory.get(&cli_history_key).await {
-                    Ok(Some(entry)) => match serde_json::from_str(&entry.content) {
-                        Ok(h) => {
-                            let count = Vec::<temm1e_core::types::message::ChatMessage>::len(&h);
-                            if count > 0 {
-                                println!("  Restored {} messages from previous session.", count);
-                            }
-                            h
-                        }
-                        Err(_) => Vec::new(),
-                    },
-                    _ => Vec::new(),
-                };
+            let conversations =
+                Arc::new(temm1e_agent::execution_journal::ExecutionJournal::open_profile().await?);
+            let conversation_scope = temm1e_agent::conversation::ConversationScope::new(
+                &workspace,
+                "cli",
+                "cli",
+                "local-owner",
+            )?;
+            println!("  Workspace: {}", workspace.display());
+            println!("  /history-import previews preserved old chats; /session-new starts a new conversation.");
 
             while let Some(msg) = rx.recv().await {
                 let msg_text = msg.text.as_deref().unwrap_or("");
                 let cmd_lower = msg_text.trim().to_lowercase();
+
+                match temm1e_agent::conversation::handle_local_command(
+                    &conversations,
+                    &conversation_scope,
+                    memory.as_ref(),
+                    "chat_history:cli",
+                    msg_text,
+                )
+                .await
+                {
+                    Ok(Some(text)) => {
+                        println!("\n{text}\n");
+                        eprint!("temm1e> ");
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("  [{e}]");
+                        eprint!("temm1e> ");
+                        continue;
+                    }
+                    Ok(None) => {}
+                }
 
                 // ── Command interception (same as gateway) ─────
                 // /eigentune — Eigen-Tune slash dispatch
@@ -7930,18 +7946,31 @@ Just type a message to chat with the AI agent.",
                     *cli_perp_temporal.write().await = temporal;
                 }
                 if let Some(ref agent) = agent_opt {
+                    let acquired = match conversations
+                        .acquire_conversation(&conversation_scope)
+                        .await
+                    {
+                        Ok(turn) => turn,
+                        Err(e) => {
+                            eprintln!("  [{e}]");
+                            eprint!("temm1e> ");
+                            continue;
+                        }
+                    };
                     let mut session = temm1e_core::types::session::SessionContext {
-                        session_id: "cli-cli".to_string(),
+                        session_id: acquired.epoch().to_string(),
                         user_id: msg.user_id.clone(),
                         channel: msg.channel.clone(),
                         chat_id: msg.chat_id.clone(),
                         role: temm1e_core::types::rbac::Role::Admin,
-                        history: history.clone(),
+                        history: acquired.history().to_vec(),
                         workspace_path: workspace.clone(),
                         read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
                             std::collections::HashSet::new(),
                         )),
                     };
+
+                    let mut conversation_turn = Some(acquired);
 
                     // Early reply channel for LLM classifier (order acknowledgments)
                     let (early_tx, mut early_rx) = tokio::sync::mpsc::unbounded_channel::<
@@ -7966,6 +7995,25 @@ Just type a message to chat with the AI agent.",
                     ))
                     .catch_unwind()
                     .await;
+
+                    // Save before delivery. Hive fallback continues under the
+                    // same lock; panics leave the durable recovery marker intact.
+                    if process_result.is_ok()
+                        && !matches!(
+                            &process_result,
+                            Ok(Err(temm1e_core::types::error::Temm1eError::HiveRoute(_)))
+                        )
+                    {
+                        if let Some(turn) = conversation_turn.take() {
+                            if let Err(e) = turn.commit(&session.history).await {
+                                eprintln!(
+                                    "  [History save failed: {e}. Do not retry uncertain effects.]"
+                                );
+                                eprint!("temm1e> ");
+                                continue;
+                            }
+                        }
+                    }
 
                     match process_result {
                         Ok(Ok((mut reply, turn_usage))) => {
@@ -8036,7 +8084,7 @@ Just type a message to chat with the AI agent.",
                                     reply_to: None,
                                     timestamp: chrono::Utc::now(),
                                 };
-                                match non_hive
+                                let fallback_result = non_hive
                                     .process_message(
                                         &re_msg,
                                         &mut session,
@@ -8046,8 +8094,15 @@ Just type a message to chat with the AI agent.",
                                         None,
                                         None,
                                     )
-                                    .await
-                                {
+                                    .await;
+                                if let Some(turn) = conversation_turn.take() {
+                                    if let Err(e) = turn.commit(&session.history).await {
+                                        eprintln!("  [History save failed: {e}. Do not retry uncertain effects.]");
+                                        eprint!("temm1e> ");
+                                        continue;
+                                    }
+                                }
+                                match fallback_result {
                                     Ok((reply, _usage)) => {
                                         if !reply.text.trim().is_empty() {
                                             println!("\n{}\n", reply.text);
@@ -8073,25 +8128,8 @@ Just type a message to chat with the AI agent.",
                             };
                             eprintln!("  [panic recovered: {}]", panic_msg);
                             tracing::error!(panic = %panic_msg, "PANIC RECOVERED in CLI processing");
-                            // Rollback session to pre-message state
-                            session.history = history.clone();
-                        }
-                    }
-
-                    history = session.history;
-
-                    // ── Save CLI conversation history to memory backend ──
-                    if let Ok(json) = serde_json::to_string(&history) {
-                        let entry = temm1e_core::MemoryEntry {
-                            id: cli_history_key.clone(),
-                            content: json,
-                            metadata: serde_json::json!({"chat_id": "cli"}),
-                            timestamp: chrono::Utc::now(),
-                            session_id: Some("cli".to_string()),
-                            entry_type: temm1e_core::MemoryEntryType::Conversation,
-                        };
-                        if let Err(e) = memory.store(entry).await {
-                            tracing::warn!(error = %e, "Failed to persist CLI conversation history");
+                            // The lease drops with an interrupted marker. Do
+                            // not overwrite execution evidence with old history.
                         }
                     }
                 } else {

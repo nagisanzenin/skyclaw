@@ -380,3 +380,120 @@ async fn inline_development_handoff_remains_readable_and_corrupt_sources_fail() 
         "tampered content must not silently load under its old source hash"
     );
 }
+
+#[tokio::test]
+async fn canonical_restart_after_two_compactions_preserves_early_and_corrected_constraints() {
+    use temm1e_agent::conversation::ConversationScope;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.db");
+    let scope = ConversationScope::new(dir.path(), "test", "chat", "local").unwrap();
+    let journal = Arc::new(ExecutionJournal::open(&path).await.unwrap());
+    let provider = Arc::new(Fixture {
+        invalid: false,
+        requests: Default::default(),
+    });
+    let make_runtime = |journal: Arc<ExecutionJournal>| {
+        AgentRuntime::with_limits(
+            provider.clone(),
+            Arc::new(MockMemory::new()),
+            vec![],
+            "fixture".into(),
+            Some("Test".into()),
+            200,
+            12000,
+            4,
+            20,
+            0.0,
+        )
+        .with_execution_journal(journal)
+        .with_v2_optimizations(false)
+        .with_self_audit_enabled(false)
+    };
+    let mut history = vec![];
+    for i in 0..125 {
+        history.push(ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text(if i == 0 {
+                "Original: preserve archive_label maple17; do not publish.".into()
+            } else {
+                format!("Earlier turn {i}.")
+            }),
+        });
+        history.push(ChatMessage {
+            role: Role::Assistant,
+            content: MessageContent::Text(
+                "Earlier analysis; no verified result yet. ".repeat(if i > 116 { 110 } else { 1 }),
+            ),
+        });
+    }
+    journal
+        .acquire_conversation(&scope)
+        .await
+        .unwrap()
+        .commit(&history)
+        .await
+        .unwrap();
+    let mut epoch = String::new();
+    for round in 1..=2 {
+        // Recreate both journal and runtime; the caller retains no chat history.
+        let reopened = Arc::new(ExecutionJournal::open(&path).await.unwrap());
+        let runtime = make_runtime(reopened.clone());
+        let turn = reopened.acquire_conversation(&scope).await.unwrap();
+        if epoch.is_empty() {
+            epoch = turn.epoch().into();
+        }
+        assert_eq!(turn.epoch(), epoch);
+        let mut session = make_session();
+        session.session_id = turn.epoch().into();
+        session.workspace_path = dir.path().to_owned();
+        session.history = turn.history().to_vec();
+        if round == 2 {
+            for _ in 0..8 {
+                session.history.push(ChatMessage {
+                    role: Role::User,
+                    content: MessageContent::Text(
+                        "Correction: color amber, still do not publish.".into(),
+                    ),
+                });
+                session.history.push(ChatMessage {
+                    role: Role::Assistant,
+                    content: MessageContent::Text(
+                        "More ongoing analysis, not verified completion. ".repeat(110),
+                    ),
+                });
+            }
+        }
+        runtime
+            .process_message(
+                &make_inbound_msg("Keep the original constraints and latest correction."),
+                &mut session,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let (generation, handoff) = reopened.load_handoff(&session).await.unwrap().unwrap();
+        assert_eq!(generation, round);
+        assert!(handoff.matches_prefix(&session.history));
+        assert!(serde_json::to_string(&handoff.pinned_messages())
+            .unwrap()
+            .contains("maple17"));
+        if round == 2 {
+            assert!(serde_json::to_string(&handoff.pinned_messages())
+                .unwrap()
+                .contains("color amber"));
+        }
+        turn.commit(&session.history).await.unwrap();
+    }
+    let reopened = Arc::new(ExecutionJournal::open(&path).await.unwrap());
+    let turn = reopened.acquire_conversation(&scope).await.unwrap();
+    assert!(turn.history().len() > 250);
+    let restored = serde_json::to_string(turn.history()).unwrap();
+    assert!(restored.contains("maple17"));
+    assert!(restored.contains("color amber"));
+    let history = turn.history().to_vec();
+    turn.commit(&history).await.unwrap();
+}

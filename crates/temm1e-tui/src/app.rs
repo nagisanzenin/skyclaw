@@ -1006,6 +1006,17 @@ fn handle_user_submit(state: &mut AppState, text: String) {
                 state.should_quit = true;
             }
             CommandResult::Silent => {}
+            CommandResult::SessionCommand(command) => {
+                if state.is_agent_working {
+                    push_system_line(
+                        state,
+                        "Wait for the active turn to finish before changing conversations.".into(),
+                    );
+                } else {
+                    state.pending_user_message = Some(command);
+                    state.is_agent_working = true;
+                }
+            }
             CommandResult::SwitchModel(model) => {
                 if state.is_agent_working {
                     push_system_line(
@@ -1309,6 +1320,26 @@ fn handle_onboarding_key(state: &mut AppState, key: crossterm::event::KeyEvent) 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn conversation_commands_are_gated_while_busy_and_clear_is_display_only() {
+        let mut state = AppState::new().with_chat("fixture".into(), "fixture".into());
+        handle_user_submit(&mut state, "/history-import".into());
+        assert_eq!(
+            state.pending_user_message.as_deref(),
+            Some("/history-import ")
+        );
+        assert!(state.is_agent_working);
+        state.pending_user_message = None;
+        handle_user_submit(&mut state, "/session-new".into());
+        assert!(state.pending_user_message.is_none());
+        state.is_agent_working = false;
+        handle_user_submit(&mut state, "/clear".into());
+        assert!(state.pending_user_message.is_none());
+        assert!(!state.is_agent_working);
+        handle_user_submit(&mut state, "/session-new".into());
+        assert_eq!(state.pending_user_message.as_deref(), Some("/session-new "));
+    }
 
     #[test]
     fn streamed_preview_is_provisional_and_ignores_stale_deltas() {

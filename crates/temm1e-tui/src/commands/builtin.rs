@@ -16,6 +16,29 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
         handler: Box::new(|_, _| CommandResult::ClearChat),
     });
 
+    for (name, description) in [
+        (
+            "session-recover",
+            "Inspect interrupted work before explicitly restoring its evidence",
+        ),
+        (
+            "session-new",
+            "Start a new conversation; preserve previous history",
+        ),
+        (
+            "history-import",
+            "Preview or explicitly import preserved legacy history",
+        ),
+    ] {
+        registry.register(CommandDef {
+            name,
+            description,
+            handler: Box::new(move |args, _| {
+                CommandResult::SessionCommand(format!("/{name} {args}"))
+            }),
+        });
+    }
+
     registry.register(CommandDef {
         name: "model",
         description: "Show models (no arg) or hot-swap to a new model",
