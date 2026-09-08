@@ -43,7 +43,7 @@ effective_importance = (importance + recall_boost).clamp(0.1, 5.0)
 |-----------|-------|-----------|
 | `importance` | [1.0, 5.0] | LLM-assigned at creation, immutable |
 | `recall_boost` | [0.0, 2.0] | +0.3 per recall, -0.1 per GC sweep |
-| `lambda` (decay rate) | 0.01/hour | Half-life ~29 days |
+| `lambda` (decay rate) | 0.01/hour | Half-life ~69.31 hours (~2.89 days) |
 | Gone threshold | 0.01 | Below this, memory is invisible |
 
 Lambda memory's "Q" is `effective_importance / 5.0`, "R" is the exponential decay, and "U" is implicit via recall_boost (recall-reinforced entries decay slower because their effective_importance is higher).

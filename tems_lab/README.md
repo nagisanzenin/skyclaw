@@ -111,7 +111,7 @@ Each complexity tier (Simple, Standard, Complex) graduates independently. Simple
 | Peak memory | 0.509 GB training, 0.303 GB inference |
 | Speed | ~28 it/sec training, ~200 tok/sec inference |
 | Base model 72°F | "150°C" (wrong) |
-| **Fine-tuned 72°F** | **"21.2°C" (close to 22.2°C)** |
+| **Fine-tuned 72°F** | **"21.2°C" (incorrect; exact 22.222…°C)** |
 | Statistical tests | 128 tests, all passing |
 
 The base model made a fundamental arithmetic error. Ten training examples fixed it. This is knowledge distillation working at consumer scale. [Research paper →](eigen/RESEARCH_PAPER.md) · [Full pipeline log →](eigen/PIPELINE_PROOF_LOG.txt)

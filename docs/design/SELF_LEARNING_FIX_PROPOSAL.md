@@ -185,7 +185,7 @@ R(a, t) = exp(-λ_l × days_since_creation)
 λ_l = 0.015    (half-life ≈ 46 days)
 ```
 
-Why 46 days: learnings are broader than memories (they capture strategy patterns, not specific facts). They should decay slower than lambda memory (half-life ~29 days at λ=0.01) but still fade within a quarter.
+Why 46 days: learnings are broader than memories (they capture strategy patterns, not specific facts). They should decay slower than lambda memory (half-life ~2.89 days at λ=0.01/hour) but still fade within a quarter.
 
 **Utility U(a): Log-reinforcement on application**
 
@@ -560,7 +560,7 @@ These are not five different systems. They are **one framework** (the artifact v
 
 | Subsystem | Decay λ | Half-life | Q model | U coefficient | GC threshold |
 |-----------|---------|-----------|---------|---------------|-------------|
-| **Lambda Memory** | 0.01/hr | ~29 days | Beta(I, 6-I) | N/A (via recall reheat) | 0.01 |
+| **Lambda Memory** | 0.01/hr | ~2.89 days | Beta(I, 6-I) | N/A (via recall reheat) | 0.01 |
 | **Learnings** | 0.015/day | ~46 days | Beta(2+3c, 2+3(1-c)) | 0.3 | 0.05 |
 | **Blueprints** | 0.005/day | ~139 days | Wilson lower bound² | 0.5 | 0.02 |
 | **Eigen-Tune** | N/A | 180 days (floor) | Beta(2, 2) + signals | N/A (reservoir) | reservoir eviction |

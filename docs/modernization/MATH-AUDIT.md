@@ -30,3 +30,11 @@ A formula can be algebraically valid and still optimize the wrong quantity. Sepa
 | Snapshot/patch | git trees and sequential renames | Atomic rename of one file is not atomic multi-file commit. Separate index and journal mutations; preserve unrelated files. | staged/unstaged states, create/delete/rename, disk failure, kill/restart |
 
 No arbitrary heuristic should be replaced merely because it is a heuristic. Keep cheap mechanical filters when they are measured and bounded; use the LLM for semantic decisions while requiring evidence for claimed results. The creator's infrastructure/intelligence distinction does not require making token counting, scheduling clocks or authorization probabilistic.
+
+## Implementation update: normal quantiles and invalid statistical inputs
+
+Wilson intervals now use a validated inverse standard-normal CDF rather than interpolating/clamping a five-row table. Configured confidence above 99% is honored. The checked API rejects zero trials, impossible counts and invalid confidence; its compatibility wrapper returns uninformative `[0,1]`, and graduation paths use checked values. Evaluation accuracy/threshold validation prevents malformed records from producing graduation evidence. Reference: [NIST Wilson interval](https://www.itl.nist.gov/div898/handbook/prc/section2/prc241.htm).
+
+Using the unrounded 99% critical value gives lower bounds **0.768224** for 29/30 and **0.818891** for 30/30; the audit table above records the earlier rounded z=2.576 calculation. Neither supports a 95% lower bound. Independent Python NormalDist fixtures cover confidence from 10% through 99.9999999999%. The same inverse CDF replaces the power estimator's coarse rational approximation; lower-tail evaluation avoids subtraction rounding at tiny alpha, and underflow/nonfinite estimates return no finite sample size rather than zero.
+
+The scalar distribution implementation uses `statrs` 0.18 with default features disabled. Its declared Rust minimum is 1.65; 0.19.1 requires 1.89 and is not introduced solely to obtain the same scalar API. Wilson remains an approximate binomial interval with independent-trial assumptions. Correct quantiles do not establish that cheap answer-equivalence labels are ground truth or that repeated adaptive testing has fixed-sample coverage.

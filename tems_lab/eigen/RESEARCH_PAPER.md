@@ -532,7 +532,7 @@ To prove the complete pipeline works end-to-end, we ran a real fine-tuning exper
 
 | Query | Base Model (no fine-tune) | Fine-Tuned (10 examples) |
 |-------|:------------------------:|:------------------------:|
-| "What is 72°F in Celsius?" | "150°C" (WRONG — arithmetic error) | "21.2°C" (close to correct 22.2°C) |
+| "What is 72°F in Celsius?" | "150°C" (WRONG — arithmetic error) | "21.2°C" (incorrect; exact value 22.222…°C) |
 
 The base SmolLM2-135M made a fundamental arithmetic error (computing (72-32)×5/9 as 150 instead of 22.2). After fine-tuning on just 10 conversations — one of which contained the correct conversion — the model learned the correct pattern. This is knowledge distillation working at the smallest possible scale.
 
@@ -680,7 +680,7 @@ Base model (no fine-tune):
   "72°F in Celsius?" → "150°C"  ← WRONG (arithmetic error: 30 × 5/9 ≠ 150)
 
 Fine-tuned model (10 conversations):
-  "72°F in Celsius?" → "21.2°C"  ← CORRECT (close to exact 22.2°C)
+  "72°F in Celsius?" → "21.2°C"  ← INCORRECT (exact value 22.222…°C)
 
 Inference: ~200 tok/sec, 0.306 GB peak memory
 
@@ -688,7 +688,7 @@ Inference: ~200 tok/sec, 0.306 GB peak memory
 128 tests passing
 ```
 
-The base model computed `(72-32) × 5/9 = 30 × 5/9 = 150°C` — a fundamental arithmetic error. After training on 10 conversations (one of which contained the correct conversion), the model learned the correct pattern and produced 21.2°C. This is knowledge distillation in its purest form: learning correct behavior from examples rather than reasoning from first principles.
+The recorded base response was 150°C and the fine-tuned response was 21.2°C. Both are incorrect: `(72 - 32) × 5 / 9 = 22.222…°C`. The latter has a smaller absolute error, but this example does not demonstrate correct conversion or verified transfer of a correct procedure. Modernization audit correction: the observed responses are preserved; the earlier success interpretation is withdrawn.
 
 ---
 

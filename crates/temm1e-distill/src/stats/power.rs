@@ -3,23 +3,15 @@
 //! Computes the minimum sample size needed to detect a difference
 //! between two proportions with specified significance and power.
 
-/// Normal quantile approximation (absolute error < 0.00045).
-/// Abramowitz & Stegun 26.2.23, explained at
-/// https://www.johndcook.com/normal_cdf_inverse.html
-fn normal_quantile(p: f64) -> f64 {
-    if p == 0.5 {
-        return 0.0;
+/// Validated scalar inverse CDF; no silently clamped probability endpoints.
+pub(super) fn normal_quantile(p: f64) -> f64 {
+    use statrs::distribution::{ContinuousCDF, Normal};
+    if !p.is_finite() || p <= 0.0 || p >= 1.0 {
+        return f64::NAN;
     }
-    let tail = if p < 0.5 { p } else { 1.0 - p };
-    let t = (-2.0 * tail.ln()).sqrt();
-    let q = t
-        - (2.515517 + t * (0.802853 + t * 0.010328))
-            / (1.0 + t * (1.432788 + t * (0.189269 + t * 0.001308)));
-    if p < 0.5 {
-        -q
-    } else {
-        q
-    }
+    Normal::new(0.0, 1.0)
+        .expect("standard normal has valid parameters")
+        .inverse_cdf(p)
 }
 
 /// Approximate one-sample size for a two-sided proportion test against fixed p0.
@@ -40,9 +32,14 @@ pub fn min_sample_size(p0: f64, p1: f64, alpha: f64, power: f64) -> u64 {
     {
         return u64::MAX;
     }
-    let null = normal_quantile(1.0 - alpha / 2.0) * (p0 * (1.0 - p0)).sqrt();
+    let null = (-normal_quantile(alpha / 2.0)) * (p0 * (1.0 - p0)).sqrt();
     let alternative = normal_quantile(power) * (p1 * (1.0 - p1)).sqrt();
-    ((null + alternative).powi(2) / (p1 - p0).powi(2)).ceil() as u64
+    let estimate = ((null + alternative).powi(2) / (p1 - p0).powi(2)).ceil();
+    if !estimate.is_finite() || estimate <= 0.0 {
+        u64::MAX
+    } else {
+        estimate as u64
+    }
 }
 
 #[cfg(test)]
@@ -50,10 +47,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extreme_significance_cannot_round_into_zero_required_trials() {
+        let ordinary = min_sample_size(0.5, 0.55, 0.05, 0.8);
+        assert!(min_sample_size(0.5, 0.55, 1e-30, 0.8) > ordinary);
+        assert_eq!(min_sample_size(0.5, 0.55, f64::from_bits(1), 0.8), u64::MAX);
+    }
+
+    #[test]
     fn standard_case() {
         // Independent reference: Python statistics.NormalDist().inv_cdf.
-        assert!((normal_quantile(0.80) - 0.8416212336).abs() < 0.00045);
-        assert!((normal_quantile(0.975) - 1.9599639845).abs() < 0.00045);
+        assert!((normal_quantile(0.80) - 0.8416212336).abs() < 1e-9);
+        assert!((normal_quantile(0.975) - 1.9599639845).abs() < 1e-9);
         let n = min_sample_size(0.5, 0.55, 0.05, 0.80);
         assert!((782..=784).contains(&n), "n={n}");
     }

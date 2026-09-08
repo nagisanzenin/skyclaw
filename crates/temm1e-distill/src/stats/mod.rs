@@ -12,4 +12,4 @@ pub use entropy::{normalized_entropy, shannon_entropy};
 pub use power::min_sample_size;
 pub use sprt::{Sprt, SprtDecision};
 pub use thompson::ThompsonSampler;
-pub use wilson::{wilson_interval, wilson_lower, z_value};
+pub use wilson::{try_wilson_interval, wilson_interval, wilson_lower, z_value};

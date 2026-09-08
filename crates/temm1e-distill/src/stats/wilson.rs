@@ -3,41 +3,14 @@
 //! Provides confidence intervals for binomial proportions that are
 //! well-behaved even with small samples or extreme proportions.
 
-/// Z-value lookup for common confidence levels.
-///
-/// Supports exact lookup for 0.90, 0.95, 0.99, and linear interpolation
-/// for values in between. Returns the closest endpoint for values outside
-/// the range.
+/// Two-sided standard-normal critical value for any finite confidence in (0,1).
+/// Evaluating the lower tail avoids rounding (1 + confidence)/2 to exactly one.
+/// Invalid confidence returns NaN; checked intervals reject it.
 pub fn z_value(confidence: f64) -> f64 {
-    // Known z-values for two-tailed confidence intervals.
-    const TABLE: [(f64, f64); 5] = [
-        (0.80, 1.282),
-        (0.90, 1.645),
-        (0.95, 1.960),
-        (0.98, 2.326),
-        (0.99, 2.576),
-    ];
-
-    // Clamp to table range.
-    if confidence <= TABLE[0].0 {
-        return TABLE[0].1;
+    if !confidence.is_finite() || confidence <= 0.0 || confidence >= 1.0 {
+        return f64::NAN;
     }
-    if confidence >= TABLE[TABLE.len() - 1].0 {
-        return TABLE[TABLE.len() - 1].1;
-    }
-
-    // Find bracketing entries and linearly interpolate.
-    for i in 0..TABLE.len() - 1 {
-        let (c0, z0) = TABLE[i];
-        let (c1, z1) = TABLE[i + 1];
-        if confidence >= c0 && confidence <= c1 {
-            let t = (confidence - c0) / (c1 - c0);
-            return z0 + t * (z1 - z0);
-        }
-    }
-
-    // Fallback (should not reach here due to clamping).
-    1.960
+    -super::power::normal_quantile((1.0 - confidence) / 2.0)
 }
 
 /// Compute Wilson score confidence interval for a binomial proportion.
@@ -48,13 +21,28 @@ pub fn z_value(confidence: f64) -> f64 {
 /// - `total`: total number of trials (must be > 0)
 /// - `confidence`: confidence level (e.g., 0.95 for 95% CI)
 pub fn wilson_interval(successes: u64, total: u64, confidence: f64) -> (f64, f64) {
-    if total == 0 {
-        return (0.0, 1.0);
-    }
+    try_wilson_interval(successes, total, confidence).unwrap_or((0.0, 1.0))
+}
 
+/// Validated interval. No trials, impossible counts, or invalid confidence are errors.
+/// The legacy wrapper returns an uninformative [0,1] interval for these inputs.
+pub fn try_wilson_interval(
+    successes: u64,
+    total: u64,
+    confidence: f64,
+) -> Result<(f64, f64), &'static str> {
+    if total == 0 {
+        return Err("Wilson interval requires at least one trial");
+    }
+    if successes > total {
+        return Err("Wilson successes exceed total trials");
+    }
+    let z = z_value(confidence);
+    if !z.is_finite() {
+        return Err("Wilson confidence must be finite and strictly between zero and one");
+    }
     let n = total as f64;
     let p = successes as f64 / n;
-    let z = z_value(confidence);
     let z2 = z * z;
 
     let denominator = n + z2;
@@ -63,7 +51,7 @@ pub fn wilson_interval(successes: u64, total: u64, confidence: f64) -> (f64, f64
 
     let lower = (center - margin).max(0.0);
     let upper = (center + margin).min(1.0);
-    (lower, upper)
+    Ok((lower, upper))
 }
 
 /// Compute the lower bound of the Wilson score interval.
@@ -74,6 +62,35 @@ pub fn wilson_lower(successes: u64, total: u64, confidence: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arbitrary_confidence_matches_independent_normal_quantiles() {
+        // Reference values generated with Python statistics.NormalDist.inv_cdf.
+        for (confidence, expected) in [
+            (0.1, 0.125661346855074),
+            (0.5, 0.6744897501960817),
+            (0.8, 1.2815515655446006),
+            (0.95, 1.9599639845400534),
+            (0.99, 2.5758293035489),
+            (0.9999, 3.89059188641312),
+            (0.999999999999, 7.130509892879272),
+        ] {
+            assert!((z_value(confidence) - expected).abs() < 1e-8);
+        }
+        let ordinary = wilson_interval(100, 100, 0.99);
+        let stricter = wilson_interval(100, 100, 0.9999);
+        assert!(stricter.0 < ordinary.0);
+    }
+
+    #[test]
+    fn invalid_inputs_cannot_create_positive_evidence() {
+        for confidence in [f64::NAN, f64::INFINITY, -0.1, 0.0, 1.0, 1.1] {
+            assert!(try_wilson_interval(10, 10, confidence).is_err());
+            assert_eq!(wilson_interval(10, 10, confidence), (0.0, 1.0));
+        }
+        assert!(try_wilson_interval(11, 10, 0.95).is_err());
+        assert!(try_wilson_interval(0, 0, 0.95).is_err());
+    }
 
     #[test]
     fn perfect_score_near_one() {
