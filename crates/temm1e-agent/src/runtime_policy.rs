@@ -1,32 +1,12 @@
-//! Snapshot of user-selected feature policy, shared by runtime construction paths.
-use temm1e_core::types::config::{EngramConfig, Temm1eConfig};
-
-#[derive(Clone, Debug)]
-pub struct RuntimePolicy {
-    pub(crate) v2_optimizations: bool,
-    pub(crate) self_audit_enabled: bool,
-    pub(crate) parallel_phases: bool,
-    pub(crate) blueprint_notice: bool,
-    pub(crate) engram: EngramConfig,
-}
-
-impl RuntimePolicy {
-    pub fn from_config(config: &Temm1eConfig) -> Self {
-        Self {
-            v2_optimizations: config.agent.v2_optimizations,
-            self_audit_enabled: config.agent.self_audit_enabled,
-            parallel_phases: config.agent.parallel_phases,
-            blueprint_notice: config.agent.blueprint_notice,
-            engram: config.memory.engram.clone(),
-        }
-    }
-}
+//! Compatibility export and runtime inheritance acceptance.
+pub use temm1e_core::runtime_policy::RuntimePolicy;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{budget::BudgetTracker, AgentRuntime};
     use std::sync::Arc;
+    use temm1e_core::types::config::Temm1eConfig;
     use temm1e_test_utils::{MockMemory, MockProvider};
 
     #[test]

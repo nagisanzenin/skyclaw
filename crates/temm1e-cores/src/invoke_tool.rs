@@ -83,6 +83,22 @@ impl InvokeCoreTool {
 
 #[async_trait]
 impl Tool for InvokeCoreTool {
+    fn bind_runtime(
+        &self,
+        resources: &temm1e_core::runtime_resources::RuntimeResources,
+    ) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            registry: self.registry.clone(),
+            provider: resources.provider.clone(),
+            all_tools: resources.bind_tools(&self.filtered_tools()),
+            budget: resources.budget.clone(),
+            model_pricing: resources.pricing,
+            model: resources.model.clone(),
+            max_context_tokens: resources.max_context_tokens,
+            memory: resources.memory.clone(),
+        }))
+    }
+
     fn name(&self) -> &str {
         "invoke_core"
     }
@@ -541,5 +557,189 @@ mod tests {
         assert_eq!(seen.role, context.role);
         assert_eq!(seen.workspace_path, context.workspace_path);
         assert_ne!(seen.chat_id, context.chat_id);
+    }
+    #[tokio::test]
+    async fn replacement_runtime_invokes_core_with_its_own_provider_model_and_budget() {
+        use temm1e_test_utils::{make_inbound_msg, make_session, QueuedMockProvider};
+        let directory = tempfile::tempdir().unwrap();
+        let mut registry = CoreRegistry::new();
+        registry.load_core(crate::definition::CoreDefinition {
+            name: "binding".into(),
+            description: "fixture".into(),
+            version: "1.0.0".into(),
+            temperature: None,
+            system_prompt: "CORE_BINDING_SENTINEL <task>".into(),
+            source_path: directory.path().join("binding.md"),
+        });
+        let old_provider = Arc::new(QueuedMockProvider::with_responses(vec![
+            QueuedMockProvider::text_response("obsolete connection was used"),
+        ]));
+        let old_budget = Arc::new(BudgetTracker::new(0.0));
+        let memory: Arc<dyn Memory> = Arc::new(MockMemory);
+        let tool: Arc<dyn Tool> = Arc::new(InvokeCoreTool::new(
+            Arc::new(RwLock::new(registry)),
+            old_provider.clone(),
+            vec![],
+            old_budget.clone(),
+            ModelPricing::Unknown,
+            "old-model".into(),
+            30000,
+            memory.clone(),
+        ));
+        let new_provider = Arc::new(QueuedMockProvider::with_responses(vec![
+            QueuedMockProvider::tool_use_response(
+                "core-call",
+                "invoke_core",
+                serde_json::json!({"core":"binding","task":"inspect"}),
+            ),
+            QueuedMockProvider::text_response("core used the current connection"),
+            QueuedMockProvider::text_response("parent returned"),
+        ]));
+        let new_budget = Arc::new(BudgetTracker::new(0.0));
+        let runtime = temm1e_agent::AgentRuntime::new(
+            new_provider.clone(),
+            memory,
+            vec![tool],
+            "new-model".into(),
+            Some("fixture".into()),
+        )
+        .with_budget(new_budget.clone())
+        .with_v2_optimizations(false)
+        .with_self_audit_enabled(false);
+        let mut session = make_session();
+        session.workspace_path = directory.path().into();
+        runtime
+            .process_message(
+                &make_inbound_msg("Inspect"),
+                &mut session,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            runtime
+                .shutdown_background(std::time::Duration::from_secs(2))
+                .await
+        );
+        assert_eq!(
+            old_provider.calls().await,
+            0,
+            "delegation used the obsolete provider"
+        );
+        assert_eq!(old_budget.snapshot().recorded_calls, 0);
+        let requests = new_provider.captured_requests.lock().await;
+        assert!(requests.iter().all(|request| request.model == "new-model"));
+        assert!(requests.iter().any(|request| request
+            .system
+            .as_deref()
+            .is_some_and(|s| s.contains("CORE_BINDING_SENTINEL"))));
+        assert_eq!(new_budget.snapshot().recorded_calls, requests.len() as u64);
+    }
+    struct InterleavedProvider {
+        model: &'static str,
+        barrier: Arc<tokio::sync::Barrier>,
+    }
+    #[async_trait]
+    impl Provider for InterleavedProvider {
+        fn name(&self) -> &str {
+            "interleaved-fixture"
+        }
+        async fn complete(
+            &self,
+            request: temm1e_core::types::message::CompletionRequest,
+        ) -> Result<temm1e_core::types::message::CompletionResponse, Temm1eError> {
+            assert_eq!(request.model, self.model);
+            self.barrier.wait().await;
+            Ok(temm1e_test_utils::QueuedMockProvider::text_response(
+                self.model,
+            ))
+        }
+        async fn stream(
+            &self,
+            _: temm1e_core::types::message::CompletionRequest,
+        ) -> Result<
+            futures::stream::BoxStream<
+                '_,
+                Result<temm1e_core::types::message::StreamChunk, Temm1eError>,
+            >,
+            Temm1eError,
+        > {
+            unreachable!()
+        }
+        async fn health_check(&self) -> Result<bool, Temm1eError> {
+            Ok(true)
+        }
+        async fn list_models(&self) -> Result<Vec<String>, Temm1eError> {
+            Ok(vec![self.model.into()])
+        }
+    }
+
+    #[tokio::test]
+    async fn interleaved_bound_core_instances_do_not_mutate_each_other_or_template() {
+        let mut registry = CoreRegistry::new();
+        registry.load_core(crate::definition::CoreDefinition {
+            name: "binding".into(),
+            description: "fixture".into(),
+            version: "1.0.0".into(),
+            temperature: None,
+            system_prompt: "<task>".into(),
+            source_path: "binding.md".into(),
+        });
+        let obsolete = Arc::new(temm1e_test_utils::QueuedMockProvider::with_responses(
+            vec![],
+        ));
+        let template_budget = Arc::new(BudgetTracker::new(0.0));
+        let memory: Arc<dyn Memory> = Arc::new(MockMemory);
+        let template = InvokeCoreTool::new(
+            Arc::new(RwLock::new(registry)),
+            obsolete.clone(),
+            vec![],
+            template_budget.clone(),
+            ModelPricing::Unknown,
+            "obsolete".into(),
+            30000,
+            memory.clone(),
+        );
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let resources = |model| temm1e_core::runtime_resources::RuntimeResources {
+            provider: Arc::new(InterleavedProvider {
+                model,
+                barrier: barrier.clone(),
+            }),
+            memory: memory.clone(),
+            budget: Arc::new(BudgetTracker::new(0.0)),
+            model: model.into(),
+            pricing: ModelPricing::Unknown,
+            max_context_tokens: 30000,
+            policy: temm1e_core::runtime_policy::RuntimePolicy::from_config(&Default::default()),
+        };
+        let a = resources("model-a");
+        let b = resources("model-b");
+        let tool_a = template.bind_runtime(&a).unwrap();
+        let tool_b = template.bind_runtime(&b).unwrap();
+        let ctx = ToolContext::from_session(&temm1e_test_utils::make_session());
+        let input = ToolInput {
+            name: "invoke_core".into(),
+            arguments: serde_json::json!({"core":"binding","task":"inspect"}),
+        };
+        let (out_a, out_b) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::join!(
+                tool_a.execute(input.clone(), &ctx),
+                tool_b.execute(input.clone(), &ctx)
+            )
+        })
+        .await
+        .unwrap();
+        assert!(out_a.unwrap().content.starts_with("model-a"));
+        assert!(out_b.unwrap().content.starts_with("model-b"));
+        assert_eq!(a.budget.snapshot().recorded_calls, 1);
+        assert_eq!(b.budget.snapshot().recorded_calls, 1);
+        assert_eq!(template_budget.snapshot().recorded_calls, 0);
+        assert_eq!(obsolete.calls().await, 0);
+        assert_eq!(template.model, "obsolete");
     }
 }

@@ -113,6 +113,16 @@ pub trait Tool: Send + Sync {
     /// What resources this tool needs (for sandboxing enforcement)
     fn declarations(&self) -> ToolDeclarations;
 
+    /// Model-consuming tools may return a new instance bound to one runtime.
+    /// Never mutate shared templates: old and replacement turns can overlap.
+    /// Ordinary tools return None and retain their existing instance.
+    fn bind_runtime(
+        &self,
+        _resources: &crate::runtime_resources::RuntimeResources,
+    ) -> Option<std::sync::Arc<dyn Tool>> {
+        None
+    }
+
     /// Execute the tool with given input
     async fn execute(&self, input: ToolInput, ctx: &ToolContext)
         -> Result<ToolOutput, Temm1eError>;

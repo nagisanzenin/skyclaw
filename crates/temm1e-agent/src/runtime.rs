@@ -758,6 +758,19 @@ impl AgentRuntime {
         }
     }
 
+    /// Capture the effective resources after builder overrides, for this runtime only.
+    pub fn runtime_resources(&self) -> temm1e_core::runtime_resources::RuntimeResources {
+        temm1e_core::runtime_resources::RuntimeResources {
+            provider: self.provider.clone(),
+            memory: self.memory.clone(),
+            budget: self.budget.clone(),
+            model: self.model.clone(),
+            pricing: self.model_pricing,
+            max_context_tokens: self.max_context_tokens,
+            policy: self.runtime_policy(),
+        }
+    }
+
     /// Set the Engram permanent-memory configuration (default-on).
     pub fn with_engram_config(mut self, cfg: temm1e_core::types::config::EngramConfig) -> Self {
         self.engram_config = cfg;
@@ -937,6 +950,8 @@ impl AgentRuntime {
         execution: Option<(&crate::execution_journal::ExecutionJournal, &str)>,
         background: &crate::background::BackgroundScope,
     ) -> Result<(OutboundMessage, TurnUsage), Temm1eError> {
+        let bound_tools = self.runtime_resources().bind_tools(&self.tools);
+
         info!(
             channel = %msg.channel,
             chat_id = %msg.chat_id,
@@ -1644,8 +1659,7 @@ impl AgentRuntime {
             // Role-based tool filtering + P6 per-runtime tool filter.
             // Both filters compose with AND: a tool must be permitted by the
             // session role AND pass the runtime filter (if set) to be visible.
-            let mut effective_tools: Vec<Arc<dyn Tool>> = self
-                .tools
+            let mut effective_tools: Vec<Arc<dyn Tool>> = bound_tools
                 .iter()
                 .filter(|t| {
                     let role_ok =
@@ -3628,7 +3642,7 @@ impl AgentRuntime {
                 // If the tool produced an image (e.g., browser screenshot),
                 // inject it as a ContentPart::Image so the LLM can see it.
                 // Only works with vision-capable models; silently skipped otherwise.
-                if let Some(tool_ref) = self.tools.iter().find(|t| t.name() == tool_name) {
+                if let Some(tool_ref) = effective_tools.iter().find(|t| t.name() == tool_name) {
                     if let Some(img) = tool_ref.take_last_image() {
                         if self.forwards_images() {
                             info!(

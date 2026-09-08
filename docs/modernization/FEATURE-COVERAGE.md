@@ -2,7 +2,7 @@
 
 Every original FEATURES.md entry is mapped below, followed by later feature families and the complete source/document inventory. Coverage means design/source audit and a defined acceptance path; it does not mean every native platform, external account, integration or mathematical claim was experimentally validated. The baseline workspace library tests ran, but binary/integration/feature-flag tests and live services have separate limits in VALIDATION. No feature is declared healthy merely because no defect was found.
 
-## Implementation evidence through checkpoint44
+## Implementation evidence through checkpoint45
 
 The tables below preserve the initial baseline audit. They are not the current implementation status. Use the linked implementation documents and checkpoint log for repairs and remaining limits:
 
@@ -17,6 +17,7 @@ The tables below preserve the initial baseline audit. They are not the current i
 | Numerical reliability, identity and editing | Earlier math/reference checks, RBAC bootstrap, caller workspace propagation and temporary-index snapshot checkpoints | Global principal isolation, learning calibration and crash-atomic multi-file edits are not proved by these repairs. |
 | Prowl blueprints | Checkpoint 27 parses every built-in with the real production schema and corrects unsupported login instructions | `BROWSER-IMPLEMENTATION.md` records owned profiles and tested origin-bound submission; no claim of 100+ verified live login services. |
 | Engram persistence, identity and numeric policy | `ENGRAM-NUMERIC-IMPLEMENTATION.md`, `TOOL-IDENTITY-IMPLEMENTATION.md`, `ENGRAM-PERSISTENCE-IMPLEMENTATION.md`; checkpoints42–44, real scoped SQLite persistence/deletion and Markdown unsupported acceptance | EMA/provenance/cadence, channel-qualified principals and promised Markdown Engram fallback remain open. |
+| Runtime resources and delegated model identity | `RUNTIME-RESOURCES-IMPLEMENTATION.md`; checkpoint45 immutable bindings, two-endpoint real CLI model switch/core and interleaved core/JIT tests | Full composition factory, Consciousness/Perpetuum lifecycle identity and durable global reservations remain open. |
 | Hive scheduling and composed accounting | `HIVE-IMPLEMENTATION.md`, `SHARED-ACCOUNTING-IMPLEMENTATION.md`; stale publication/transactional completion and initial shared budgets, checkpoints 32–33 | Active-task recovery/generation ownership, durable budget reservations, alternate entrypoint and all auxiliary-call coverage remain open. |
 
 ## Original feature roadmap
@@ -66,7 +67,7 @@ Vision source: `FEATURES.md` and `docs/TEMM1E_VISION.md`; newer `VISION.md` can 
 | Feature / idea | Vision source | Implementation | Assessment and better implementation |
 |---|---|---|---|
 | λ-Memory | tems_lab/LAMBDA_MEMORY.md | agent/lambda_memory.rs; memory/sqlite.rs | Preserve levels and decay; fix scope F13 and units; benchmark recall at equal context, P08/P11. |
-| Engram | tems_lab/ENGRAM_MEMORY.md | agent/engram.rs; memory engram methods; tools/engram_tool.rs | Keep pinning/hysteresis/GC; checkpoint40 preserves explicit Engram/curator policy through CLI/TUI/replacement/workers (RUNTIME-POLICY-IMPLEMENTATION.md). Checkpoint43 supplies real user scope and literal-query lookup (TOOL-IDENTITY-IMPLEMENTATION.md); no-op backend/ambiguous deletion still open. Checkpoint42 fixes numeric inputs/packing; EMA reinforcement is not wired to writes. Cadence beyond substantive/off remains unimplemented; provenance, contradictions, finite math and scoped deletion, P08/P11. |
+| Engram | tems_lab/ENGRAM_MEMORY.md | agent/engram.rs; memory engram methods; tools/engram_tool.rs | Keep pinning/hysteresis/GC; checkpoint40 preserves explicit Engram/curator policy through CLI/TUI/replacement/workers (RUNTIME-POLICY-IMPLEMENTATION.md). Checkpoint43 supplies real user scope and literal-query lookup (TOOL-IDENTITY-IMPLEMENTATION.md); checkpoint44 rejects no-op backend writes and ambiguous deletion with scoped SQLite comparison (ENGRAM-PERSISTENCE-IMPLEMENTATION.md). Checkpoint42 fixes numeric inputs/packing; EMA reinforcement is not wired to writes. Cadence beyond substantive/off remains unimplemented; provenance, contradictions, finite math and scoped deletion, P08/P11. |
 | Blueprints | docs/design/BLUEPRINT_SYSTEM.md | agent/blueprint.rs; tools/prowl_blueprints.rs | Keep procedural memory and piggyback hint; preconditions/version invalidation, outcome evidence, P11. |
 | Finite Brain / complexity modes | VISION.md; tems_lab/TEMS_MIND_V2_PLAN.md | agent/runtime.rs; llm_classifier.rs; context.rs | Keep adaptive effort and selected model; final-token/usage invariant P04/P10/P14. |
 | Consciousness | tems_lab/consciousness/IMPLEMENTATION.md | agent/consciousness_engine.rs; consciousness.rs | Keep metacognition; not independent proof of correctness. Include all cost/latency and evidence ablation P10/P11. |

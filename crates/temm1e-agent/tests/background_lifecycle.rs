@@ -11,7 +11,7 @@ use temm1e_core::{
     types::{error::Temm1eError, message::*},
     Provider,
 };
-use temm1e_test_utils::{make_inbound_msg, make_session, MockMemory, MockProvider};
+use temm1e_test_utils::{make_inbound_msg, make_session, MockProvider};
 
 struct CuratorFixture {
     started: tokio::sync::Notify,
@@ -66,7 +66,11 @@ async fn actual_curator_is_owned_after_foreground_reply_and_dropped_on_bounded_s
     });
     let runtime = temm1e_agent::AgentRuntime::new(
         provider.clone(),
-        Arc::new(MockMemory::new()),
+        Arc::new(
+            temm1e_memory::SqliteMemory::new("sqlite::memory:")
+                .await
+                .unwrap(),
+        ),
         vec![],
         "fixture".into(),
         Some("Test".into()),
