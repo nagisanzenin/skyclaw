@@ -128,11 +128,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timeout = Duration::from_secs(180);
     let deadline = tokio::time::Instant::now() + timeout;
     let mut got_response = false;
+    let mut streamed_deltas = 0usize;
     let mut response_text = String::new();
     while tokio::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Some(Event::TextLifecycle(
+                temm1e_agent::agent_task_status::AgentTextEvent::Delta { .. },
+            ))) => {
+                streamed_deltas += 1;
+            }
             Ok(Some(Event::AgentResponse(resp))) => {
+                if resp.kind == temm1e_tui::event::ResponseKind::Failed {
+                    eprintln!("[SMOKE FAIL] agent reported failure");
+                    std::process::exit(5);
+                }
+                if resp.kind != temm1e_tui::event::ResponseKind::Final {
+                    continue;
+                }
                 got_response = true;
                 response_text = resp.message.text;
                 let elapsed = t_send.elapsed();
@@ -151,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let tag = match &other {
                     Event::Terminal(_) => "Terminal",
                     Event::AgentStatus(_) => "AgentStatus",
-                    Event::StreamChunk(_) => "StreamChunk",
+                    Event::TextLifecycle(_) => "TextLifecycle",
                     Event::UserSubmit(_) => "UserSubmit",
                     Event::AgentResponse(_) => "AgentResponse",
                     _ => "Other",
@@ -164,7 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(4);
             }
             Err(_) => {
-                eprintln!("[SMOKE FAIL] timeout waiting for agent response (90s)");
+                eprintln!("[SMOKE FAIL] timeout waiting for final agent response (180s)");
                 std::process::exit(4);
             }
         }
@@ -182,6 +195,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("[SMOKE] AGENT RESPONDED ({} chars):", response_text.len());
     println!("{response_text}");
-    eprintln!("[SMOKE] DONE — all checks passed");
+    if args.iter().any(|arg| arg == "--require-stream") && streamed_deltas == 0 {
+        eprintln!("[SMOKE FAIL] no actual text deltas reached the TUI event channel");
+        std::process::exit(6);
+    }
+    eprintln!("[SMOKE] DONE — final response received; streamed_deltas={streamed_deltas}");
     Ok(())
 }

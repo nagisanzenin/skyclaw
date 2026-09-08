@@ -407,13 +407,17 @@ impl GeminiProvider {
         let usage = response
             .usage_metadata
             .map(|u| Usage {
+                totals_reported: Some(true),
                 input_tokens: u.prompt_token_count,
                 cache_read_tokens: u.cached_content_token_count,
                 cache_write_tokens: None,
                 output_tokens: u.candidates_token_count,
                 cost_usd: 0.0,
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| Usage {
+                totals_reported: Some(false),
+                ..Usage::default()
+            });
 
         CompletionResponse {
             id: uuid::Uuid::new_v4().to_string(),
@@ -505,6 +509,8 @@ impl Provider for GeminiProvider {
             .collect::<String>();
 
         let chunks = vec![Ok(StreamChunk {
+            usage: None,
+            response_id: None,
             delta: Some(text),
             tool_use: None,
             stop_reason: response.stop_reason,

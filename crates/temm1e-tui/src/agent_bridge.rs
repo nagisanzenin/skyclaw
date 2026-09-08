@@ -569,6 +569,14 @@ pub async fn spawn_agent(
         tracing::info!("JIT spawn_swarm context wired (TUI)");
     }
 
+    let agent = if setup.config.agent.streaming_enabled {
+        let text_event_tx = event_tx.clone();
+        agent.with_text_observer(Arc::new(move |event| {
+            let _ = text_event_tx.send(Event::TextLifecycle(event));
+        }))
+    } else {
+        agent
+    };
     let tool_event_tx = event_tx.clone();
     let agent = agent.with_tool_observer(Arc::new(move |event| {
         let _ = tool_event_tx.send(Event::ToolLifecycle(event));

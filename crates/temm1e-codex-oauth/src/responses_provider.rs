@@ -248,6 +248,7 @@ impl Provider for CodexResponsesProvider {
             content,
             stop_reason,
             usage: Usage {
+                totals_reported: None,
                 input_tokens: 0,
                 output_tokens: 0,
                 cost_usd: 0.0,
@@ -332,6 +333,8 @@ impl Provider for CodexResponsesProvider {
                                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
                                 return Some((
                                     Ok(StreamChunk {
+                                        usage: None,
+                                        response_id: None,
                                         delta: None,
                                         tool_use: Some(ContentPart::ToolUse {
                                             id: call_id,
@@ -347,6 +350,8 @@ impl Provider for CodexResponsesProvider {
                             if data_line == "[DONE]" {
                                 return Some((
                                     Ok(StreamChunk {
+                                        usage: None,
+                                        response_id: None,
                                         delta: None,
                                         tool_use: None,
                                         stop_reason: Some("end_turn".to_string()),
@@ -377,6 +382,8 @@ impl Provider for CodexResponsesProvider {
                                 if let Some(delta) = data.get("delta").and_then(|d| d.as_str()) {
                                     return Some((
                                         Ok(StreamChunk {
+                                            usage: None,
+                                            response_id: None,
                                             delta: Some(delta.to_string()),
                                             tool_use: None,
                                             stop_reason: None,
@@ -483,6 +490,8 @@ impl Provider for CodexResponsesProvider {
                                             ));
                                         return Some((
                                             Ok(StreamChunk {
+                                                usage: None,
+                                                response_id: None,
                                                 delta: None,
                                                 tool_use: Some(ContentPart::ToolUse {
                                                     id: call_id,
@@ -509,6 +518,8 @@ impl Provider for CodexResponsesProvider {
                                         ));
                                     return Some((
                                         Ok(StreamChunk {
+                                            usage: None,
+                                            response_id: None,
                                             delta: None,
                                             tool_use: Some(ContentPart::ToolUse {
                                                 id: call_id,
@@ -537,6 +548,8 @@ impl Provider for CodexResponsesProvider {
 
                                 return Some((
                                     Ok(StreamChunk {
+                                        usage: None,
+                                        response_id: None,
                                         delta: None,
                                         tool_use: None,
                                         stop_reason: Some(stop),
@@ -571,6 +584,8 @@ impl Provider for CodexResponsesProvider {
                                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
                                 return Some((
                                     Ok(StreamChunk {
+                                        usage: None,
+                                        response_id: None,
                                         delta: None,
                                         tool_use: Some(ContentPart::ToolUse {
                                             id: call_id,

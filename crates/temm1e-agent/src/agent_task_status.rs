@@ -235,3 +235,10 @@ pub struct AgentToolEvent {
     pub execution_id: String,
     pub phase: AgentTaskPhase,
 }
+
+/// Provisional provider text. Only the final response event commits transcript text.
+#[derive(Debug, Clone)]
+pub enum AgentTextEvent {
+    Begin { id: String },
+    Delta { id: String, text: String },
+}

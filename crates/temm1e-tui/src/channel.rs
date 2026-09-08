@@ -15,7 +15,7 @@ use temm1e_core::types::file::{FileData, FileMetadata, OutboundFile, ReceivedFil
 use temm1e_core::types::message::{InboundMessage, OutboundMessage};
 use temm1e_core::{Channel, FileTransfer};
 
-use crate::event::{AgentResponseEvent, Event, StreamChunk};
+use crate::event::{AgentResponseEvent, Event};
 
 /// Channel implementation for the TUI.
 ///
@@ -31,8 +31,6 @@ pub struct TuiChannel {
     /// Agent task status watch channel.
     pub status_tx: watch::Sender<AgentTaskStatus>,
     pub status_rx: watch::Receiver<AgentTaskStatus>,
-    /// Stream chunk sender for streaming responses.
-    pub stream_tx: mpsc::UnboundedSender<StreamChunk>,
     /// Workspace directory for file operations.
     workspace: PathBuf,
 }
@@ -42,7 +40,6 @@ impl TuiChannel {
     pub fn new(event_tx: mpsc::UnboundedSender<Event>, workspace: PathBuf) -> Self {
         let (inbound_tx, inbound_rx) = mpsc::channel(64);
         let (status_tx, status_rx) = watch::channel(AgentTaskStatus::default());
-        let (stream_tx, _stream_rx) = mpsc::unbounded_channel();
 
         Self {
             inbound_tx,
@@ -50,7 +47,6 @@ impl TuiChannel {
             event_tx,
             status_tx,
             status_rx,
-            stream_tx,
             workspace,
         }
     }
@@ -73,11 +69,6 @@ impl TuiChannel {
     /// Get a clone of the status watch receiver for the TUI event loop.
     pub fn status_receiver(&self) -> watch::Receiver<AgentTaskStatus> {
         self.status_rx.clone()
-    }
-
-    /// Get the stream chunk sender for streaming responses.
-    pub fn stream_sender(&self) -> mpsc::UnboundedSender<StreamChunk> {
-        self.stream_tx.clone()
     }
 }
 

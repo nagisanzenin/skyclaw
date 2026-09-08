@@ -799,6 +799,9 @@ fn load_api_keys_cache() -> Vec<ApiKeyEntry> {
 /// - extract cell symbols when a drag-to-select just ended, and
 /// - clear the corresponding pending flags.
 fn view(state: &mut AppState, frame: &mut ratatui::Frame) {
+    if let Some(renderer) = &mut state.streaming_renderer {
+        renderer.refresh();
+    }
     let area = frame.area();
 
     match state.screen {

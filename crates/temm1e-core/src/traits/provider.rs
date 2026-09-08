@@ -13,6 +13,16 @@ pub trait Provider: Send + Sync {
     async fn complete(&self, request: CompletionRequest)
         -> Result<CompletionResponse, Temm1eError>;
 
+    /// Optional real text streaming. Backends that do not implement it retain
+    /// complete() semantics; callers must not synthesize token-by-token output.
+    async fn complete_with_observer(
+        &self,
+        request: CompletionRequest,
+        _observer: crate::streaming::TextObserver,
+    ) -> Result<CompletionResponse, Temm1eError> {
+        self.complete(request).await
+    }
+
     /// Send a completion request and get a streaming response
     async fn stream(
         &self,

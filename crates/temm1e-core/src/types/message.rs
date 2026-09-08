@@ -173,6 +173,11 @@ pub struct CompletionResponse {
 /// Streaming chunk from an AI model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChunk {
+    /// Cumulative normalized usage for this request; absence is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
     pub delta: Option<String>,
     pub tool_use: Option<ContentPart>,
     pub stop_reason: Option<String>,
@@ -180,6 +185,9 @@ pub struct StreamChunk {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
+    /// Some(false): provider omitted totals. None: legacy producer did not declare completeness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totals_reported: Option<bool>,
     /// Total input, including cache reads and writes. Provider adapters normalize this.
     pub input_tokens: u32,
     pub output_tokens: u32,

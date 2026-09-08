@@ -13,7 +13,8 @@
 
 #![allow(dead_code)]
 
-pub mod anthropic;
+mod anthropic;
+pub mod chat_stream;
 pub mod gemini;
 pub mod openai_compat;
 pub mod rate_limit;

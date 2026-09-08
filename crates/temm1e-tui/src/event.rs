@@ -13,22 +13,13 @@ pub enum Event {
     /// Ordered tool events; watch snapshots cannot serve as a history.
     ToolLifecycle(temm1e_agent::agent_task_status::AgentToolEvent),
     /// Streaming text chunk from the agent.
-    StreamChunk(StreamChunk),
+    TextLifecycle(temm1e_agent::agent_task_status::AgentTextEvent),
     /// User submitted input (from input widget).
     UserSubmit(String),
     /// Agent finished processing — final response.
     AgentResponse(AgentResponseEvent),
     /// Tick for animations (spinner, elapsed time).
     Tick,
-}
-
-/// A chunk of streamed text from the agent.
-#[derive(Debug, Clone)]
-pub struct StreamChunk {
-    /// The delta text to append.
-    pub delta: String,
-    /// Whether this is the final chunk.
-    pub done: bool,
 }
 
 /// Agent response event with full message and usage info.

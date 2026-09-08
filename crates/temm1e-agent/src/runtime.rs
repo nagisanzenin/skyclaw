@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 use base64::Engine;
 use temm1e_core::types::error::Temm1eError;
 use temm1e_core::types::message::{
-    ChatMessage, ContentPart, InboundMessage, MessageContent, OutboundMessage, ParseMode, Role,
-    TurnUsage,
+    ChatMessage, CompletionRequest, ContentPart, InboundMessage, MessageContent, OutboundMessage,
+    ParseMode, Role, TurnUsage,
 };
 use temm1e_core::types::model_registry;
 use temm1e_core::types::session::SessionContext;
@@ -248,6 +248,7 @@ pub struct AgentRuntime {
     durable_execution: bool,
     journal: tokio::sync::OnceCell<Arc<crate::execution_journal::ExecutionJournal>>,
     tool_observer: Option<Arc<dyn Fn(crate::agent_task_status::AgentToolEvent) + Send + Sync>>,
+    text_observer: Option<Arc<dyn Fn(crate::agent_task_status::AgentTextEvent) + Send + Sync>>,
     /// Per-session budget tracker (Arc-wrapped for sharing with TemDOS cores).
     budget: Arc<BudgetTracker>,
     /// Pricing for the current model.
@@ -373,6 +374,7 @@ impl AgentRuntime {
             journal: tokio::sync::OnceCell::new(),
             background: crate::background::BackgroundTasks::default(),
             tool_observer: None,
+            text_observer: None,
             budget: Arc::new(BudgetTracker::new(0.0)),
             hive_enabled: false,
             model_pricing,
@@ -559,6 +561,7 @@ impl AgentRuntime {
             journal: tokio::sync::OnceCell::new(),
             background: crate::background::BackgroundTasks::default(),
             tool_observer: None,
+            text_observer: None,
             budget: Arc::new(BudgetTracker::new(max_spend_usd)),
             hive_enabled: false,
             model_pricing,
@@ -1872,7 +1875,10 @@ impl AgentRuntime {
                     // prompted-tool-calling fallback logic verbatim.
                     // `request` is moved (not cloned) — collection data was
                     // pre-extracted above.
-                    match self.provider.complete(request).await {
+                    match self
+                        .complete_foreground(self.provider.as_ref(), request)
+                        .await
+                    {
                         Ok(resp) => {
                             self.circuit_breaker.record_success();
                             resp
@@ -1920,7 +1926,7 @@ impl AgentRuntime {
                     local_req.model = endpoint.model_name.clone();
                     let local_result = tokio::time::timeout(
                         std::time::Duration::from_secs(30),
-                        local_provider.complete(local_req),
+                        self.complete_foreground(&local_provider, local_req),
                     )
                     .await;
                     match local_result {
@@ -1940,7 +1946,10 @@ impl AgentRuntime {
                                 error = %e,
                                 "Eigen-Tune: local call failed, falling back to cloud"
                             );
-                            match self.provider.complete(request).await {
+                            match self
+                                .complete_foreground(self.provider.as_ref(), request)
+                                .await
+                            {
                                 // move, not clone
                                 Ok(resp) => {
                                     self.circuit_breaker.record_success();
@@ -1957,7 +1966,10 @@ impl AgentRuntime {
                                 model = %endpoint.model_name,
                                 "Eigen-Tune: local call timed out (30s), falling back to cloud"
                             );
-                            match self.provider.complete(request).await {
+                            match self
+                                .complete_foreground(self.provider.as_ref(), request)
+                                .await
+                            {
                                 // move, not clone
                                 Ok(resp) => {
                                     self.circuit_breaker.record_success();
@@ -1980,7 +1992,7 @@ impl AgentRuntime {
                     local_req.model = endpoint.model_name.clone();
                     let local_result = tokio::time::timeout(
                         std::time::Duration::from_secs(30),
-                        local_provider.complete(local_req),
+                        self.complete_foreground(&local_provider, local_req),
                     )
                     .await;
                     match local_result {
@@ -2016,7 +2028,10 @@ impl AgentRuntime {
                             tracing::warn!(
                                 "Eigen-Tune: monitor-mode local call failed, falling back to cloud"
                             );
-                            match self.provider.complete(request).await {
+                            match self
+                                .complete_foreground(self.provider.as_ref(), request)
+                                .await
+                            {
                                 // move, not clone
                                 Ok(resp) => {
                                     self.circuit_breaker.record_success();
@@ -2035,7 +2050,10 @@ impl AgentRuntime {
                     // Cloud serves the user; local runs in parallel for SPRT evidence.
                     // Clone request for the spawn; move original into cloud call.
                     let spawn_req = request.clone(); // 1 clone — needed for async spawn
-                    let cloud_resp = match self.provider.complete(request).await {
+                    let cloud_resp = match self
+                        .complete_foreground(self.provider.as_ref(), request)
+                        .await
+                    {
                         // move
                         Ok(resp) => {
                             self.circuit_breaker.record_success();
@@ -3620,6 +3638,39 @@ impl AgentRuntime {
     }
 
     /// Get the maximum task duration.
+    pub fn with_text_observer(
+        mut self,
+        observer: Arc<dyn Fn(crate::agent_task_status::AgentTextEvent) + Send + Sync>,
+    ) -> Self {
+        self.text_observer = Some(observer);
+        self
+    }
+
+    async fn complete_foreground(
+        &self,
+        provider: &dyn Provider,
+        request: CompletionRequest,
+    ) -> Result<temm1e_core::types::message::CompletionResponse, Temm1eError> {
+        if let Some(observer) = &self.text_observer {
+            let id = uuid::Uuid::new_v4().to_string();
+            observer(crate::agent_task_status::AgentTextEvent::Begin { id: id.clone() });
+            let observer = observer.clone();
+            provider
+                .complete_with_observer(
+                    request,
+                    Arc::new(move |text| {
+                        observer(crate::agent_task_status::AgentTextEvent::Delta {
+                            id: id.clone(),
+                            text: text.to_string(),
+                        })
+                    }),
+                )
+                .await
+        } else {
+            provider.complete(request).await
+        }
+    }
+
     pub fn background_stats(&self) -> crate::background::BackgroundStats {
         self.background.stats()
     }

@@ -191,6 +191,7 @@ struct AnthropicUsage {
 impl From<AnthropicUsage> for Usage {
     fn from(raw: AnthropicUsage) -> Self {
         Self {
+            totals_reported: Some(true),
             input_tokens: raw
                 .input_tokens
                 .saturating_add(raw.cache_read_input_tokens.unwrap_or(0))
@@ -661,6 +662,8 @@ fn extract_sse_event(
                     match parsed.delta {
                         AnthropicDelta::TextDelta { text } => {
                             return Some(Ok(StreamChunk {
+                                usage: None,
+                                response_id: None,
                                 delta: Some(text),
                                 tool_use: None,
                                 stop_reason: None,
@@ -702,6 +705,8 @@ fn extract_sse_event(
                         other => other,
                     };
                     return Some(Ok(StreamChunk {
+                        usage: None,
+                        response_id: None,
                         delta: None,
                         tool_use: Some(ContentPart::ToolUse {
                             id,
@@ -718,6 +723,8 @@ fn extract_sse_event(
                 if let Ok(parsed) = serde_json::from_str::<AnthropicSseMessageDelta>(&data) {
                     if parsed.delta.stop_reason.is_some() {
                         return Some(Ok(StreamChunk {
+                            usage: None,
+                            response_id: None,
                             delta: None,
                             tool_use: None,
                             stop_reason: parsed.delta.stop_reason,

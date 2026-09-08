@@ -147,6 +147,7 @@ pub struct AppState {
 
     // Streaming
     pub streaming_renderer: Option<StreamingRenderer>,
+    pub stream_request_id: Option<String>,
 
     // Token tracking
     pub token_counter: TokenCounter,
@@ -236,6 +237,7 @@ impl AppState {
             activity_panel: ActivityPanel::new(),
             tool_details_expanded: false,
             streaming_renderer: None,
+            stream_request_id: None,
             token_counter: TokenCounter::new(),
             current_model: None,
             current_provider: None,
@@ -492,12 +494,31 @@ pub fn update(state: &mut AppState, event: Event) {
             }
             state.needs_redraw = true;
         }
-        Event::StreamChunk(chunk) => {
-            if let Some(renderer) = &mut state.streaming_renderer {
-                renderer.push(&chunk.delta);
-            }
-            if chunk.done {
-                finalize_streaming(state);
+        Event::TextLifecycle(event) => {
+            use temm1e_agent::agent_task_status::AgentTextEvent;
+            match event {
+                AgentTextEvent::Begin { id } if state.is_agent_working => {
+                    state.stream_request_id = Some(id);
+                    state.streaming_renderer = Some(StreamingRenderer::new(
+                        state.theme.text,
+                        state.theme.heading,
+                        state.theme.code_bg,
+                        state.theme.info,
+                        state.theme.secondary,
+                    ));
+                }
+                AgentTextEvent::Delta { id, text }
+                    if state.stream_request_id.as_deref() == Some(id.as_str()) =>
+                {
+                    let safe: String = text
+                        .chars()
+                        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+                        .collect();
+                    if let Some(renderer) = &mut state.streaming_renderer {
+                        renderer.push(&safe);
+                    }
+                }
+                _ => {}
             }
             state.needs_redraw = true;
         }
@@ -564,6 +585,7 @@ pub fn update(state: &mut AppState, event: Event) {
             if is_terminal {
                 state.is_agent_working = false;
                 state.streaming_renderer = None;
+                state.stream_request_id = None;
             }
             state.needs_redraw = true;
         }
@@ -1032,6 +1054,7 @@ fn handle_user_submit(state: &mut AppState, text: String) {
     });
 
     // Start streaming renderer for the response
+    state.stream_request_id = None;
     state.streaming_renderer = Some(StreamingRenderer::new(
         state.theme.text,
         state.theme.heading,
@@ -1047,25 +1070,6 @@ fn handle_user_submit(state: &mut AppState, text: String) {
     state.token_counter.reset_turn();
     // Increment turn counter for D3 tool history grouping
     state.current_turn = state.current_turn.saturating_add(1);
-}
-
-/// Finalize streaming — move rendered content to message list.
-fn finalize_streaming(state: &mut AppState) {
-    if let Some(renderer) = state.streaming_renderer.take() {
-        let lines = renderer.lines().to_vec();
-        state.message_list.push(DisplayMessage {
-            tool_id: None,
-            role: MessageRole::Agent,
-            content: lines,
-            timestamp: Utc::now(),
-            usage: Some(TurnUsage {
-                input_tokens: state.token_counter.turn_input_tokens,
-                output_tokens: state.token_counter.turn_output_tokens,
-                cost_usd: state.token_counter.turn_cost_usd,
-                elapsed_ms: 0,
-            }),
-        });
-    }
 }
 
 /// Handle key events during onboarding.
@@ -1305,6 +1309,69 @@ fn handle_onboarding_key(state: &mut AppState, key: crossterm::event::KeyEvent) 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn streamed_preview_is_provisional_and_ignores_stale_deltas() {
+        use crate::event::{AgentResponseEvent, Event, ResponseKind};
+        use temm1e_agent::agent_task_status::AgentTextEvent;
+        let mut state = super::AppState::new();
+        state.is_agent_working = true;
+        super::update(
+            &mut state,
+            Event::TextLifecycle(AgentTextEvent::Begin { id: "one".into() }),
+        );
+        super::update(
+            &mut state,
+            Event::TextLifecycle(AgentTextEvent::Delta {
+                id: "one".into(),
+                text: "provisional\u{1b}\u{7}".into(),
+            }),
+        );
+        assert_eq!(
+            state.streaming_renderer.as_ref().unwrap().text(),
+            "provisional"
+        );
+        assert!(state.message_list.messages.is_empty());
+        super::update(
+            &mut state,
+            Event::TextLifecycle(AgentTextEvent::Begin { id: "two".into() }),
+        );
+        super::update(
+            &mut state,
+            Event::TextLifecycle(AgentTextEvent::Delta {
+                id: "one".into(),
+                text: "stale".into(),
+            }),
+        );
+        assert!(state.streaming_renderer.as_ref().unwrap().is_empty());
+        super::update(
+            &mut state,
+            Event::AgentResponse(AgentResponseEvent {
+                kind: ResponseKind::Final,
+                message: temm1e_core::types::message::OutboundMessage {
+                    chat_id: "fixture".into(),
+                    text: "verified correction".into(),
+                    reply_to: None,
+                    parse_mode: None,
+                },
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: 0.0,
+            }),
+        );
+        assert!(!state.is_agent_working);
+        assert!(state.streaming_renderer.is_none());
+        assert!(state.stream_request_id.is_none());
+        assert_eq!(state.message_list.messages.len(), 1);
+        super::update(
+            &mut state,
+            Event::TextLifecycle(AgentTextEvent::Delta {
+                id: "two".into(),
+                text: "late".into(),
+            }),
+        );
+        assert!(state.streaming_renderer.is_none());
+    }
 
     #[test]
     fn response_lifecycle_does_not_depend_on_reported_usage() {

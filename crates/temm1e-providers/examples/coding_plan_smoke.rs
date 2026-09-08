@@ -19,20 +19,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let provider = temm1e_providers::create_provider(&config)?;
     let start = std::time::Instant::now();
-    let result = provider
-        .complete(CompletionRequest {
-            model: "glm-5.3-flash".into(),
-            messages: vec![ChatMessage {
-                role: Role::User,
-                content: MessageContent::Text("What is 2 + 2? Reply with the digit only.".into()),
-            }],
-            system: Some("You are running a connection smoke test.".into()),
-            system_volatile: Some("Do not call external tools.".into()),
-            tools: vec![],
-            max_tokens: Some(256),
-            temperature: Some(0.0),
-        })
-        .await;
+    let first_delta = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let observed = first_delta.clone();
+    let observer: temm1e_core::streaming::TextObserver = std::sync::Arc::new(move |_| {
+        observed
+            .lock()
+            .unwrap()
+            .get_or_insert(start.elapsed().as_millis());
+    });
+    let request = CompletionRequest {
+        model: "glm-5.3-flash".into(),
+        messages: vec![ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text("What is 2 + 2? Reply with the digit only.".into()),
+        }],
+        system: Some("You are running a connection smoke test.".into()),
+        system_volatile: Some("Do not call external tools.".into()),
+        tools: vec![],
+        max_tokens: Some(256),
+        temperature: Some(0.0),
+    };
+    let result = if std::env::args().any(|arg| arg == "--stream") {
+        provider.complete_with_observer(request, observer).await
+    } else {
+        provider.complete(request).await
+    };
     match result {
         Ok(response) => {
             println!(
@@ -53,7 +64,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if text.trim() != "4" {
                 return Err("Provider returned unexpected smoke-test content".into());
             }
-            println!("arithmetic_answer_verified=true");
+            println!("arithmetic_answer_verified=true first_delta_ms={:?} totals_reported={:?} cache_read_tokens={:?} cache_write_tokens={:?}", *first_delta.lock().unwrap(), response.usage.totals_reported, response.usage.cache_read_tokens, response.usage.cache_write_tokens);
+            if std::env::args().any(|arg| arg == "--stream")
+                && first_delta.lock().unwrap().is_none()
+            {
+                return Err("No real streamed text was observed".into());
+            }
         }
         Err(_) => {
             eprintln!("Coding-plan request failed; no metered fallback was attempted. Inspect provider status with redacted diagnostics.");

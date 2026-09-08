@@ -51,3 +51,10 @@ Grok Build is the official xAI harness at docs.x.ai/build; ZCode is the Z.ai app
 Start with VISION.md, docs/TEMM1E_VISION.md, FEATURES.md and README.md, then the feature documents identified in FEATURE-COVERAGE. Older architectural promises and newer deliberate behavior are recorded as conflicts rather than silently choosing one. Research-paper assertions and benchmark prose are treated as hypotheses until supported by implementation/measurements.
 
 [evidence/document-inventory.tsv](evidence/document-inventory.tsv) records Markdown headings and locations; [evidence/source-inventory.tsv](evidence/source-inventory.tsv) records every Rust production-source path and size. The inventories are completeness aids, not claims of exhaustive line-by-line manual review. Evidence labels and tests are defined in README/VALIDATION.
+
+### Streaming checkpoint sources (checked September 8, 2026)
+
+- OpenAI, [Chat Completions streaming events](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events): indexed tool deltas, completion markers and trailing usage snapshots.
+- Z.ai, [Chat Completions API](https://docs.z.ai/api-reference/llm/chat-completion): native streaming and tool calls. No documented `stream_options` contract; compatible endpoints are not assumed to support OpenAI-specific options.
+- WHATWG, [Server-sent events](https://html.spec.whatwg.org/dev/server-sent-events.html): UTF-8, BOM, line endings and event framing. Tem's API decoder deliberately rejects invalid UTF-8/truncated API responses; it does not implement browser reconnect/replacement behavior.
+- Anthropic, [Streaming messages](https://platform.claude.com/docs/en/build-with-claude/streaming): cumulative usage and indexed content-block lifecycle, used for the pending native streaming adapter.
