@@ -1,13 +1,13 @@
 # Operations Guide: Deployment
 
-TEMM1E supports three deployment methods: Docker, Fly.io, and Terraform (AWS). All methods use the same static binary and configuration format.
+TEMM1E supports three deployment methods: Docker, Fly.io, and Terraform (AWS). They share the configuration format; the Docker image includes a dynamically linked Linux binary and Chromium.
 
 ## Docker Deployment
 
 ### Quick Start
 
 ```bash
-docker pull ghcr.io/temm1e/temm1e:latest
+docker build -t temm1e:latest .
 
 docker run -d \
   --name temm1e \
@@ -18,17 +18,12 @@ docker run -d \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -e TELEGRAM_BOT_TOKEN=123456:ABC-... \
   -e RUST_LOG=info \
-  ghcr.io/temm1e/temm1e:latest
+  temm1e:latest
 ```
 
 ### Building the Image
 
-The Dockerfile uses a multi-stage build with `cargo-chef` for dependency caching:
-
-1. **Chef planner** -- installs `cargo-chef` and musl targets
-2. **Dependency planner** -- generates a `recipe.json` of all dependencies
-3. **Builder** -- cooks dependencies (cached), then builds the binary
-4. **Runtime** -- Alpine 3.19 with curl and ca-certificates; copies the static binary
+The Dockerfile builds the locked workspace once with Rust 1.91.1 on Debian Bookworm, then copies the executable into a Debian Bookworm Slim runtime with Chromium and its runtime libraries. It does not use cargo-chef or a musl binary.
 
 ```bash
 # Build for the current platform
@@ -45,14 +40,14 @@ docker buildx build --platform linux/arm64 -t temm1e:latest .
 
 | Property | Value |
 |----------|-------|
-| Base image | Alpine 3.19 |
-| Binary | Static musl-linked, stripped |
-| User | `temm1e` (non-root) |
-| Data directory | `/var/lib/temm1e` |
+| Base image | Debian Bookworm Slim |
+| Binary | Dynamically linked Linux release build |
+| User | Root (current image default) |
+| Data directory | `/var/lib/temm1e` via `TEMM1E_DATA_DIR` |
 | Config directory | `/etc/temm1e` |
 | Exposed port | `8080` |
-| Health check | `GET http://localhost:8080/health` (30s interval) |
-| Entry point | `temm1e start` |
+| Health check | `GET http://localhost:8080/health` (10s image interval; Compose overrides to 30s) |
+| Entry point | `tini -- ./temm1e`, default command `start` |
 
 ### Docker Compose
 
@@ -61,7 +56,7 @@ version: "3.8"
 
 services:
   temm1e:
-    image: ghcr.io/temm1e/temm1e:latest
+    image: temm1e:latest
     container_name: temm1e
     restart: unless-stopped
     ports:
@@ -87,14 +82,28 @@ volumes:
 
 ### Persistent Storage
 
-The `/var/lib/temm1e` directory contains:
+The directory selected by `TEMM1E_DATA_DIR` contains profile state, including SQLite memory/conversation databases, configuration, OAuth credentials and vault state. Mount the entire directory to persist state and allow atomic credential replacement. A database URL explicitly pointing elsewhere needs its own persistence arrangement.
 
-- `memory.db` -- SQLite database (conversations, long-term memory)
-- `vault.enc` -- encrypted vault file
-- `vault.key` -- vault encryption key (protect this)
-- `files/` -- locally stored files
+### Existing container migration
 
-Mount a Docker volume or host directory to persist this data across container restarts.
+Older images advertised `TEMM1E_HOME=/data`, but the application did not read that variable. Without an explicit `TEMM1E_DATA_DIR`, the root-run image used `/root/.temm1e`. The old Compose mount at `/home/temm1e/.temm1e` did not persist that active profile.
+
+Before removing or recreating the old container:
+
+1. Determine its actual `TEMM1E_DATA_DIR` override, if any; otherwise use `/root/.temm1e` for the old root-run image. Check deployment configuration without printing credentials.
+2. Stop the container to obtain a consistent SQLite/profile copy. **Do not remove it or its volumes yet.**
+3. Create a private destination and copy the entire active directory, including hidden files. For the old default, use:
+
+   ```bash
+   mkdir -m 700 ./temm1e-profile
+   docker stop temm1e
+   docker cp temm1e:/root/.temm1e/. ./temm1e-profile/
+   ```
+
+4. Keep this backup. Configure the new deployment with `TEMM1E_DATA_DIR=/var/lib/temm1e` and the directory bind mount `./temm1e-profile:/var/lib/temm1e` (or copy into your chosen persistent volume). Preserve private file permissions and writable directory ownership.
+5. Start the new image and verify settings, memory, session availability and authentication before retiring the old container. Legacy CLI histories still need explicit import; do not infer workspace ownership from their filenames.
+
+If the old profile was mounted elsewhere, copy that actual location instead. Do not merge two populated profiles by overwriting files. This migration is explicit because silently changing to an empty volume can make existing user data appear lost.
 
 ### Custom Configuration
 
@@ -104,7 +113,7 @@ Mount a config file to `/etc/temm1e/config.toml`:
 docker run -d \
   -v ./my-config.toml:/etc/temm1e/config.toml:ro \
   -v temm1e-data:/var/lib/temm1e \
-  ghcr.io/temm1e/temm1e:latest
+  temm1e:latest
 ```
 
 ---
@@ -228,7 +237,7 @@ terraform apply \
 | `environment` | `dev` | Environment name (`dev`, `staging`, `prod`) |
 | `instance_type` | `t3.small` | EC2 instance type |
 | `volume_size_gb` | `10` | Persistent data volume size in GB |
-| `docker_image` | `ghcr.io/temm1e/temm1e` | Docker image |
+| `docker_image` | `ghcr.io/temm1e-labs/temm1e` | Docker image |
 | `docker_tag` | `latest` | Docker image tag |
 | `temm1e_mode` | `auto` | TEMM1E operating mode |
 | `log_level` | `info` | Rust log level |

@@ -6,6 +6,7 @@ use std::sync::Arc;
 mod command;
 mod search_install;
 mod update_assets;
+mod updater;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -2204,6 +2205,15 @@ async fn main() -> Result<()> {
                 }
             }
 
+            #[cfg(not(feature = "telegram"))]
+            if config
+                .channel
+                .get("telegram")
+                .is_some_and(|channel| channel.enabled)
+            {
+                anyhow::bail!("Telegram is enabled in configuration, but this binary was built without the telegram feature");
+            }
+            #[cfg(feature = "telegram")]
             if let Some(tg_config) = config.channel.get("telegram") {
                 if tg_config.enabled {
                     let mut tg = temm1e_channels::TelegramChannel::new(tg_config)?;
@@ -8423,307 +8433,7 @@ Just type a message to chat with the AI agent.",
                 println!("{}", output);
             }
         },
-        Commands::Update => {
-            println!("TEMM1E Update");
-            println!("Current version: {}\n", env!("CARGO_PKG_VERSION"));
-
-            // 1. Check if we're in a git repo — if not, do binary self-update
-            let git_check = std::process::Command::new("git")
-                .args(["rev-parse", "--is-inside-work-tree"])
-                .output();
-            let in_git_repo = git_check.is_ok_and(|o| o.status.success());
-
-            if !in_git_repo {
-                // Binary self-update: download latest release from GitHub
-                println!("Not in a git repo — updating via GitHub Releases...\n");
-
-                // Fetch latest release tag
-                let client = reqwest::blocking::Client::builder()
-                    .user_agent("temm1e-updater")
-                    .build()
-                    .unwrap_or_else(|_| reqwest::blocking::Client::new());
-
-                let api_url = format!(
-                    "https://api.github.com/repos/{}/releases/latest",
-                    "temm1e-labs/temm1e"
-                );
-                let release: serde_json::Value = match client.get(&api_url).send() {
-                    Ok(resp) if resp.status().is_success() => match resp.json() {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("Error: Failed to parse release info: {}", e);
-                            std::process::exit(1);
-                        }
-                    },
-                    Ok(resp) => {
-                        eprintln!("Error: GitHub API returned status {}", resp.status());
-                        std::process::exit(1);
-                    }
-                    Err(e) => {
-                        eprintln!("Error: Failed to reach GitHub: {}", e);
-                        eprintln!("Check your internet connection and try again.");
-                        std::process::exit(1);
-                    }
-                };
-
-                let latest_tag = release["tag_name"]
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .trim_start_matches('v');
-                let current = env!("CARGO_PKG_VERSION");
-
-                if latest_tag == current {
-                    println!("Already up to date (v{}).", current);
-                    return Ok(());
-                }
-
-                println!("New version available: v{} → v{}", current, latest_tag);
-
-                // Detect platform. Asset names follow install.sh / release.yml
-                // convention: `temm1e-{arch}-{macos|linux|linux-desktop}`.
-                // Single source of truth is update_assets::asset_candidates() —
-                // see src/update_assets.rs for the full contract, which a unit
-                // test pins to .github/workflows/release.yml's matrix so any
-                // rename there will break the build loudly.
-                let os = std::env::consts::OS;
-                let arch = std::env::consts::ARCH;
-                let candidates = match update_assets::asset_candidates(os, arch) {
-                    Some(c) => c,
-                    None => {
-                        eprintln!(
-                            "Error: No pre-built binary for {}-{}. Build from source instead.",
-                            os, arch
-                        );
-                        std::process::exit(1);
-                    }
-                };
-
-                // Find the first candidate that exists in the release.
-                // Linux tries `-desktop` first, then `-linux` (server/musl)
-                // fallback — matches install.sh's preference.
-                let assets = release["assets"].as_array();
-                let found = candidates.iter().find_map(|candidate| {
-                    let asset = assets?.iter().find(|a| {
-                        a["name"]
-                            .as_str()
-                            .is_some_and(|n| n == *candidate && !n.ends_with(".sha256"))
-                    })?;
-                    let url = asset["browser_download_url"].as_str()?;
-                    Some((*candidate, url.to_string()))
-                });
-
-                let (asset_name, url) = match found {
-                    Some(pair) => pair,
-                    None => {
-                        eprintln!(
-                            "Error: None of {:?} found in release v{}. Run the installer again:",
-                            candidates, latest_tag
-                        );
-                        eprintln!(
-                            "  curl -sSfL https://raw.githubusercontent.com/temm1e-labs/temm1e/main/install.sh | sh"
-                        );
-                        std::process::exit(1);
-                    }
-                };
-                let asset_name = asset_name.to_string();
-
-                // Download binary
-                println!("Downloading {}...", asset_name);
-                let binary_data = match client.get(&url).send() {
-                    Ok(resp) if resp.status().is_success() => match resp.bytes() {
-                        Ok(b) => b,
-                        Err(e) => {
-                            eprintln!("Error: Failed to download binary: {}", e);
-                            std::process::exit(1);
-                        }
-                    },
-                    _ => {
-                        eprintln!("Error: Failed to download from {}", url);
-                        std::process::exit(1);
-                    }
-                };
-
-                // Find current binary location and replace
-                let current_exe = std::env::current_exe().unwrap_or_else(|_| {
-                    // Fallback: check common install locations
-                    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-                    let local_bin = home.join(".local/bin/temm1e");
-                    if local_bin.exists() {
-                        local_bin
-                    } else {
-                        home.join("bin/temm1e")
-                    }
-                });
-
-                // Atomic replace: write to .tmp, then rename
-                let tmp_path = current_exe.with_extension("tmp");
-                if let Err(e) = std::fs::write(&tmp_path, &binary_data) {
-                    eprintln!("Error: Failed to write temporary binary: {}", e);
-                    std::process::exit(1);
-                }
-
-                // Make executable on Unix
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ =
-                        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755));
-                }
-
-                // Replace current binary
-                if let Err(e) = std::fs::rename(&tmp_path, &current_exe) {
-                    eprintln!("Error: Failed to replace binary: {}", e);
-                    eprintln!(
-                        "You may need to run with sudo or manually move {} to {}",
-                        tmp_path.display(),
-                        current_exe.display()
-                    );
-                    let _ = std::fs::remove_file(&tmp_path);
-                    std::process::exit(1);
-                }
-
-                println!("\nUpdate complete! v{} → v{}", current, latest_tag);
-                println!("Binary: {}", current_exe.display());
-                println!("\nRestart with: temm1e start");
-                println!("\nNote: Your data in ~/.temm1e/ is untouched (keys, memory, config).");
-                return Ok(());
-            }
-
-            // 2. Fetch remote
-            println!("Fetching latest changes...");
-            let fetch = std::process::Command::new("git")
-                .args(["fetch", "origin"])
-                .output();
-            if let Err(e) = fetch {
-                eprintln!("Error: Failed to fetch from remote: {}", e);
-                std::process::exit(1);
-            }
-
-            // 3. Compare local vs remote
-            let local_head = std::process::Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default();
-
-            // Detect the default remote branch (main or master)
-            let remote_branch = {
-                let check_main = std::process::Command::new("git")
-                    .args(["rev-parse", "--verify", "origin/main"])
-                    .output();
-                if check_main.is_ok_and(|o| o.status.success()) {
-                    "origin/main"
-                } else {
-                    "origin/master"
-                }
-            };
-
-            let remote_head = std::process::Command::new("git")
-                .args(["rev-parse", remote_branch])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default();
-
-            if local_head == remote_head {
-                println!("Already up to date.");
-                return Ok(());
-            }
-
-            // 4. Show what's new
-            let log_range = format!("HEAD..{}", remote_branch);
-            let log_output = std::process::Command::new("git")
-                .args(["log", "--oneline", "--no-decorate", &log_range])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-
-            let commit_count = log_output.lines().count();
-            println!("{} new commit(s):\n", commit_count);
-            for line in log_output.lines().take(20) {
-                println!("  {}", line);
-            }
-            if commit_count > 20 {
-                println!("  ... and {} more", commit_count - 20);
-            }
-            println!();
-
-            // 5. Check for dirty working tree
-            let status = std::process::Command::new("git")
-                .args(["status", "--porcelain"])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-            if !status.trim().is_empty() {
-                eprintln!("Warning: You have uncommitted changes. Stashing before update...");
-                let stash = std::process::Command::new("git")
-                    .args(["stash", "push", "-m", "temm1e-update-autostash"])
-                    .output();
-                if stash.map_or(true, |o| !o.status.success()) {
-                    eprintln!("Error: Failed to stash changes. Commit or stash manually first.");
-                    std::process::exit(1);
-                }
-                println!("Changes stashed.\n");
-            }
-
-            // 6. Pull
-            let branch = remote_branch.strip_prefix("origin/").unwrap_or("main");
-            println!("Pulling from origin/{}...", branch);
-            let pull = std::process::Command::new("git")
-                .args(["pull", "origin", branch])
-                .output();
-            match pull {
-                Ok(out) if out.status.success() => {
-                    println!("{}", String::from_utf8_lossy(&out.stdout));
-                }
-                Ok(out) => {
-                    eprintln!(
-                        "Error: git pull failed:\n{}",
-                        String::from_utf8_lossy(&out.stderr)
-                    );
-                    std::process::exit(1);
-                }
-                Err(e) => {
-                    eprintln!("Error: git pull failed: {}", e);
-                    std::process::exit(1);
-                }
-            }
-
-            // 7. Build release binary
-            println!("Building release binary... (this may take a few minutes)");
-            let build = std::process::Command::new("cargo")
-                .args(["build", "--release", "--bin", "temm1e"])
-                .status();
-            match build {
-                Ok(s) if s.success() => {
-                    println!("\nUpdate complete!");
-                    println!("Restart with: temm1e start");
-                }
-                Ok(s) => {
-                    eprintln!("\nBuild failed with exit code: {:?}", s.code());
-                    eprintln!("The source was updated but the binary was not rebuilt.");
-                    eprintln!("Run `cargo build --release --bin temm1e` manually to retry.");
-                    std::process::exit(1);
-                }
-                Err(e) => {
-                    eprintln!("\nBuild failed: {}", e);
-                    eprintln!("The source was updated but the binary was not rebuilt.");
-                    std::process::exit(1);
-                }
-            }
-
-            // 8. Pop stash if we stashed earlier
-            let stash_list = std::process::Command::new("git")
-                .args(["stash", "list"])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-            if stash_list.contains("temm1e-update-autostash") {
-                println!("Restoring stashed changes...");
-                let _ = std::process::Command::new("git")
-                    .args(["stash", "pop"])
-                    .output();
-            }
-        }
+        Commands::Update => updater::run().await?,
         Commands::Version => {
             println!(
                 "temm1e {} — commit: {} — date: {}",
@@ -8758,7 +8468,10 @@ Just type a message to chat with the AI agent.",
                                 std::process::exit(1);
                             }
                             let content = serde_json::to_string_pretty(&tokens).unwrap();
-                            if let Err(e) = std::fs::write(&path, content) {
+                            if let Err(e) = temm1e_core::private_file::write_private_atomic(
+                                &path,
+                                content.as_bytes(),
+                            ) {
                                 eprintln!("Failed to write {}: {}", path.display(), e);
                                 std::process::exit(1);
                             }

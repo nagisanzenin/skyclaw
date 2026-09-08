@@ -63,8 +63,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV CHROME_PATH=/usr/bin/chromium
 
 # Default config directory (mount a volume here for persistence)
-ENV TEMM1E_HOME=/data
-RUN mkdir -p /data
+ENV TEMM1E_DATA_DIR=/var/lib/temm1e
+RUN mkdir -p /var/lib/temm1e
 
 WORKDIR /app
 

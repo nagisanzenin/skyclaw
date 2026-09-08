@@ -252,19 +252,18 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: temm1e:ci-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Check image size (<50 MB)
+      - name: Verify persistent profile across container replacement
+        run: bash scripts/docker_profile_smoke.sh temm1e:ci-${{ github.sha }}
+
+      - name: Report loaded image size
         run: |
-          docker buildx build --load -t temm1e:size-check .
-          SIZE=$(docker image inspect temm1e:size-check --format='{{.Size}}')
-          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
-          echo "Image size: ${SIZE_MB} MB"
-          if [ "$SIZE" -gt 52428800 ]; then
-            echo "::warning::Docker image size ${SIZE_MB} MB exceeds 50 MB target"
-          fi
+          SIZE=$(docker image inspect temm1e:ci-${{ github.sha }} --format='{{.Size}}')
+          echo "Image size: $SIZE bytes (includes Chromium and desktop libraries)"
 
   # -----------------------------------------------
   # Job 5: Security audit
