@@ -618,14 +618,15 @@ fn default_memory_backend() -> String {
     "sqlite".to_string()
 }
 
-/// Engram permanent-memory configuration. **Default-on**; when `enabled=false`,
-/// Engram degrades to a simple capped `MEMORY.md` the agent edits via the tool.
+/// Engram permanent-memory configuration. Default-on. Disablement stops
+/// automatic injection and curation; stored facts and explicit tools remain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngramConfig {
-    /// Master switch (default true). Off ⇒ simple capped MEMORY.md fallback.
+    /// Automatic injection/curation switch (default true).
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Curator cadence: "substantive" | "every:N" | "session-end" | "off".
+    /// Implemented cadence: "substantive" | "off". The design also specifies
+    /// "every:N" and "session-end", which are not yet scheduled by the runtime.
     #[serde(default = "default_engram_curator")]
     pub curator: String,
     /// Permanent-block budget as a fraction of the model window (default 0.10).
@@ -646,6 +647,36 @@ pub struct EngramConfig {
     /// Anneal time constant in days (default 60).
     #[serde(default = "default_engram_tau_days")]
     pub tau_days: f32,
+}
+
+impl EngramConfig {
+    /// Reject invalid numeric policy instead of silently disabling decay or
+    /// allowing an unbounded context fraction. Does not modify stored facts.
+    pub fn validate(&self) -> Result<(), Temm1eError> {
+        for (name, value, maximum) in [
+            ("p_max_frac", self.p_max_frac, 1.0),
+            ("eta", self.eta, 1.0),
+            ("theta_up", self.theta_up, 5.0),
+            ("theta_down", self.theta_down, 5.0),
+        ] {
+            if !value.is_finite() || !(0.0..=maximum).contains(&value) {
+                return Err(Temm1eError::Config(format!(
+                    "memory.engram.{name} must be finite and between 0 and {maximum}"
+                )));
+            }
+        }
+        if !self.tau_days.is_finite() || self.tau_days <= 0.0 {
+            return Err(Temm1eError::Config(
+                "memory.engram.tau_days must be finite and greater than 0".into(),
+            ));
+        }
+        if self.theta_down > self.theta_up {
+            return Err(Temm1eError::Config(
+                "memory.engram.theta_down must not exceed theta_up".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for EngramConfig {

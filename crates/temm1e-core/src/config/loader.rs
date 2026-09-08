@@ -56,11 +56,13 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<Temm1eConfig, Temm1eE
 
     // Try TOML first (native format + ZeroClaw compat)
     if let Ok(config) = toml::from_str::<Temm1eConfig>(&expanded) {
+        config.memory.engram.validate()?;
         return Ok(config);
     }
 
     // Try YAML (OpenClaw compat)
     if let Ok(config) = serde_yaml::from_str::<Temm1eConfig>(&expanded) {
+        config.memory.engram.validate()?;
         return Ok(config);
     }
 
@@ -562,5 +564,23 @@ max_turns = 200
         let p = path.unwrap();
         assert_eq!(p.parent(), Some(super::super::data_dir().as_path()));
         assert!(p.to_string_lossy().ends_with("agent-config.toml"));
+    }
+    #[test]
+    fn engram_invalid_numeric_config_is_rejected_in_both_formats() {
+        for content in [
+            "[memory.engram]\np_max_frac = nan",
+            "[memory.engram]\neta = inf",
+            "[memory.engram]\ntau_days = 0.0",
+            "[memory.engram]\np_max_frac = 1.1",
+            "[memory.engram]\ntheta_down = 4.0\ntheta_up = 2.0",
+            "memory:\n  engram:\n    tau_days: .inf",
+        ] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), content).unwrap();
+            assert!(
+                load_config(Some(file.path())).is_err(),
+                "accepted {content}"
+            );
+        }
     }
 }
