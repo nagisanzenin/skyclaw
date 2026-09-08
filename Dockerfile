@@ -5,7 +5,7 @@
 # ============================================================================
 
 # ---- Builder stage ----
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.91.1-bookworm AS builder
 
 ARG GIT_HASH=unknown
 ARG BUILD_DATE=unknown
@@ -21,21 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 1) Copy manifests + build.rs for dependency caching.
-#    Create stub main/lib files so cargo can resolve the dep graph and
-#    cache compiled dependencies before copying real source.
+# Use the locked dependency graph and the workspace minimum Rust version.
+# Build once with real sources: a best-effort stub build hid dependency errors
+# and stored a second set of artifacts in the image layer cache.
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY crates/ crates/
-RUN mkdir -p src && echo 'fn main() {}' > src/main.rs
-
-# 2) Build dependencies only (cached layer — survives source changes).
+COPY src/ src/
 ENV GIT_HASH=${GIT_HASH}
 ENV BUILD_DATE=${BUILD_DATE}
-RUN cargo build --release --features "${FEATURES}" 2>/dev/null || true
-
-# 3) Copy real source and build the binary.
-COPY src/ src/
-RUN touch src/main.rs && cargo build --release --features "${FEATURES}"
+RUN cargo build --locked --release --features "${FEATURES}"
 
 # ---- Runtime stage ----
 FROM debian:bookworm-slim
