@@ -198,13 +198,23 @@ pub(crate) async fn spawn_agent_with_budget(
     };
 
     // 2. Create memory backend
-    let memory_url = setup.config.memory.path.clone().unwrap_or_else(|| {
-        let data_dir = temm1e_core::config::data_dir();
-        std::fs::create_dir_all(&data_dir).ok();
-        format!("sqlite:{}/memory.db?mode=rwc", data_dir.display())
-    });
+    let data_dir = temm1e_core::config::data_dir();
+    std::fs::create_dir_all(&data_dir)?;
+    let memory_connections = temm1e_memory::MemoryConnections::resolve(
+        &setup.config.memory,
+        &data_dir,
+        &std::env::current_dir().unwrap_or_else(|_| data_dir.clone()),
+    );
+    if memory_connections.retained_legacy_markdown {
+        tracing::warn!("Retaining legacy Markdown memory location; configure memory.path before changing working directories");
+    }
+
     let memory: Arc<dyn temm1e_core::Memory> = Arc::from(
-        temm1e_memory::create_memory_backend(&setup.config.memory.backend, &memory_url).await?,
+        temm1e_memory::create_memory_backend(
+            &setup.config.memory.backend,
+            &memory_connections.primary,
+        )
+        .await?,
     );
 
     // 3. Create workspace

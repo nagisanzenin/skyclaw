@@ -2123,15 +2123,22 @@ async fn main() -> Result<()> {
             });
 
             // ── Memory backend ─────────────────────────────────
-            let memory_url = config.memory.path.clone().unwrap_or_else(|| {
-                let data_dir = temm1e_core::config::data_dir();
-                if let Err(e) = std::fs::create_dir_all(&data_dir) {
-                    tracing::warn!(error = %e, path = %data_dir.display(), "Failed to create directory");
-                }
-                format!("sqlite:{}/memory.db?mode=rwc", data_dir.display())
-            });
+            let data_dir = temm1e_core::config::data_dir();
+            std::fs::create_dir_all(&data_dir)?;
+            let memory_connections = temm1e_memory::MemoryConnections::resolve(
+                &config.memory,
+                &data_dir,
+                &std::env::current_dir().unwrap_or_else(|_| data_dir.clone()),
+            );
+            if memory_connections.retained_legacy_markdown {
+                tracing::warn!("Retaining legacy Markdown memory location; configure memory.path before changing working directories");
+            }
             let memory: Arc<dyn temm1e_core::Memory> = Arc::from(
-                temm1e_memory::create_memory_backend(&config.memory.backend, &memory_url).await?,
+                temm1e_memory::create_memory_backend(
+                    &config.memory.backend,
+                    &memory_connections.primary,
+                )
+                .await?,
             );
             tracing::info!(backend = %config.memory.backend, "Memory initialized");
 
@@ -2388,8 +2395,9 @@ async fn main() -> Result<()> {
             > = Arc::new(Mutex::new(HashMap::new()));
 
             // ── Usage store (shares same SQLite DB as memory) ────
-            let usage_store: Arc<dyn temm1e_core::UsageStore> =
-                Arc::new(temm1e_memory::SqliteUsageStore::new(&memory_url).await?);
+            let usage_store: Arc<dyn temm1e_core::UsageStore> = Arc::new(
+                temm1e_memory::SqliteUsageStore::new(&memory_connections.sqlite_state).await?,
+            );
             tracing::info!("Usage store initialized");
 
             // ── Vault (encrypted credential store) ───────────────
@@ -6324,15 +6332,22 @@ Just type a message to chat with the AI agent.",
             });
 
             // ── Memory backend ─────────────────────────────────
-            let memory_url = config.memory.path.clone().unwrap_or_else(|| {
-                let data_dir = temm1e_core::config::data_dir();
-                if let Err(e) = std::fs::create_dir_all(&data_dir) {
-                    tracing::warn!(error = %e, path = %data_dir.display(), "Failed to create directory");
-                }
-                format!("sqlite:{}/memory.db?mode=rwc", data_dir.display())
-            });
+            let data_dir = temm1e_core::config::data_dir();
+            std::fs::create_dir_all(&data_dir)?;
+            let memory_connections = temm1e_memory::MemoryConnections::resolve(
+                &config.memory,
+                &data_dir,
+                &std::env::current_dir().unwrap_or_else(|_| data_dir.clone()),
+            );
+            if memory_connections.retained_legacy_markdown {
+                tracing::warn!("Retaining legacy Markdown memory location; configure memory.path before changing working directories");
+            }
             let memory: Arc<dyn temm1e_core::Memory> = Arc::from(
-                temm1e_memory::create_memory_backend(&config.memory.backend, &memory_url).await?,
+                temm1e_memory::create_memory_backend(
+                    &config.memory.backend,
+                    &memory_connections.primary,
+                )
+                .await?,
             );
 
             // ── CLI channel ────────────────────────────────────
@@ -6349,8 +6364,9 @@ Just type a message to chat with the AI agent.",
             let setup_tokens = temm1e_gateway::SetupTokenStore::new();
 
             // ── Usage store ──────────────────────────────────────
-            let usage_store: Arc<dyn temm1e_core::UsageStore> =
-                Arc::new(temm1e_memory::SqliteUsageStore::new(&memory_url).await?);
+            let usage_store: Arc<dyn temm1e_core::UsageStore> = Arc::new(
+                temm1e_memory::SqliteUsageStore::new(&memory_connections.sqlite_state).await?,
+            );
 
             // ── Vault (encrypted credential store) ───────────────
             let vault: Option<Arc<dyn temm1e_core::Vault>> = match temm1e_vault::LocalVault::new()

@@ -179,7 +179,7 @@ impl EngramTool {
         }
         let mut out = format!("Found {} permanent fact(s):\n", facts.len());
         for f in &facts {
-            out.push_str(&format!("\n  - {}", f.content));
+            out.push_str(&format!("\n  - [{}] {}", f.id, f.content));
         }
         Ok(ToolOutput {
             content: out,
@@ -192,33 +192,63 @@ impl EngramTool {
         input: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolOutput, Temm1eError> {
+        let id = input
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
         let query = input
             .get("query")
             .and_then(|v| v.as_str())
             .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| Temm1eError::Tool("Missing required parameter: query".into()))?;
-        let matches = self
-            .memory
-            .engram_recall(query, &ctx.user_id, &ctx.chat_id, 1)
-            .await?;
-        match matches.into_iter().next() {
-            Some(f) => {
-                self.memory.engram_forget(&f.id).await?;
-                tracing::info!(id = %f.id, "Engram fact forgotten");
-                Ok(ToolOutput {
-                    content: format!(
-                        "Forgotten: \"{}\". Let the user know you removed it.",
-                        f.content
-                    ),
-                    is_error: false,
-                })
+            .filter(|v| !v.is_empty());
+        let fact = match (id, query) {
+            (Some(id), None) => {
+                self.memory
+                    .engram_get(id)
+                    .await?
+                    .filter(|fact| match &fact.scope {
+                        MemoryScope::Global => true,
+                        MemoryScope::User(user) => !ctx.user_id.is_empty() && user == &ctx.user_id,
+                        MemoryScope::Chat(chat) => chat == &ctx.chat_id,
+                    })
             }
-            None => Ok(ToolOutput {
-                content: format!("No permanent fact found matching \"{query}\". Nothing removed."),
+            (None, Some(query)) => {
+                let mut matches = self
+                    .memory
+                    .engram_recall(query, &ctx.user_id, &ctx.chat_id, 2)
+                    .await?;
+                if matches.len() > 1 {
+                    return Ok(ToolOutput {
+                        content: "Multiple permanent facts match; nothing was deleted. Use recall to inspect their IDs, then forget one exact id.".into(),
+                        is_error: true,
+                    });
+                }
+                matches.pop()
+            }
+            _ => {
+                return Err(Temm1eError::Tool(
+                    "Provide exactly one nonempty id or query for forget".into(),
+                ))
+            }
+        };
+        let Some(fact) = fact else {
+            return Ok(ToolOutput {
+                content: "No matching visible permanent fact. Nothing removed.".into(),
                 is_error: false,
-            }),
+            });
+        };
+        if !self
+            .memory
+            .engram_forget_scoped(&fact, &ctx.user_id, &ctx.chat_id)
+            .await?
+        {
+            return Ok(ToolOutput { content: "The selected fact changed or is no longer visible. Nothing removed; recall it again before deleting.".into(), is_error: true });
         }
+        Ok(ToolOutput {
+            content: format!("Forgotten: \"{}\".", fact.content),
+            is_error: false,
+        })
     }
 }
 
@@ -233,8 +263,8 @@ impl Tool for EngramTool {
          (identity, preferences, standing constraints, project details). Use 'remember' \
          when the user says to remember something OR when you learn a durable fact worth \
          keeping across sessions; reuse the same 'subject_key' to update/correct a fact. \
-         'recall' to look one up, 'forget' to remove. Permanent facts are always shown to \
-         you automatically — only remember things that stay true over time, not one-off details."
+         'recall' to inspect facts and IDs, 'forget' to remove one exact id or unambiguous query. \
+         Eligible facts are injected within the memory budget when enabled; only remember durable facts."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -244,7 +274,7 @@ impl Tool for EngramTool {
                 "action": {
                     "type": "string",
                     "enum": ["remember", "recall", "forget"],
-                    "description": "The permanent-memory operation."
+                    "description": "The permanent-memory operation. For forget, supply one exact id or an unambiguous query."
                 },
                 "content": {
                     "type": "string",
@@ -263,6 +293,7 @@ impl Tool for EngramTool {
                     "type": "string",
                     "description": "Stable key (e.g. 'pref:gpu-provider'); reuse it to update/supersede an earlier fact."
                 },
+                "id": {"type": "string", "description": "Exact fact ID from recall; use instead of query for precise deletion."},
                 "scope": {
                     "type": "string",
                     "enum": ["global", "user", "chat"],
@@ -291,6 +322,9 @@ impl Tool for EngramTool {
         input: ToolInput,
         ctx: &ToolContext,
     ) -> Result<ToolOutput, Temm1eError> {
+        if !self.memory.supports_engram() {
+            return Err(Temm1eError::Tool("The configured memory backend does not support Engram; no permanent fact was stored or deleted".into()));
+        }
         let action = input
             .arguments
             .get("action")
@@ -338,7 +372,11 @@ mod tests {
 
     #[tokio::test]
     async fn remember_requires_content() {
-        let tool = EngramTool::new(Arc::new(MockMemory::new()));
+        let tool = EngramTool::new(Arc::new(
+            temm1e_memory::SqliteMemory::new("sqlite::memory:")
+                .await
+                .unwrap(),
+        ));
         let r = tool
             .execute(input(serde_json::json!({"action": "remember"})), &ctx())
             .await;
@@ -347,7 +385,12 @@ mod tests {
 
     #[tokio::test]
     async fn remember_succeeds_and_reports() {
-        let tool = EngramTool::new(Arc::new(MockMemory::new()));
+        let memory = Arc::new(
+            temm1e_memory::SqliteMemory::new("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        let tool = EngramTool::new(memory.clone());
         let out = tool
             .execute(
                 input(serde_json::json!({
@@ -361,11 +404,18 @@ mod tests {
             .unwrap();
         assert!(!out.is_error);
         assert!(out.content.contains("Remembered permanently"));
+        let persisted = memory.engram_list("test-user", "chat-1", 10).await.unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].content, "User's birthday is 1994-03-02");
     }
 
     #[tokio::test]
     async fn unknown_action_is_error() {
-        let tool = EngramTool::new(Arc::new(MockMemory::new()));
+        let tool = EngramTool::new(Arc::new(
+            temm1e_memory::SqliteMemory::new("sqlite::memory:")
+                .await
+                .unwrap(),
+        ));
         let out = tool
             .execute(input(serde_json::json!({"action": "wat"})), &ctx())
             .await
@@ -401,5 +451,68 @@ mod tests {
         assert!(EngramTool::parse_scope("users", &context).is_err());
         context.user_id.clear();
         assert!(EngramTool::parse_scope("user", &context).is_err());
+    }
+    #[tokio::test]
+    async fn unsupported_backend_never_reports_a_successful_permanent_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let memory = Arc::new(
+            temm1e_memory::MarkdownMemory::new(directory.path())
+                .await
+                .unwrap(),
+        );
+        assert!(!memory.supports_engram());
+        memory
+            .store(temm1e_core::MemoryEntry {
+                id: "generic-note".into(),
+                content: "Existing generic Markdown memory".into(),
+                metadata: serde_json::json!({}),
+                timestamp: chrono::Utc::now(),
+                session_id: None,
+                entry_type: temm1e_core::MemoryEntryType::LongTerm,
+            })
+            .await
+            .unwrap();
+        let before = std::fs::read(directory.path().join("MEMORY.md")).unwrap();
+        let error = EngramTool::new(memory.clone())
+            .execute(
+                input(serde_json::json!({
+                    "action":"remember", "content":"Never stored as an Engram fact"
+                })),
+                &ctx(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("does not support"));
+        assert_eq!(
+            std::fs::read(directory.path().join("MEMORY.md")).unwrap(),
+            before
+        );
+        assert!(memory.engram_forget("missing").await.is_err());
+        let fact = EngramFact {
+            id: "unsupported-fact".into(),
+            content: "not stored".into(),
+            summary: "not stored".into(),
+            essence: "not stored".into(),
+            fact_type: FactType::Reference,
+            scope: MemoryScope::Global,
+            pinned_by: PinnedBy::User,
+            subject_key: None,
+            importance: 5.0,
+            created_at: 0,
+            last_accessed: 0,
+            tags: vec![],
+            links: vec![],
+        };
+        assert!(memory.engram_store(fact.clone()).await.is_err());
+        assert_eq!(
+            std::fs::read(directory.path().join("MEMORY.md")).unwrap(),
+            before
+        );
+        let unsupported = MockMemory::new();
+        assert!(unsupported.engram_store(fact).await.is_err());
+        assert!(unsupported
+            .engram_recall("anything", "alice", "room", 10)
+            .await
+            .is_err());
     }
 }

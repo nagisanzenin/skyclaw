@@ -39,6 +39,7 @@ tempfile = "3"
 fs2 = "0.4.3"
 
 [dev-dependencies]
+temm1e-memory.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
 temm1e-test-utils.workspace = true
 

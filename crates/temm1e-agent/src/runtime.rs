@@ -1859,7 +1859,7 @@ impl AgentRuntime {
             }
 
             // ── Engram: prepend the permanent-memory block (scoped, capped) ──
-            if self.engram_config.enabled {
+            if self.engram_config.enabled && self.memory.supports_engram() {
                 let (skull, _mo) = temm1e_core::types::model_registry::model_limits(&self.model);
                 let p_max = ((skull as f32) * self.engram_config.p_max_frac) as usize;
                 if p_max > 0 {
@@ -3035,6 +3035,7 @@ impl AgentRuntime {
                 // and owned by the background pool without awaiting results on the reply path. User pins are never
                 // overwritten; subject_key dedups/supersedes.
                 if self.engram_config.enabled
+                    && self.memory.supports_engram()
                     && self.engram_config.curator == "substantive"
                     && msg
                         .text

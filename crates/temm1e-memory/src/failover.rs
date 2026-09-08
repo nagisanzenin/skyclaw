@@ -523,8 +523,12 @@ impl Memory for ResilientMemory {
     }
 
     // ── Engram (permanent memory) — delegate to the primary backend ──
-    // (Must be implemented, not left to the trait's no-op default, or Engram
-    //  would silently vanish behind the failover wrapper.)
+    // Forward capability and operations together. The trait default rejects
+    // unsupported storage; the fallback cache must never report a durable write.
+
+    fn supports_engram(&self) -> bool {
+        self.primary.supports_engram()
+    }
 
     async fn engram_store(&self, fact: EngramFact) -> Result<(), Temm1eError> {
         self.primary.engram_store(fact).await
@@ -552,6 +556,16 @@ impl Memory for ResilientMemory {
     }
     async fn engram_forget(&self, id: &str) -> Result<(), Temm1eError> {
         self.primary.engram_forget(id).await
+    }
+    async fn engram_forget_scoped(
+        &self,
+        fact: &EngramFact,
+        user_id: &str,
+        chat_id: &str,
+    ) -> Result<bool, Temm1eError> {
+        self.primary
+            .engram_forget_scoped(fact, user_id, chat_id)
+            .await
     }
     async fn engram_recall(
         &self,

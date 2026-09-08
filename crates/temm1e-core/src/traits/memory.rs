@@ -349,11 +349,20 @@ pub trait Memory: Send + Sync {
         Ok(None)
     }
 
-    // ── Engram (permanent memory) methods (default no-op) ─────────
+    // ── Engram (permanent memory) methods (explicit backend capability) ─────────
+
+    /// Whether this backend implements durable Engram storage. Custom backends
+    /// must opt in and implement the operations; false is not empty memory.
+    fn supports_engram(&self) -> bool {
+        false
+    }
 
     /// Store (insert-or-replace) an Engram fact.
     async fn engram_store(&self, _fact: EngramFact) -> Result<(), Temm1eError> {
-        Ok(())
+        Err(Temm1eError::Memory(format!(
+            "{} does not support Engram",
+            self.backend_name()
+        )))
     }
 
     /// List Engram facts visible in the given session scope, importance DESC.
@@ -363,12 +372,18 @@ pub trait Memory: Send + Sync {
         _chat_id: &str,
         _limit: usize,
     ) -> Result<Vec<EngramFact>, Temm1eError> {
-        Ok(Vec::new())
+        Err(Temm1eError::Memory(format!(
+            "{} does not support Engram",
+            self.backend_name()
+        )))
     }
 
     /// Fetch one Engram fact by id.
     async fn engram_get(&self, _id: &str) -> Result<Option<EngramFact>, Temm1eError> {
-        Ok(None)
+        Err(Temm1eError::Memory(format!(
+            "{} does not support Engram",
+            self.backend_name()
+        )))
     }
 
     /// Look up an Engram fact by its supersession `subject_key` within a scope.
@@ -378,12 +393,32 @@ pub trait Memory: Send + Sync {
         _user_id: &str,
         _chat_id: &str,
     ) -> Result<Option<EngramFact>, Temm1eError> {
-        Ok(None)
+        Err(Temm1eError::Memory(format!(
+            "{} does not support Engram",
+            self.backend_name()
+        )))
     }
 
     /// Delete an Engram fact by id.
     async fn engram_forget(&self, _id: &str) -> Result<(), Temm1eError> {
-        Ok(())
+        Err(Temm1eError::Memory(format!(
+            "{} does not support Engram",
+            self.backend_name()
+        )))
+    }
+
+    /// Delete only the selected id/scope/content while it remains visible to
+    /// this caller. False means stale, missing or outside scope; never success.
+    async fn engram_forget_scoped(
+        &self,
+        _fact: &EngramFact,
+        _user_id: &str,
+        _chat_id: &str,
+    ) -> Result<bool, Temm1eError> {
+        Err(Temm1eError::Memory(format!(
+            "{} does not support scoped Engram deletion",
+            self.backend_name()
+        )))
     }
 
     /// FTS recall over Engram facts visible in the given scope.
@@ -394,13 +429,19 @@ pub trait Memory: Send + Sync {
         _chat_id: &str,
         _limit: usize,
     ) -> Result<Vec<EngramFact>, Temm1eError> {
-        Ok(Vec::new())
+        Err(Temm1eError::Memory(format!(
+            "{} does not support Engram",
+            self.backend_name()
+        )))
     }
 
     /// GC: delete non-pinned Engram facts whose effective importance has
     /// annealed below the archive floor. Returns the count deleted.
     async fn engram_gc(&self, _now_epoch: u64) -> Result<usize, Temm1eError> {
-        Ok(0)
+        Err(Temm1eError::Memory(format!(
+            "{} does not support Engram",
+            self.backend_name()
+        )))
     }
 }
 

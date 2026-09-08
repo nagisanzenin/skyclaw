@@ -560,7 +560,11 @@ async fn optional_curator_charges_returned_usage_before_parsing_and_unknown_on_e
         });
         let runtime = AgentRuntime::new(
             provider.clone(),
-            Arc::new(MockMemory::new()),
+            Arc::new(
+                temm1e_memory::SqliteMemory::new("sqlite::memory:")
+                    .await
+                    .unwrap(),
+            ),
             vec![],
             "gpt-4o".into(),
             None,
@@ -605,4 +609,28 @@ async fn optional_curator_charges_returned_usage_before_parsing_and_unknown_on_e
         assert_eq!(budget.output_tokens, if incomplete { 20 } else { 40 });
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
+}
+
+#[tokio::test]
+async fn unsupported_memory_backend_does_not_schedule_paid_curator_work() {
+    let provider = Arc::new(temm1e_test_utils::QueuedMockProvider::with_responses(vec![
+        temm1e_test_utils::QueuedMockProvider::text_response("foreground only"),
+    ]));
+    let runtime = AgentRuntime::new(
+        provider.clone(),
+        Arc::new(MockMemory::new()),
+        vec![],
+        "fixture".into(),
+        None,
+    )
+    .with_v2_optimizations(false);
+    runtime.process_message(&make_inbound_msg("This ordinary conversation is long enough to trigger the default substantive curator."),
+        &mut make_session(), None, None, None, None, None).await.unwrap();
+    assert!(
+        runtime
+            .shutdown_background(std::time::Duration::from_secs(1))
+            .await
+    );
+    assert_eq!(provider.calls().await, 1);
+    assert_eq!(runtime.budget_snapshot().recorded_calls, 1);
 }

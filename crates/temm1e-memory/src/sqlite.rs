@@ -693,6 +693,10 @@ impl Memory for SqliteMemory {
 
     // ── Engram (permanent memory) ─────────────────────────────────
 
+    fn supports_engram(&self) -> bool {
+        true
+    }
+
     async fn engram_store(&self, fact: EngramFact) -> Result<(), Temm1eError> {
         let tags = serde_json::to_string(&fact.tags).unwrap_or_else(|_| "[]".into());
         let links = serde_json::to_string(&fact.links).unwrap_or_else(|_| "[]".into());
@@ -789,6 +793,21 @@ impl Memory for SqliteMemory {
             .map_err(|e| Temm1eError::Memory(format!("engram_forget: {e}")))?;
         debug!(id = %id, "Forgot Engram fact");
         Ok(())
+    }
+
+    async fn engram_forget_scoped(
+        &self,
+        fact: &EngramFact,
+        user_id: &str,
+        chat_id: &str,
+    ) -> Result<bool, Temm1eError> {
+        let deleted = sqlx::query(
+            "DELETE FROM engram_facts WHERE id=? AND scope=? AND content=? AND scope IN ('global',?,?)"
+        ).bind(&fact.id).bind(fact.scope.as_key()).bind(&fact.content)
+            .bind(format!("user:{user_id}")).bind(format!("chat:{chat_id}"))
+            .execute(&self.pool).await
+            .map_err(|e| Temm1eError::Memory(format!("engram_forget_scoped: {e}")))?;
+        Ok(deleted.rows_affected() == 1)
     }
 
     async fn engram_recall(
@@ -1494,6 +1513,56 @@ mod tests {
             assert_eq!(facts.len(), 1, "query={query}");
             assert_eq!(facts[0].id, expected);
         }
+    }
+
+    #[tokio::test]
+    async fn scoped_engram_delete_rejects_foreign_and_changed_snapshots() {
+        let sqlite = SqliteMemory::new("sqlite::memory:").await.unwrap();
+        let memory = crate::ResilientMemory::new(Box::new(sqlite));
+        assert!(memory.supports_engram());
+        let original = mk_fact(
+            "target",
+            MemoryScope::User("alice".into()),
+            None,
+            4.0,
+            PinnedBy::User,
+        );
+        memory.engram_store(original.clone()).await.unwrap();
+        assert!(!memory
+            .engram_forget_scoped(&original, "bob", "room")
+            .await
+            .unwrap());
+        let mut changed = original.clone();
+        changed.content = "updated by another writer".into();
+        memory.engram_store(changed.clone()).await.unwrap();
+        assert!(!memory
+            .engram_forget_scoped(&original, "alice", "room")
+            .await
+            .unwrap());
+        assert_eq!(
+            memory.engram_get("target").await.unwrap().unwrap().content,
+            changed.content
+        );
+        let mut moved = changed.clone();
+        moved.scope = MemoryScope::User("bob".into());
+        memory.engram_store(moved.clone()).await.unwrap();
+        assert!(!memory
+            .engram_forget_scoped(&changed, "alice", "room")
+            .await
+            .unwrap());
+        assert!(!memory
+            .engram_forget_scoped(&moved, "alice", "room")
+            .await
+            .unwrap());
+        assert!(memory
+            .engram_forget_scoped(&moved, "bob", "room")
+            .await
+            .unwrap());
+        assert!(!memory
+            .engram_forget_scoped(&moved, "bob", "room")
+            .await
+            .unwrap());
+        assert!(memory.engram_get("target").await.unwrap().is_none());
     }
 
     #[tokio::test]

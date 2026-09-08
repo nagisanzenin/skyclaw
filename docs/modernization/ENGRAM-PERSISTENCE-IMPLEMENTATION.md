@@ -1,0 +1,27 @@
+# Engram persistence and precise deletion
+
+Checkpoint 44 preserves permanent-memory intent while refusing unsupported persistence and ambiguous destructive requests. It also repairs Markdown startup exposed by the real CLI fixture.
+
+## Implemented contract
+
+- `Memory::supports_engram()` defaults to false. Default Engram methods return an explicit unsupported error instead of pretending that an empty result or successful no-op is durable storage. SQLite opts in; ResilientMemory forwards capability and all operations to its primary. Third-party backends must implement and opt into this contract. Generic Markdown long-term memory remains available; Engram is a separate unsupported capability there.
+- Automatic injection and curator scheduling require that capability. Unsupported backends cause no optional curator model call. Explicit Engram tool invocation returns an error; it never reports a successful permanent write. Supported SQLite curation and its shared-budget admission are preserved.
+- Recall displays stable fact IDs. Forget accepts exactly one nonempty ID or query. A query probes two visible matches: more than one means nothing is deleted and the caller must choose an ID. Exact-ID lookup checks scope before exposing content.
+- SQLite deletion is one statement matching selected ID, scope and content, constrained to the caller's visible scopes. The affected-row count is the success signal. A replaced, moved, missing or foreign fact is not reported as deleted. ResilientMemory delegates this operation. The trusted raw `engram_forget(id)` API remains for existing host code; the agent tool uses the scoped operation.
+- `MemoryConnections` resolves primary backend storage separately from SQLite service metadata. Root chat/start and TUI share this resolver. Existing custom/default SQLite connection locations are unchanged. Markdown uses its explicit directory or the profile's `memory` directory, while usage metadata stays at the profile's existing `memory.db` layout. An existing malformed directory created by the old TUI's SQLite-URL-as-directory behavior is retained with a warning; no files are moved or deleted. Set `memory.path` explicitly before changing working directory when using that legacy location.
+
+## Evidence
+
+Source inspection found that a MockMemory test accepted a successful no-op as persistence. It now uses actual SQLite, and a Markdown test verifies ordinary long-term writes still work while unsupported Engram operations leave MEMORY.md byte-identical. Scoped deletion tests cover foreign callers, changed content, moved scope, repeated deletion and ResilientMemory delegation.
+
+The unchanged checkpoint43 CLI failed the corrected ambiguous-query fixture by deleting a candidate arbitrarily (`implementation-engram-persistence-before-ambiguous-v2.log`). Markdown startup separately failed SQLite code14 because it opened the Markdown directory as the usage database (`implementation-engram-persistence-before-unsupported.log`). The first ambiguous fixture assumed only two HTTP calls; its failure was a fixture count error caused by a legitimate optional blueprint-author call. That log is retained and is not evidence of a product defect.
+
+After repair, all five actual CLI cases pass: ambiguous query preserves every candidate; exact ID removes only the selected fact; foreign ID stays private and intact; unsupported Markdown returns an error; remember persists the caller's User fact after SQLite reopen. Each case makes two foreground requests and one separately identified blueprint request. This is localhost fixture traffic, not paid provider acceptance. See `scripts/engram_persistence_smoke.py` and `implementation-engram-persistence-after-smoke.log`.
+
+Validation also passes 792 agent, 262 core (one ignored), 74 memory (one ignored), 346 tools tests, 17 runtime integration tests, 79 root tests, 14 root integration tests and 50 TUI tests. The added raw unsupported-store assertion was rerun separately and passed. Actual CLI budget controls still pass: limited2calls/0curator versus unlimited3calls/1curator. Four actual Unix PTY scenarios pass model replacement, isolated connection routing, read-only history/onboarding, exhausted budget, resize and exact terminal restoration. The PTY suite uses SQLite; Markdown's actual-process acceptance is CLI, with shared resolver tests covering TUI path selection.
+
+The first final-binary command mistakenly requested nonexistent feature `cli`; that command failed before compiling and is retained in `implementation-engram-persistence-after-build.log`. Corrected `--no-default-features --features tui` built successfully in18.01s. Minimal-feature root still emits four pre-existing cfg-dependent unused-mut warnings. Final workspace lint result is recorded in the checkpoint log.
+
+## Remaining boundaries
+
+Global-scope defaults and trusted host APIs are preserved pending D01. This does not introduce channel-qualified principals or transactional permission revocation. The delete comparison protects selected identity/scope/content, not every unrelated metadata mutation or a full revision-based ABA guard. Conflicting custom filesystem paths still require configuration correction; no automatic destructive migration is attempted. Other Memory trait capabilities retain their existing contracts. EMA reinforcement, provenance, curator every-N/session-end policies and promised MEMORY.md fallback remain separate work. Do not infer that all memory architecture or release acceptance is complete.
