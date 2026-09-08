@@ -38,7 +38,7 @@ struct AllowlistFile {
 
 /// Return the path to `~/.temm1e/discord_allowlist.toml`.
 fn allowlist_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".temm1e").join("discord_allowlist.toml"))
+    Some(temm1e_core::config::data_dir().join("discord_allowlist.toml"))
 }
 
 /// Load the persisted Discord allowlist from disk.

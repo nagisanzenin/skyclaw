@@ -5,3 +5,6 @@ mod loader;
 
 pub use env::*;
 pub use loader::*;
+
+mod paths;
+pub use paths::data_dir;

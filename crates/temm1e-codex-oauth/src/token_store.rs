@@ -11,13 +11,21 @@ use temm1e_core::types::error::Temm1eError;
 use tokio::sync::Mutex;
 
 /// OAuth token set — stored in ~/.temm1e/oauth.json
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CodexOAuthTokens {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: u64, // Unix timestamp
     pub email: String,
     pub account_id: String,
+}
+
+impl std::fmt::Debug for CodexOAuthTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexOAuthTokens")
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Thread-safe token store with auto-refresh.
@@ -90,8 +98,10 @@ impl TokenStore {
             account_id: tokens.account_id.clone(),
         };
 
-        self.save_to_disk(&updated)?;
+        // Rotation has already happened remotely; do not retry an old refresh
+        // token in this process if durable storage fails.
         *tokens = updated.clone();
+        self.save_to_disk(&updated)?;
         tracing::info!("Codex OAuth token refreshed successfully");
 
         Ok(updated.access_token)
@@ -143,20 +153,10 @@ impl TokenStore {
 
     /// Save tokens to disk.
     pub fn save_to_disk(&self, tokens: &CodexOAuthTokens) -> Result<(), Temm1eError> {
-        let dir = self.path.parent().unwrap_or(std::path::Path::new("."));
-        std::fs::create_dir_all(dir)
-            .map_err(|e| Temm1eError::Auth(format!("Failed to create dir: {}", e)))?;
         let content = serde_json::to_string_pretty(tokens)
             .map_err(|e| Temm1eError::Auth(format!("Failed to serialize tokens: {}", e)))?;
-        std::fs::write(&self.path, content)
-            .map_err(|e| Temm1eError::Auth(format!("Failed to write tokens: {}", e)))?;
-        // Restrict file permissions to owner-only (prevent casual reading)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            let _ = std::fs::set_permissions(&self.path, perms);
-        }
+        temm1e_core::private_file::write_private_atomic(&self.path, content.as_bytes())
+            .map_err(|e| Temm1eError::Auth(format!("Failed to persist OAuth tokens: {e}")))?;
         tracing::debug!(path = %self.path.display(), "OAuth tokens saved");
         Ok(())
     }
@@ -181,10 +181,8 @@ impl TokenStore {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
             return Err(Temm1eError::Auth(format!(
-                "Token refresh failed ({}): {}",
-                status, body
+                "Token refresh failed ({status}); re-authentication may be required"
             )));
         }
 
@@ -209,10 +207,7 @@ impl TokenStore {
 
     /// Default path: ~/.temm1e/oauth.json
     fn default_path() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".temm1e")
-            .join("oauth.json")
+        temm1e_core::config::data_dir().join("oauth.json")
     }
 
     /// Delete the token file (for logout).
@@ -251,13 +246,30 @@ struct RefreshResponse {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn oauth_debug_redacts_credentials() {
+        let tokens = super::CodexOAuthTokens {
+            access_token: "private-access".into(),
+            refresh_token: "private-refresh".into(),
+            expires_at: 10,
+            email: "private-email".into(),
+            account_id: "private-account".into(),
+        };
+        let rendered = format!("{tokens:?}");
+        assert!(!rendered.contains("private-"));
+        assert!(rendered.contains("expires_at"));
+    }
     use super::*;
 
     #[test]
     fn default_path_ends_with_oauth_json() {
         let path = TokenStore::default_path();
         assert!(path.ends_with("oauth.json"));
-        assert!(path.to_string_lossy().contains(".temm1e"));
+        assert_eq!(
+            path.parent(),
+            Some(temm1e_core::config::data_dir().as_path())
+        );
     }
 
     #[test]

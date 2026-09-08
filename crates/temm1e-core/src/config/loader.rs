@@ -13,30 +13,19 @@ use std::path::{Path, PathBuf};
 /// - Unix: `~/.temm1e/config.toml`
 /// - Windows: `%USERPROFILE%\.temm1e\config.toml`
 fn config_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    // 1. System config
     #[cfg(not(windows))]
-    paths.push(PathBuf::from("/etc/temm1e/config.toml"));
+    let system = Some(PathBuf::from("/etc/temm1e/config.toml"));
     #[cfg(windows)]
-    if let Some(programdata) = std::env::var_os("PROGRAMDATA") {
-        paths.push(
-            PathBuf::from(programdata)
-                .join("temm1e")
-                .join("config.toml"),
-        );
-    }
-
-    // 2. User config
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".temm1e").join("config.toml"));
-    }
-
-    // 3. Workspace config
-    paths.push(PathBuf::from("config.toml"));
-    paths.push(PathBuf::from("temm1e.toml"));
-
-    paths
+    let system = std::env::var_os("PROGRAMDATA")
+        .map(|p| PathBuf::from(p).join("temm1e").join("config.toml"));
+    system
+        .into_iter()
+        .chain([
+            super::data_dir().join("config.toml"),
+            PathBuf::from("config.toml"),
+            PathBuf::from("temm1e.toml"),
+        ])
+        .collect()
 }
 
 /// Load configuration from discovered config files, merging in order
@@ -86,22 +75,15 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<Temm1eConfig, Temm1eE
 
 /// Discover agent config file locations in priority order
 fn agent_config_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    // 1. User agent config
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".temm1e").join("agent-config.toml"));
-    }
-
-    // 2. Workspace agent config
-    paths.push(PathBuf::from("agent-config.toml"));
-
-    paths
+    vec![
+        super::data_dir().join("agent-config.toml"),
+        PathBuf::from("agent-config.toml"),
+    ]
 }
 
 /// Returns the default agent config file path (`~/.temm1e/agent-config.toml`)
 pub fn default_agent_config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".temm1e").join("agent-config.toml"))
+    Some(super::data_dir().join("agent-config.toml"))
 }
 
 /// Load agent-accessible config from discovered agent config files.
@@ -578,7 +560,7 @@ max_turns = 200
         let path = default_agent_config_path();
         assert!(path.is_some());
         let p = path.unwrap();
-        assert!(p.to_string_lossy().contains(".temm1e"));
+        assert_eq!(p.parent(), Some(super::super::data_dir().as_path()));
         assert!(p.to_string_lossy().ends_with("agent-config.toml"));
     }
 }

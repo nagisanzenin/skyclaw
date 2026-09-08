@@ -152,7 +152,7 @@ impl CodeSnapshotTool {
         let snapshot_name = name
             .filter(|n| !n.is_empty())
             .map(|n| n.to_string())
-            .unwrap_or_else(|| format!("snapshot-{}", &timestamp));
+            .unwrap_or_else(|| format!("snapshot-{}", timestamp));
 
         let entry = SnapshotEntry {
             id: id.clone(),

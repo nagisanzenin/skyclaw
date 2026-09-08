@@ -39,35 +39,33 @@ pub fn render_chat(state: &AppState, area: Rect, buf: &mut Buffer) {
     let msg_area = chunks[0];
     let view_height = msg_area.height as usize;
 
-    // Render all message lines (already wrapped by markdown renderer)
-    let mut all_lines: Vec<Line<'static>> = state.message_list.render_lines(
+    let history_rows = state.message_list.line_count();
+    let streaming = state
+        .streaming_renderer
+        .as_ref()
+        .filter(|_| state.is_agent_working);
+    let streaming_rows = streaming.map(|r| r.lines().len()).unwrap_or(0);
+    let total = history_rows + streaming_rows;
+    let max_offset = total.saturating_sub(view_height);
+    let offset = state.message_list.scroll_offset.min(max_offset);
+    let end = total.saturating_sub(offset);
+    let start = end.saturating_sub(view_height);
+    let mut visible_lines = state.message_list.render_range(
+        start.min(history_rows)..end.min(history_rows),
         state.theme.prompt,
         state.theme.text,
         state.theme.secondary,
         state.theme.secondary,
     );
-
-    // Append in-progress streaming content if agent is working
-    if state.is_agent_working {
-        if let Some(ref renderer) = state.streaming_renderer {
-            if !renderer.is_empty() {
-                for rl in renderer.lines() {
-                    all_lines.push(Line::from(rl.spans.clone()));
-                }
-            }
+    if let Some(renderer) = streaming {
+        let first = start.saturating_sub(history_rows);
+        let last = end.saturating_sub(history_rows).min(streaming_rows);
+        for line in &renderer.lines()[first..last] {
+            visible_lines.push(Line::from(line.spans.clone()));
         }
     }
 
-    let total = all_lines.len();
-
-    // Scroll: offset 0 = bottom, higher = further back in history
-    // Clamp to max_offset so the viewport is always full
-    let max_offset = total.saturating_sub(view_height);
-    let offset = state.message_list.scroll_offset.min(max_offset);
-    let end = total.saturating_sub(offset);
-    let start = end.saturating_sub(view_height);
-
-    for (i, line) in all_lines[start..end].iter().enumerate() {
+    for (i, line) in visible_lines.iter().enumerate() {
         let y = msg_area.top() + i as u16;
         if y < msg_area.bottom() {
             buf.set_line(msg_area.left(), y, line, msg_area.width);

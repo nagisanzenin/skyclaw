@@ -14,6 +14,7 @@ pub enum MessageRole {
     User,
     Agent,
     System,
+    Tool,
 }
 
 /// Usage statistics for a single turn.
@@ -28,6 +29,7 @@ pub struct TurnUsage {
 /// A display-ready message.
 #[derive(Debug, Clone)]
 pub struct DisplayMessage {
+    pub tool_id: Option<String>,
     pub role: MessageRole,
     pub content: Vec<RenderedLine>,
     pub timestamp: DateTime<Utc>,
@@ -107,7 +109,7 @@ impl MessageList {
             if msg.usage.is_some() {
                 total += 1;
             }
-            total += 1; // blank separator
+            total += usize::from(msg.role != MessageRole::Tool); // blank separator
         }
         total
     }
@@ -120,43 +122,111 @@ impl MessageList {
         system_style: Style,
         secondary_style: Style,
     ) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
+        self.render_range(
+            0..usize::MAX,
+            user_style,
+            agent_style,
+            system_style,
+            secondary_style,
+        )
+    }
 
+    /// Materialize only the requested viewport. Off-screen text and spans are
+    /// never cloned; message lengths are enough to skip older content.
+    pub fn render_range(
+        &self,
+        range: std::ops::Range<usize>,
+        user_style: Style,
+        agent_style: Style,
+        system_style: Style,
+        secondary_style: Style,
+    ) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        let mut row = 0usize;
         for msg in &self.messages {
+            let separator = usize::from(msg.role != MessageRole::Tool);
+            let message_rows = msg.content.len() + usize::from(msg.usage.is_some()) + separator;
+            let next = row.saturating_add(message_rows);
+            if row >= range.end {
+                break;
+            }
+            if next <= range.start {
+                row = next;
+                continue;
+            }
             let (prefix, prefix_style) = match msg.role {
                 MessageRole::User => ("> ", user_style),
                 MessageRole::Agent => ("", agent_style),
                 MessageRole::System => ("[system] ", system_style),
+                MessageRole::Tool => ("", secondary_style),
             };
-
-            // Content lines with role prefix
-            for rendered in &msg.content {
-                let mut line_spans = Vec::new();
+            let first = range.start.saturating_sub(row).min(msg.content.len());
+            let last = range.end.saturating_sub(row).min(msg.content.len());
+            for rendered in &msg.content[first..last] {
+                let mut spans = Vec::new();
                 if !prefix.is_empty() {
-                    line_spans.push(Span::styled(prefix.to_string(), prefix_style));
+                    spans.push(Span::styled(prefix, prefix_style));
                 }
-                line_spans.extend(rendered.spans.clone());
-                lines.push(Line::from(line_spans));
+                spans.extend(rendered.spans.clone());
+                lines.push(Line::from(spans));
             }
-
-            // Usage info
-            if let Some(usage) = &msg.usage {
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "  [{} in / {} out | ${:.4} | {:.1}s]",
-                        usage.input_tokens,
-                        usage.output_tokens,
-                        usage.cost_usd,
-                        usage.elapsed_ms as f64 / 1000.0,
-                    ),
-                    secondary_style,
-                )));
+            let usage_row = row + msg.content.len();
+            if range.contains(&usage_row) {
+                if let Some(usage) = &msg.usage {
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "  [{} in / {} out | ${:.4} | {:.1}s]",
+                            usage.input_tokens,
+                            usage.output_tokens,
+                            usage.cost_usd,
+                            usage.elapsed_ms as f64 / 1000.0,
+                        ),
+                        secondary_style,
+                    )));
+                }
             }
-
-            // Blank line between messages
-            lines.push(Line::from(""));
+            if separator != 0 && range.contains(&(next - 1)) {
+                lines.push(Line::from(""));
+            }
+            row = next;
         }
-
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn viewport_preserves_content_usage_and_separators() {
+        let mut messages = MessageList::new();
+        for i in 0..1000 {
+            messages.push(DisplayMessage {
+                tool_id: None,
+                role: if i % 2 == 0 {
+                    MessageRole::User
+                } else {
+                    MessageRole::Agent
+                },
+                content: vec![RenderedLine {
+                    spans: vec![Span::raw(format!("message {i}"))],
+                    indent: 0,
+                }],
+                timestamp: Utc::now(),
+                usage: (i % 3 == 0).then(TurnUsage::default),
+            });
+        }
+        let style = Style::default();
+        let all = messages.render_lines(style, style, style, style);
+        assert_eq!(all.len(), messages.line_count());
+        for start in [0, 1, 2, 3, 99, all.len() - 20, all.len()] {
+            let end = (start + 17).min(all.len());
+            let viewport = messages.render_range(start..end, style, style, style, style);
+            assert_eq!(viewport, all[start..end]);
+            assert!(viewport.len() <= 17);
+        }
+        assert_eq!(all[0].to_string(), "> message 0");
+        assert!(all[1].to_string().contains("0 in / 0 out"));
+        assert_eq!(all[2].to_string(), "");
     }
 }

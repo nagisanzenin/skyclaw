@@ -60,10 +60,7 @@ pub struct CustomModelsFile {
 
 /// Returns `~/.temm1e/custom_models.toml`.
 pub fn custom_models_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".temm1e")
-        .join("custom_models.toml")
+    crate::config::data_dir().join("custom_models.toml")
 }
 
 /// Load the full custom models file.

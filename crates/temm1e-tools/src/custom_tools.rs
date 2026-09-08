@@ -231,10 +231,7 @@ pub struct CustomToolRegistry {
 
 impl CustomToolRegistry {
     pub fn new() -> Self {
-        let tools_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".temm1e")
-            .join("custom-tools");
+        let tools_dir = temm1e_core::config::data_dir().join("custom-tools");
         Self {
             tools_dir,
             tools_changed: AtomicBool::new(false),

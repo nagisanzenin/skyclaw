@@ -65,8 +65,8 @@ impl SkillRegistry {
         let mut dirs_to_scan: Vec<PathBuf> = Vec::new();
 
         // Global skills directory
-        if let Some(home) = dirs::home_dir() {
-            let global_dir = home.join(".temm1e").join("skills");
+        {
+            let global_dir = temm1e_core::config::data_dir().join("skills");
             dirs_to_scan.push(global_dir);
         }
 

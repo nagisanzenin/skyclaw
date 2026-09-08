@@ -219,6 +219,7 @@ pub async fn launch_tui(config: Temm1eConfig) -> anyhow::Result<()> {
             tw as usize,
         );
         state.message_list.push(DisplayMessage {
+            tool_id: None,
             role: MessageRole::System,
             content: lines,
             timestamp: chrono::Utc::now(),

@@ -18,10 +18,7 @@ pub fn log_dir() -> PathBuf {
         .join("logs");
 
     #[cfg(not(windows))]
-    let base = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".temm1e")
-        .join("logs");
+    let base = temm1e_core::config::data_dir().join("logs");
 
     std::fs::create_dir_all(&base).ok();
     base
@@ -103,7 +100,7 @@ mod tests {
     fn log_dir_is_under_temm1e() {
         let dir = log_dir();
         let dir_str = dir.to_string_lossy();
-        assert!(dir_str.contains("temm1e") || dir_str.contains("TEMM1E"));
+        assert!(dir.starts_with(temm1e_core::config::data_dir()));
         assert!(dir_str.contains("logs"));
     }
 

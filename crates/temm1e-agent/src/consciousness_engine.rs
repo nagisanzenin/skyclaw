@@ -213,7 +213,7 @@ impl ConsciousnessEngine {
 
                 // Record in session notes
                 if let Ok(mut notes) = self.session_notes.lock() {
-                    notes.push(format!("Consciousness-T{}: {}", turn, &text));
+                    notes.push(format!("Consciousness-T{}: {}", turn, text));
                 }
 
                 (Some(text), Some(usage))

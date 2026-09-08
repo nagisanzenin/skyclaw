@@ -227,3 +227,11 @@ mod tests {
         assert!(matches!(a.phase, AgentTaskPhase::Preparing));
     }
 }
+
+/// Ordered tool lifecycle event. Unlike a watch snapshot, every transition is
+/// delivered to the configured observer with an execution identity.
+#[derive(Debug, Clone)]
+pub struct AgentToolEvent {
+    pub execution_id: String,
+    pub phase: AgentTaskPhase,
+}

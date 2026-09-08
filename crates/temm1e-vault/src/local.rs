@@ -44,9 +44,7 @@ pub struct LocalVault {
 impl LocalVault {
     /// Create (or open) a local vault in the default location (`~/.temm1e/`).
     pub async fn new() -> Result<Self, Temm1eError> {
-        let base = dirs::home_dir()
-            .ok_or_else(|| Temm1eError::Vault("cannot determine home directory".into()))?
-            .join(".temm1e");
+        let base = temm1e_core::config::data_dir();
 
         Self::with_dir(base).await
     }

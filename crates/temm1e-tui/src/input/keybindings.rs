@@ -41,6 +41,8 @@ pub enum Action {
     Redraw,
     /// Toggle observability panel (Ctrl+O).
     ToggleActivityPanel,
+    /// Expand/collapse transcript tool details (Ctrl+T).
+    ToggleToolDetails,
     /// Scroll messages up.
     ScrollUp,
     /// Scroll messages down.
@@ -86,6 +88,7 @@ pub fn map_key(key: KeyEvent) -> Action {
         (KeyModifiers::CONTROL, KeyCode::Char('d')) => Action::Quit,
         (KeyModifiers::CONTROL, KeyCode::Char('l')) => Action::Redraw,
         (KeyModifiers::CONTROL, KeyCode::Char('o')) => Action::ToggleActivityPanel,
+        (KeyModifiers::CONTROL, KeyCode::Char('t')) => Action::ToggleToolDetails,
         (KeyModifiers::CONTROL, KeyCode::Char('y')) => Action::YankCodeBlock,
         // Alt+S toggles mouse capture (select mode)
         (KeyModifiers::ALT, KeyCode::Char('s')) => Action::ToggleMouseCapture,

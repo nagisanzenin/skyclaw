@@ -184,8 +184,7 @@ impl RoleFile {
 
 /// Get the on-disk path for a channel's role file.
 pub fn role_file_path(channel_name: &str) -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    let temm1e_dir = home.join(".temm1e");
+    let temm1e_dir = crate::config::data_dir();
     let filename = match channel_name {
         "telegram" => "allowlist.toml",
         "discord" => "discord_allowlist.toml",

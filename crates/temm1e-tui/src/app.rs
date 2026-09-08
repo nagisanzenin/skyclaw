@@ -63,6 +63,7 @@ pub struct CodeBlock {
 /// A completed or in-flight tool call record for the /tools history overlay.
 #[derive(Debug, Clone)]
 pub struct ToolCallRecord {
+    pub execution_id: String,
     pub turn_number: u32,
     pub tool_name: String,
     pub args_preview: String,
@@ -142,6 +143,7 @@ pub struct AppState {
     // Agent
     pub is_agent_working: bool,
     pub activity_panel: ActivityPanel,
+    pub tool_details_expanded: bool,
 
     // Streaming
     pub streaming_renderer: Option<StreamingRenderer>,
@@ -232,6 +234,7 @@ impl AppState {
             input: InputState::new(),
             is_agent_working: false,
             activity_panel: ActivityPanel::new(),
+            tool_details_expanded: false,
             streaming_renderer: None,
             token_counter: TokenCounter::new(),
             current_model: None,
@@ -304,6 +307,15 @@ pub fn update(state: &mut AppState, event: Event) {
     match event {
         Event::Terminal(crossterm::event::Event::Resize(w, h)) => {
             state.terminal_size = (w, h);
+            let ids: Vec<_> = state
+                .message_list
+                .messages
+                .iter()
+                .filter_map(|m| m.tool_id.clone())
+                .collect();
+            for id in ids {
+                refresh_tool_message(state, &id);
+            }
             state.needs_clear = true;
             state.needs_redraw = true;
         }
@@ -399,45 +411,80 @@ pub fn update(state: &mut AppState, event: Event) {
                 _ => {}
             }
         }
-        Event::AgentStatus(status) => {
-            state.activity_panel.update_status(&status);
-            state.token_counter.turn_input_tokens = status.input_tokens;
-            state.token_counter.turn_output_tokens = status.output_tokens;
-
-            // D3 — record tool call events into the /tools history
-            match &status.phase {
-                AgentTaskPhase::ExecutingTool { tool_name, .. } => {
-                    // Only push if this is a new call (dedupe by tool_name matching last record)
-                    let should_push = state
+        Event::ToolLifecycle(event) => {
+            let execution_id = event.execution_id.clone();
+            state.activity_panel.update_phase(&event.phase);
+            match event.phase {
+                AgentTaskPhase::ExecutingTool {
+                    tool_name,
+                    args_preview,
+                    ..
+                } => {
+                    if !state
                         .tool_call_history
-                        .last()
-                        .map(|r| r.tool_name != *tool_name || r.duration_ms.is_some())
-                        .unwrap_or(true);
-                    if should_push {
+                        .iter()
+                        .any(|r| r.execution_id == event.execution_id)
+                    {
                         state.tool_call_history.push(ToolCallRecord {
+                            execution_id: event.execution_id,
                             turn_number: state.current_turn,
-                            tool_name: tool_name.clone(),
-                            args_preview: String::new(),
+                            tool_name,
+                            args_preview,
                             duration_ms: None,
                             ok: None,
                             result_preview: None,
                         });
                     }
                 }
-                AgentTaskPhase::Interrupted { .. } => {
-                    // Mark the most recent in-flight tool as cancelled
-                    if let Some(last) = state
+                AgentTaskPhase::ToolCompleted {
+                    duration_ms,
+                    ok,
+                    result_preview,
+                    ..
+                } => {
+                    if let Some(record) = state
                         .tool_call_history
                         .iter_mut()
                         .rev()
-                        .find(|r| r.duration_ms.is_none())
+                        .find(|r| r.execution_id == event.execution_id)
                     {
-                        last.duration_ms = Some(0);
-                        last.ok = Some(false);
-                        last.result_preview = Some("[cancelled]".to_string());
+                        record.duration_ms = Some(duration_ms);
+                        record.ok = Some(ok);
+                        record.result_preview = Some(result_preview);
                     }
                 }
                 _ => {}
+            }
+            refresh_tool_message(state, &execution_id);
+            state.needs_redraw = true;
+        }
+        Event::AgentStatus(status) => {
+            // Tool transitions are delivered through the ordered event stream.
+            // A watch receiver may miss or repeat these snapshots.
+            if !matches!(
+                status.phase,
+                AgentTaskPhase::ExecutingTool { .. } | AgentTaskPhase::ToolCompleted { .. }
+            ) {
+                state.activity_panel.update_status(&status);
+            }
+            state.token_counter.turn_input_tokens = status.input_tokens;
+            state.token_counter.turn_output_tokens = status.output_tokens;
+
+            if matches!(status.phase, AgentTaskPhase::Interrupted { .. }) {
+                let cancelled = state
+                    .tool_call_history
+                    .iter_mut()
+                    .rev()
+                    .find(|r| r.duration_ms.is_none())
+                    .map(|last| {
+                        last.duration_ms = Some(0);
+                        last.ok = Some(false);
+                        last.result_preview = Some("[cancelled]".to_string());
+                        last.execution_id.clone()
+                    });
+                if let Some(id) = cancelled {
+                    refresh_tool_message(state, &id);
+                }
             }
 
             if matches!(status.phase, AgentTaskPhase::Done) {
@@ -505,6 +552,7 @@ pub fn update(state: &mut AppState, event: Event) {
                     })
                 };
                 state.message_list.push(DisplayMessage {
+                    tool_id: None,
                     role: MessageRole::Agent,
                     content: lines,
                     timestamp: Utc::now(),
@@ -659,6 +707,19 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) {
         InputResult::Redraw => {
             state.needs_redraw = true;
         }
+        InputResult::ToggleToolDetails => {
+            state.tool_details_expanded = !state.tool_details_expanded;
+            let ids: Vec<_> = state
+                .message_list
+                .messages
+                .iter()
+                .filter_map(|m| m.tool_id.clone())
+                .collect();
+            for id in ids {
+                refresh_tool_message(state, &id);
+            }
+            state.needs_redraw = true;
+        }
         InputResult::ToggleActivityPanel => {
             state.activity_panel.toggle();
         }
@@ -779,9 +840,84 @@ pub fn compute_selection_ctx(state: &AppState) -> SelectionCtx {
     }
 }
 
+/// Rebuild one compact/expanded tool entry only when its state changes.
+fn refresh_tool_message(state: &mut AppState, execution_id: &str) {
+    use unicode_width::UnicodeWidthChar;
+    let Some(record) = state
+        .tool_call_history
+        .iter()
+        .find(|r| r.execution_id == execution_id)
+    else {
+        return;
+    };
+    let marker = if state.tool_details_expanded {
+        "▾"
+    } else {
+        "▸"
+    };
+    let outcome = match record.ok {
+        Some(true) => "done",
+        Some(false) => "failed",
+        None => "running",
+    };
+    let elapsed = record
+        .duration_ms
+        .map(|ms| format!(" · {:.2}s", ms as f64 / 1000.0))
+        .unwrap_or_default();
+    let mut text = format!("{marker} {} · {outcome}{elapsed}", record.tool_name);
+    if state.tool_details_expanded {
+        text.push_str(&format!("\n  args: {}", record.args_preview));
+        if let Some(result) = &record.result_preview {
+            text.push_str(&format!("\n  {result}"));
+        }
+    }
+    let width = state.terminal_size.0.saturating_sub(2).max(1) as usize;
+    let mut content = Vec::new();
+    for raw in text.lines() {
+        let mut line = String::new();
+        let mut columns = 0;
+        for ch in raw.chars().filter(|ch| !ch.is_control()) {
+            let size = ch.width().unwrap_or(0);
+            if columns + size > width && !line.is_empty() {
+                content.push(RenderedLine {
+                    spans: vec![ratatui::text::Span::styled(
+                        std::mem::take(&mut line),
+                        state.theme.secondary,
+                    )],
+                    indent: 0,
+                });
+                columns = 0;
+            }
+            line.push(ch);
+            columns += size;
+        }
+        content.push(RenderedLine {
+            spans: vec![ratatui::text::Span::styled(line, state.theme.secondary)],
+            indent: 0,
+        });
+    }
+    if let Some(message) = state
+        .message_list
+        .messages
+        .iter_mut()
+        .find(|m| m.tool_id.as_deref() == Some(execution_id))
+    {
+        message.content = content;
+    } else {
+        state.message_list.push(DisplayMessage {
+            tool_id: Some(execution_id.into()),
+            role: MessageRole::Tool,
+            content,
+            timestamp: Utc::now(),
+            usage: None,
+        });
+    }
+}
+
 /// Push a single-line system message to the message list (toast-style).
 fn push_system_line(state: &mut AppState, text: String) {
     state.message_list.push(DisplayMessage {
+        tool_id: None,
         role: MessageRole::System,
         content: vec![RenderedLine {
             spans: vec![ratatui::text::Span::styled(text, state.theme.secondary)],
@@ -802,6 +938,7 @@ fn handle_user_submit(state: &mut AppState, text: String) {
     // Block new messages while agent is working (slash commands still allowed)
     if state.is_agent_working && !trimmed.starts_with('/') {
         state.message_list.push(DisplayMessage {
+            tool_id: None,
             role: MessageRole::System,
             content: vec![RenderedLine {
                 spans: vec![ratatui::text::Span::styled(
@@ -823,6 +960,7 @@ fn handle_user_submit(state: &mut AppState, text: String) {
         match result {
             CommandResult::DisplayMessage(msg) => {
                 state.message_list.push(DisplayMessage {
+                    tool_id: None,
                     role: MessageRole::System,
                     content: vec![RenderedLine {
                         spans: vec![ratatui::text::Span::styled(msg, state.theme.info)],
@@ -861,6 +999,7 @@ fn handle_user_submit(state: &mut AppState, text: String) {
             }
             CommandResult::Error(msg) => {
                 state.message_list.push(DisplayMessage {
+                    tool_id: None,
                     role: MessageRole::System,
                     content: vec![RenderedLine {
                         spans: vec![ratatui::text::Span::styled(msg, state.theme.error)],
@@ -885,6 +1024,7 @@ fn handle_user_submit(state: &mut AppState, text: String) {
         state.terminal_size.0 as usize,
     );
     state.message_list.push(DisplayMessage {
+        tool_id: None,
         role: MessageRole::User,
         content: lines,
         timestamp: Utc::now(),
@@ -914,6 +1054,7 @@ fn finalize_streaming(state: &mut AppState) {
     if let Some(renderer) = state.streaming_renderer.take() {
         let lines = renderer.lines().to_vec();
         state.message_list.push(DisplayMessage {
+            tool_id: None,
             role: MessageRole::Agent,
             content: lines,
             timestamp: Utc::now(),
@@ -1164,6 +1305,65 @@ fn handle_onboarding_key(state: &mut AppState, key: crossterm::event::KeyEvent) 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ordered_tool_events_keep_repeated_calls_and_details() {
+        use temm1e_agent::agent_task_status::AgentToolEvent;
+        let mut state = super::AppState::new();
+        for id in ["first", "second"] {
+            super::update(
+                &mut state,
+                super::Event::ToolLifecycle(AgentToolEvent {
+                    execution_id: id.into(),
+                    phase: super::AgentTaskPhase::ExecutingTool {
+                        round: 1,
+                        tool_name: "shell".into(),
+                        tool_index: 0,
+                        tool_total: 1,
+                        args_preview: "printf test".into(),
+                        started_at_ms: 0,
+                    },
+                }),
+            );
+            super::update(
+                &mut state,
+                super::Event::ToolLifecycle(AgentToolEvent {
+                    execution_id: id.into(),
+                    phase: super::AgentTaskPhase::ToolCompleted {
+                        round: 1,
+                        tool_name: "shell".into(),
+                        tool_index: 0,
+                        tool_total: 1,
+                        duration_ms: 1,
+                        ok: true,
+                        result_preview: "test".into(),
+                    },
+                }),
+            );
+        }
+        assert_eq!(state.tool_call_history.len(), 2);
+        assert_eq!(state.activity_panel.tool_calls.len(), 2);
+        assert_eq!(state.message_list.line_count(), 2);
+        let toggle = || {
+            super::Event::Terminal(crossterm::event::Event::Key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char('t'),
+                    crossterm::event::KeyModifiers::CONTROL,
+                ),
+            ))
+        };
+        super::update(&mut state, toggle());
+        assert!(state.tool_details_expanded);
+        assert!(state.message_list.line_count() >= 6);
+        super::update(&mut state, toggle());
+        assert!(!state.tool_details_expanded);
+        assert_eq!(state.message_list.line_count(), 2);
+        for record in &state.tool_call_history {
+            assert_eq!(record.args_preview, "printf test");
+            assert_eq!(record.result_preview.as_deref(), Some("test"));
+            assert_eq!(record.ok, Some(true));
+        }
+    }
     use super::*;
 
     #[test]

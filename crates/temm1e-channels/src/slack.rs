@@ -132,7 +132,7 @@ struct AllowlistFile {
 
 /// Return the path to `~/.temm1e/slack_allowlist.toml`.
 fn allowlist_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".temm1e").join("slack_allowlist.toml"))
+    Some(temm1e_core::config::data_dir().join("slack_allowlist.toml"))
 }
 
 /// Load the persisted Slack allowlist from disk.

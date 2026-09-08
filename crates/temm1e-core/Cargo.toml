@@ -23,9 +23,9 @@ regex.workspace = true
 dirs.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 tokio = { workspace = true, features = ["full"] }
 
 [target.'cfg(unix)'.dependencies]

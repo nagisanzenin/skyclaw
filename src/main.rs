@@ -320,7 +320,7 @@ fn is_command_allowed_for_user(channel: &str, user_id: &str, command: &str) -> b
 
 /// Get the path to the PID file: `~/.temm1e/temm1e.pid`
 fn pid_file_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".temm1e").join("temm1e.pid"))
+    Some(temm1e_core::config::data_dir().join("temm1e.pid"))
 }
 
 /// Write the current process PID to the PID file.
@@ -1416,8 +1416,7 @@ async fn send_with_retry(
 async fn run_setup_wizard() -> Result<()> {
     use std::io::{self, BufRead, Write};
 
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
-    let temm1e_dir = home.join(".temm1e");
+    let temm1e_dir = temm1e_core::config::data_dir();
     std::fs::create_dir_all(&temm1e_dir)?;
 
     println!();
@@ -1711,9 +1710,7 @@ async fn main() -> Result<()> {
     // Reset must work even when config is corrupted/poisoned,
     // so we intercept it before load_config() which might fail.
     if let Commands::Reset { confirm } = &cli.command {
-        let data_dir = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".temm1e");
+        let data_dir = temm1e_core::config::data_dir();
 
         if !data_dir.exists() {
             println!("Nothing to reset — {} does not exist.", data_dir.display());
@@ -1761,9 +1758,8 @@ async fn main() -> Result<()> {
 
         // Backup before wipe
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let backup_dir = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(format!(".temm1e.bak.{}", timestamp));
+        let backup_dir =
+            temm1e_core::config::data_dir().with_extension(format!("bak.{}", timestamp));
 
         // Copy directory tree for backup
         fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -1892,9 +1888,7 @@ async fn main() -> Result<()> {
 
             // ── Daemon mode ──────────────────────────────────────
             if daemon {
-                let temm1e_dir = dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".temm1e");
+                let temm1e_dir = temm1e_core::config::data_dir();
                 let _ = std::fs::create_dir_all(&temm1e_dir);
 
                 // Check for saved credentials — daemon requires prior setup
@@ -2022,9 +2016,7 @@ async fn main() -> Result<()> {
 
             // ── Memory backend ─────────────────────────────────
             let memory_url = config.memory.path.clone().unwrap_or_else(|| {
-                let data_dir = dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".temm1e");
+                let data_dir = temm1e_core::config::data_dir();
                 if let Err(e) = std::fs::create_dir_all(&data_dir) {
                     tracing::warn!(error = %e, path = %data_dir.display(), "Failed to create directory");
                 }
@@ -2304,22 +2296,16 @@ async fn main() -> Result<()> {
                 temm1e_core::types::config::MemoryStrategy::Lambda,
             ));
             // ── Social intelligence: personality + storage ──────────
-            let personality =
-                std::sync::Arc::new(temm1e_anima::personality::PersonalityConfig::load(
-                    &dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".temm1e"),
-                ));
+            let personality = std::sync::Arc::new(
+                temm1e_anima::personality::PersonalityConfig::load(&temm1e_core::config::data_dir()),
+            );
             let social_storage: Option<std::sync::Arc<temm1e_anima::SocialStorage>> = if config
                 .social
                 .enabled
             {
                 let social_db_url = format!(
                     "sqlite:{}/social.db?mode=rwc",
-                    dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".temm1e")
-                        .display()
+                    temm1e_core::config::data_dir().display()
                 );
                 match temm1e_anima::SocialStorage::new(&social_db_url).await {
                     Ok(s) => {
@@ -2422,9 +2408,7 @@ async fn main() -> Result<()> {
             // ── TemDOS: Load core registry ──────────────────
             let core_registry = {
                 let mut registry = temm1e_cores::CoreRegistry::new();
-                let ws_path = dirs::home_dir()
-                    .map(|h| h.join(".temm1e"))
-                    .unwrap_or_default();
+                let ws_path = temm1e_core::config::data_dir();
                 registry
                     .load(Some(ws_path.as_path()))
                     .await
@@ -2478,9 +2462,8 @@ async fn main() -> Result<()> {
                 config_path
                     .and_then(|p| std::fs::read_to_string(p).ok())
                     .or_else(|| {
-                        dirs::home_dir().and_then(|h| {
-                            std::fs::read_to_string(h.join(".temm1e/config.toml")).ok()
-                        })
+                        std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+                            .ok()
                     })
                     .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
                     .and_then(|content| toml::from_str::<HiveCheck>(&content).ok())
@@ -2546,11 +2529,7 @@ async fn main() -> Result<()> {
                 }
                 let raw_path = config_path
                     .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| {
-                        dirs::home_dir()
-                            .map(|h| h.join(".temm1e/config.toml"))
-                            .unwrap_or_else(|| std::path::PathBuf::from("temm1e.toml"))
-                    });
+                    .unwrap_or_else(|| temm1e_core::config::data_dir().join("config.toml"));
                 let raw = std::fs::read_to_string(&raw_path).unwrap_or_default();
                 let expanded = temm1e_core::config::expand_env_vars(&raw);
                 toml::from_str::<EigenRoot>(&expanded)
@@ -2560,9 +2539,7 @@ async fn main() -> Result<()> {
 
             let eigen_tune_engine: Option<Arc<temm1e_distill::EigenTuneEngine>> =
                 if eigentune_cfg.enabled {
-                    let db_path = dirs::home_dir()
-                        .map(|h| h.join(".temm1e").join("eigentune.db"))
-                        .unwrap_or_else(|| std::path::PathBuf::from("eigentune.db"));
+                    let db_path = temm1e_core::config::data_dir().join("eigentune.db");
                     if let Some(parent) = db_path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
@@ -2746,9 +2723,7 @@ async fn main() -> Result<()> {
 
                     // ── Perpetuum lazy init (needs provider) ──────
                     if config.perpetuum.enabled && perpetuum.read().await.is_none() {
-                        let perpetuum_db = dirs::home_dir()
-                            .unwrap_or_else(|| std::path::PathBuf::from("."))
-                            .join(".temm1e/perpetuum.db");
+                        let perpetuum_db = temm1e_core::config::data_dir().join("perpetuum.db");
                         let db_url = format!("sqlite:{}?mode=rwc", perpetuum_db.display());
 
                         let perp_config = temm1e_perpetuum::PerpetualConfig {
@@ -2903,10 +2878,7 @@ async fn main() -> Result<()> {
             }
 
             // ── Workspace ──────────────────────────────────────
-            let workspace_path = dirs::home_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(".temm1e")
-                .join("workspace");
+            let workspace_path = temm1e_core::config::data_dir().join("workspace");
             if let Err(e) = std::fs::create_dir_all(&workspace_path) {
                 tracing::warn!(error = %e, path = %workspace_path.display(), "Failed to create directory");
             }
@@ -2984,8 +2956,8 @@ async fn main() -> Result<()> {
                 let hive_toml = config_path
                     .and_then(|p| std::fs::read_to_string(p).ok())
                     .or_else(|| {
-                        let home = dirs::home_dir()?;
-                        std::fs::read_to_string(home.join(".temm1e/config.toml")).ok()
+                        std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+                            .ok()
                     })
                     .or_else(|| std::fs::read_to_string("temm1e.toml").ok());
                 if let Some(ref content) = hive_toml {
@@ -3003,9 +2975,7 @@ async fn main() -> Result<()> {
             };
 
             let hive_instance: Option<Arc<temm1e_hive::Hive>> = if hive_config.enabled {
-                let hive_db = dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".temm1e/hive.db");
+                let hive_db = temm1e_core::config::data_dir().join("hive.db");
                 let hive_url = format!("sqlite:{}?mode=rwc", hive_db.display());
                 match temm1e_hive::Hive::new(&hive_config, &hive_url).await {
                     Ok(h) => {
@@ -3201,7 +3171,7 @@ async fn main() -> Result<()> {
 
                                     let temporal = perpetuum_temporal.read().await;
                                     if !temporal.is_empty() {
-                                        status_text.push_str(&format!("\n\nBackground:\n{}", &*temporal));
+                                        status_text.push_str(&format!("\n\nBackground:\n{}", *temporal));
                                     }
 
                                     if oq_len > 0 {
@@ -3807,17 +3777,13 @@ async fn main() -> Result<()> {
                                         let reply_text = match subcmd {
                                             "disable" => {
                                                 // Persist to config file
-                                                let config_path = dirs::home_dir()
-                                                    .unwrap_or_default()
-                                                    .join(".temm1e")
+                                                let config_path = temm1e_core::config::data_dir()
                                                     .join("vigil.toml");
                                                 std::fs::write(&config_path, "enabled = false\nconsent_given = false\nauto_report = false\n").ok();
                                                 "Vigil disabled. Re-enable by deleting ~/.temm1e/vigil.toml.".to_string()
                                             }
                                             "auto" => {
-                                                let config_path = dirs::home_dir()
-                                                    .unwrap_or_default()
-                                                    .join(".temm1e")
+                                                let config_path = temm1e_core::config::data_dir()
                                                     .join("vigil.toml");
                                                 std::fs::write(&config_path, "enabled = true\nconsent_given = true\nauto_report = true\n").ok();
                                                 "Vigil auto-reporting enabled. I'll show a 60-second window before each report.".to_string()
@@ -3825,9 +3791,7 @@ async fn main() -> Result<()> {
                                             "status" => {
                                                 let has_github = load_credentials_file()
                                                     .is_some_and(|c| c.providers.iter().any(|p| p.name == "github"));
-                                                let consent_path = dirs::home_dir()
-                                                    .unwrap_or_default()
-                                                    .join(".temm1e")
+                                                let consent_path = temm1e_core::config::data_dir()
                                                     .join("vigil.toml");
                                                 let consent = std::fs::read_to_string(&consent_path)
                                                     .unwrap_or_default()
@@ -4186,9 +4150,7 @@ Just type a message to chat with the AI agent.",
                                             .strip_prefix("/cambium")
                                             .unwrap_or("")
                                             .trim();
-                                        let cambium_path = dirs::home_dir()
-                                            .unwrap_or_default()
-                                            .join(".temm1e")
+                                        let cambium_path = temm1e_core::config::data_dir()
                                             .join("cambium.toml");
                                         let current_enabled = std::fs::read_to_string(&cambium_path)
                                             .ok()
@@ -4927,18 +4889,14 @@ Just type a message to chat with the AI agent.",
 
                                         tracing::info!(chat_id = %msg.chat_id, "Factory reset requested via /reset command");
 
-                                        let data_dir = dirs::home_dir()
-                                            .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                            .join(".temm1e");
+                                        let data_dir = temm1e_core::config::data_dir();
 
                                         let reset_result = if !data_dir.exists() {
                                             "Nothing to reset — no local state found.".to_string()
                                         } else {
                                             // Backup before wipe
                                             let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                                            let backup_dir = dirs::home_dir()
-                                                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                                .join(format!(".temm1e.bak.{}", timestamp));
+                                            let backup_dir = temm1e_core::config::data_dir().with_extension(format!("bak.{}", timestamp));
 
                                             fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
                                                 std::fs::create_dir_all(dst)?;
@@ -6262,9 +6220,8 @@ Just type a message to chat with the AI agent.",
                 config_path
                     .and_then(|p| std::fs::read_to_string(p).ok())
                     .or_else(|| {
-                        dirs::home_dir().and_then(|h| {
-                            std::fs::read_to_string(h.join(".temm1e/config.toml")).ok()
-                        })
+                        std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+                            .ok()
                     })
                     .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
                     .and_then(|c| toml::from_str::<HC>(&c).ok())
@@ -6317,9 +6274,7 @@ Just type a message to chat with the AI agent.",
 
             // ── Memory backend ─────────────────────────────────
             let memory_url = config.memory.path.clone().unwrap_or_else(|| {
-                let data_dir = dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".temm1e");
+                let data_dir = temm1e_core::config::data_dir();
                 if let Err(e) = std::fs::create_dir_all(&data_dir) {
                     tracing::warn!(error = %e, path = %data_dir.display(), "Failed to create directory");
                 }
@@ -6330,10 +6285,7 @@ Just type a message to chat with the AI agent.",
             );
 
             // ── CLI channel ────────────────────────────────────
-            let workspace = dirs::home_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(".temm1e")
-                .join("workspace");
+            let workspace = temm1e_core::config::data_dir().join("workspace");
             if let Err(e) = std::fs::create_dir_all(&workspace) {
                 tracing::warn!(error = %e, path = %workspace.display(), "Failed to create directory");
             }
@@ -6377,22 +6329,16 @@ Just type a message to chat with the AI agent.",
                 temm1e_core::types::config::MemoryStrategy::Lambda,
             ));
             // ── Social intelligence: personality + storage (CLI) ──────
-            let personality =
-                std::sync::Arc::new(temm1e_anima::personality::PersonalityConfig::load(
-                    &dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".temm1e"),
-                ));
+            let personality = std::sync::Arc::new(
+                temm1e_anima::personality::PersonalityConfig::load(&temm1e_core::config::data_dir()),
+            );
             let social_storage: Option<std::sync::Arc<temm1e_anima::SocialStorage>> = if config
                 .social
                 .enabled
             {
                 let social_db_url = format!(
                     "sqlite:{}/social.db?mode=rwc",
-                    dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".temm1e")
-                        .display()
+                    temm1e_core::config::data_dir().display()
                 );
                 match temm1e_anima::SocialStorage::new(&social_db_url).await {
                     Ok(s) => {
@@ -6486,9 +6432,7 @@ Just type a message to chat with the AI agent.",
             // ── TemDOS: Load core registry (CLI) ──────────────
             let cli_core_registry = {
                 let mut registry = temm1e_cores::CoreRegistry::new();
-                let ws_path = dirs::home_dir()
-                    .map(|h| h.join(".temm1e"))
-                    .unwrap_or_default();
+                let ws_path = temm1e_core::config::data_dir();
                 registry
                     .load(Some(ws_path.as_path()))
                     .await
@@ -6656,21 +6600,18 @@ Just type a message to chat with the AI agent.",
                                         config_path
                                             .and_then(|p| std::fs::read_to_string(p).ok())
                                             .or_else(|| {
-                                                dirs::home_dir().and_then(|h| {
-                                                    std::fs::read_to_string(
-                                                        h.join(".temm1e/config.toml"),
-                                                    )
-                                                    .ok()
-                                                })
+                                                std::fs::read_to_string(
+                                                    temm1e_core::config::data_dir()
+                                                        .join("config.toml"),
+                                                )
+                                                .ok()
                                             })
                                             .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
                                             .and_then(|c| toml::from_str::<HW>(&c).ok())
                                             .map(|w| w.hive)
                                             .unwrap_or_default()
                                     };
-                                    let hive_db = dirs::home_dir()
-                                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                        .join(".temm1e/hive.db");
+                                    let hive_db = temm1e_core::config::data_dir().join("hive.db");
                                     let hive_url = format!("sqlite:{}?mode=rwc", hive_db.display());
                                     match temm1e_hive::Hive::new(&hive_config, &hive_url).await {
                                         Ok(h) => {
@@ -6771,9 +6712,8 @@ Just type a message to chat with the AI agent.",
                             }
                             // ── Perpetuum: init for CLI chat ──────────
                             if config.perpetuum.enabled {
-                                let perpetuum_db = dirs::home_dir()
-                                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                    .join(".temm1e/perpetuum.db");
+                                let perpetuum_db =
+                                    temm1e_core::config::data_dir().join("perpetuum.db");
                                 let db_url = format!("sqlite:{}?mode=rwc", perpetuum_db.display());
 
                                 let perp_config = temm1e_perpetuum::PerpetualConfig {
@@ -7183,10 +7123,7 @@ Just type a message to chat with the AI agent.",
                     let subcmd = cmd_lower.strip_prefix("/vigil").unwrap_or("").trim();
                     match subcmd {
                         "disable" => {
-                            let config_path = dirs::home_dir()
-                                .unwrap_or_default()
-                                .join(".temm1e")
-                                .join("vigil.toml");
+                            let config_path = temm1e_core::config::data_dir().join("vigil.toml");
                             std::fs::write(
                                 &config_path,
                                 "enabled = false\nconsent_given = false\nauto_report = false\n",
@@ -7195,10 +7132,7 @@ Just type a message to chat with the AI agent.",
                             println!("Vigil disabled.");
                         }
                         "auto" => {
-                            let config_path = dirs::home_dir()
-                                .unwrap_or_default()
-                                .join(".temm1e")
-                                .join("vigil.toml");
+                            let config_path = temm1e_core::config::data_dir().join("vigil.toml");
                             std::fs::write(
                                 &config_path,
                                 "enabled = true\nconsent_given = true\nauto_report = true\n",
@@ -7209,10 +7143,7 @@ Just type a message to chat with the AI agent.",
                         "status" => {
                             let has_github = load_credentials_file()
                                 .is_some_and(|c| c.providers.iter().any(|p| p.name == "github"));
-                            let consent_path = dirs::home_dir()
-                                .unwrap_or_default()
-                                .join(".temm1e")
-                                .join("vigil.toml");
+                            let consent_path = temm1e_core::config::data_dir().join("vigil.toml");
                             let consent = std::fs::read_to_string(&consent_path)
                                 .unwrap_or_default()
                                 .contains("consent_given = true");
@@ -7257,10 +7188,7 @@ Just type a message to chat with the AI agent.",
                         .unwrap_or("")
                         .trim();
                     let subcmd = cmd_lower.strip_prefix("/cambium").unwrap_or("").trim();
-                    let cambium_path = dirs::home_dir()
-                        .unwrap_or_default()
-                        .join(".temm1e")
-                        .join("cambium.toml");
+                    let cambium_path = temm1e_core::config::data_dir().join("cambium.toml");
                     let current_enabled = std::fs::read_to_string(&cambium_path)
                         .ok()
                         .and_then(|s| {
@@ -8203,10 +8131,7 @@ Just type a message to chat with the AI agent.",
                         eprintln!("File not found: {}", path);
                         std::process::exit(1);
                     }
-                    let dest_dir = dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".temm1e")
-                        .join("skills");
+                    let dest_dir = temm1e_core::config::data_dir().join("skills");
                     if let Err(e) = std::fs::create_dir_all(&dest_dir) {
                         eprintln!("Failed to create skills directory: {}", e);
                         std::process::exit(1);
@@ -8657,11 +8582,9 @@ fn load_eigentune_config_from_path(
         #[serde(default)]
         eigentune: temm1e_distill::config::EigenTuneConfig,
     }
-    let raw_path: std::path::PathBuf = config_path.map(|p| p.to_path_buf()).unwrap_or_else(|| {
-        dirs::home_dir()
-            .map(|h| h.join(".temm1e/config.toml"))
-            .unwrap_or_else(|| std::path::PathBuf::from("temm1e.toml"))
-    });
+    let raw_path: std::path::PathBuf = config_path
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| temm1e_core::config::data_dir().join("config.toml"));
     let raw = std::fs::read_to_string(&raw_path).unwrap_or_default();
     let expanded = temm1e_core::config::expand_env_vars(&raw);
     toml::from_str::<EigenRoot>(&expanded)
@@ -8673,9 +8596,7 @@ fn load_eigentune_config_from_path(
 async fn open_eigentune_engine(
     cfg: &temm1e_distill::config::EigenTuneConfig,
 ) -> anyhow::Result<temm1e_distill::EigenTuneEngine> {
-    let db_path = dirs::home_dir()
-        .map(|h| h.join(".temm1e").join("eigentune.db"))
-        .unwrap_or_else(|| std::path::PathBuf::from("eigentune.db"));
+    let db_path = temm1e_core::config::data_dir().join("eigentune.db");
     if let Some(parent) = db_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -8693,9 +8614,7 @@ async fn open_eigentune_engine(
 /// SQLite connection setup cost (~50ms) is acceptable.
 async fn handle_eigentune_slash(arg: &str) -> String {
     // Find the config path the same way the daemon does
-    let config_path: std::path::PathBuf = dirs::home_dir()
-        .map(|h| h.join(".temm1e/config.toml"))
-        .unwrap_or_else(|| std::path::PathBuf::from("temm1e.toml"));
+    let config_path: std::path::PathBuf = temm1e_core::config::data_dir().join("config.toml");
     let cfg = load_eigentune_config_from_path(Some(&config_path));
 
     if !cfg.enabled {
@@ -8772,9 +8691,7 @@ async fn handle_eigentune_slash(arg: &str) -> String {
                     "Eigen-Tune: invalid tier '{tier}'. Must be one of: simple, standard, complex"
                 );
             }
-            let db_path = dirs::home_dir()
-                .map(|h| h.join(".temm1e").join("eigentune.db"))
-                .unwrap_or_else(|| std::path::PathBuf::from("eigentune.db"));
+            let db_path = temm1e_core::config::data_dir().join("eigentune.db");
             let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
             let store = match temm1e_distill::store::EigenTuneStore::new(&db_url).await {
                 Ok(s) => std::sync::Arc::new(s),
@@ -8914,9 +8831,7 @@ async fn handle_eigentune_command(
             // public API, so we use the engine's tick to query state and
             // call the graduation manager via store.
             // For now, we open a fresh store connection and demote directly.
-            let db_path = dirs::home_dir()
-                .map(|h| h.join(".temm1e").join("eigentune.db"))
-                .unwrap_or_else(|| std::path::PathBuf::from("eigentune.db"));
+            let db_path = temm1e_core::config::data_dir().join("eigentune.db");
             let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
             let store =
                 std::sync::Arc::new(temm1e_distill::store::EigenTuneStore::new(&db_url).await?);

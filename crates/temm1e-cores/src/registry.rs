@@ -29,8 +29,8 @@ impl CoreRegistry {
         self.cores.clear();
 
         // Global cores: ~/.temm1e/cores/
-        if let Some(home) = dirs::home_dir() {
-            let global_dir = home.join(".temm1e").join("cores");
+        {
+            let global_dir = temm1e_core::config::data_dir().join("cores");
             if global_dir.is_dir() {
                 self.load_from_dir(&global_dir).await?;
             }

@@ -15,9 +15,17 @@ Work is active on `codex/modernize-temm1e-research`. Baseline: `da503c0`; resear
 - Eigen-Tune sample caps produce inconclusive outcomes without graduation; terminal SPRT decisions stop sampling. Power estimation uses the correct one-sided power quantile and alternative variance. These are approximate one-sample calculations, not the paired A/B release analysis.
 - New banner and feature artwork follow the creator's pixel-art brief. Illustrations are conceptual and contain no unverified benchmark claims. README integration is in progress.
 
+## Second implementation checkpoint
+
+- `TEMM1E_DATA_DIR` now selects application-owned state across CLI/TUI, credentials, OAuth, user configuration, browser sessions, channel allowlists, vault, Witness, Cambium, Perpetuum, skills and cores. The default remains `~/.temm1e`. Explicit paths and workspace/system configuration retain their existing meaning; this is not a sandbox. See [isolated profiles](ISOLATED-PROFILES.md).
+- Credentials and OAuth tokens use atomic private-file replacement. Unix temporary files are owner-only before content is written; persistence errors propagate. Debug output omits secrets. Cross-process OAuth refresh locking and Windows ACL validation remain unfinished.
+- The TUI materializes only visible transcript rows on redraw. Tool start/completion events carry distinct execution IDs through the real agent bridge, including repeated calls to the same tool. Tool rows are compact by default; Ctrl+T expands/collapses details, Ctrl+O controls the optional activity panel. Provider text streaming and broader interaction polish remain unfinished.
+- Installer checksum verification now fails closed for absent/malformed/mismatched checksums or missing hash utilities, including fallback binaries. Three focused tests cover successful exact-filename verification and failure paths.
+- README is reduced to 100 lines, with a linked feature guide, CLI reference and preserved historical release notes. Eighteen matching concept images follow the creator's art direction and omit numerical performance claims.
+
 ## Validation
 
-Focused library checks: provider 83, OAuth 21, distillation 150, maintenance 79, process ownership 3 and tools 339 passed. Counts overlap with workspace tests and must not be summed as an independent total. Workspace library regression run: **2,730 passed, 0 failed, 9 ignored across 24 suites**. Full release checks (including binary/integration tests and all-feature clippy) and interactive entrypoint parity are pending.
+Focused library checks: provider 83, OAuth 21, distillation 150, maintenance 79, process ownership 3 and tools 339 passed. Counts overlap with workspace tests and must not be summed as an independent total. Workspace library regression run: **2,730 passed, 0 failed, 9 ignored across 24 suites**. The subsequent full workspace run passed **2,971 tests, 0 failures, 13 ignored across 78 suites**, including binary/integration/doc targets. All-feature/all-target clippy passed with `-D warnings`; Rust reports a separate future-compatibility warning in third-party `proc-macro-error2`. Interactive entrypoint parity, migration validation, platform checks and the A/B release gates are still pending.
 
 ## Still required
 

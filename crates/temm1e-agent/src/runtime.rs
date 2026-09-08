@@ -215,6 +215,7 @@ pub struct AgentRuntime {
     max_consecutive_failures: usize,
     /// Optional persistent task queue for checkpointing (None = no persistence).
     task_queue: Option<Arc<TaskQueue>>,
+    tool_observer: Option<Arc<dyn Fn(crate::agent_task_status::AgentToolEvent) + Send + Sync>>,
     /// Per-session budget tracker (Arc-wrapped for sharing with TemDOS cores).
     budget: Arc<BudgetTracker>,
     /// Pricing for the current model.
@@ -336,6 +337,7 @@ impl AgentRuntime {
             verification_enabled: true,
             max_consecutive_failures: 2,
             task_queue: None,
+            tool_observer: None,
             budget: Arc::new(BudgetTracker::new(0.0)),
             hive_enabled: false,
             model_pricing,
@@ -516,6 +518,7 @@ impl AgentRuntime {
             verification_enabled: true,
             max_consecutive_failures: 2,
             task_queue: None,
+            tool_observer: None,
             budget: Arc::new(BudgetTracker::new(max_spend_usd)),
             hive_enabled: false,
             model_pricing,
@@ -602,6 +605,15 @@ impl AgentRuntime {
     ) -> Self {
         self.eigen_tune = Some(engine);
         self.eigen_tune_local_routing = enable_local_routing;
+        self
+    }
+
+    /// Subscribe to each tool start/completion without watch-channel coalescing.
+    pub fn with_tool_observer(
+        mut self,
+        observer: Arc<dyn Fn(crate::agent_task_status::AgentToolEvent) + Send + Sync>,
+    ) -> Self {
+        self.tool_observer = Some(observer);
         self
     }
 
@@ -2912,6 +2924,24 @@ impl AgentRuntime {
                     });
                 }
 
+                let execution_id = format!(
+                    "{}:{}:{}:{}",
+                    session.session_id, msg.id, rounds, tool_index
+                );
+                if let Some(observer) = &self.tool_observer {
+                    observer(crate::agent_task_status::AgentToolEvent {
+                        execution_id: execution_id.clone(),
+                        phase: AgentTaskPhase::ExecutingTool {
+                            round: rounds as u32,
+                            tool_name: tool_name.clone(),
+                            tool_index: tool_index as u32,
+                            tool_total,
+                            args_preview: truncate_json_preview(arguments, 2048),
+                            started_at_ms: task_start.elapsed().as_millis() as u64,
+                        },
+                    });
+                }
+
                 let result = execute_tool(tool_name, arguments.clone(), &self.tools, session).await;
                 let tool_duration_ms = tool_started.elapsed().as_millis() as u64;
 
@@ -2937,6 +2967,25 @@ impl AgentRuntime {
                             ok: completion_ok,
                             result_preview: preview,
                         };
+                    });
+                }
+
+                if let Some(observer) = &self.tool_observer {
+                    let detail = match &result {
+                        Ok(output) => output.content.chars().take(4096).collect(),
+                        Err(error) => error.to_string().chars().take(4096).collect(),
+                    };
+                    observer(crate::agent_task_status::AgentToolEvent {
+                        execution_id,
+                        phase: AgentTaskPhase::ToolCompleted {
+                            round: rounds as u32,
+                            tool_name: tool_name.clone(),
+                            tool_index: tool_index as u32,
+                            tool_total,
+                            duration_ms: tool_duration_ms,
+                            ok: completion_ok,
+                            result_preview: detail,
+                        },
                     });
                 }
 
@@ -3056,7 +3105,7 @@ impl AgentRuntime {
 
                 // Tool reliability tracking (v4.6.0 self-learning)
                 {
-                    let task_label = format!("{}:{}", &classification_label, &difficulty_label);
+                    let task_label = format!("{}:{}", classification_label, difficulty_label);
                     let _ = self
                         .memory
                         .record_tool_outcome(tool_name, &task_label, !is_error)

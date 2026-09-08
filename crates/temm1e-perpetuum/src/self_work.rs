@@ -172,10 +172,7 @@ fn load_github_token() -> Option<String> {
 
 /// Check if bug reporting consent has been given.
 fn is_consent_given() -> bool {
-    let path = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".temm1e")
-        .join("vigil.toml");
+    let path = temm1e_core::config::data_dir().join("vigil.toml");
     std::fs::read_to_string(&path)
         .unwrap_or_default()
         .contains("consent_given = true")
@@ -429,12 +426,7 @@ async fn grow_skills(
     let skills_dir = if let Ok(override_path) = std::env::var("TEMM1E_CAMBIUM_SKILLS_DIR") {
         std::path::PathBuf::from(override_path)
     } else {
-        match dirs::home_dir() {
-            Some(home) => home.join(".temm1e").join("skills"),
-            None => {
-                return Ok("Skill grow: cannot resolve home directory".to_string());
-            }
-        }
+        temm1e_core::config::data_dir().join("skills")
     };
 
     if let Err(e) = tokio::fs::create_dir_all(&skills_dir).await {
@@ -539,10 +531,7 @@ fn extract_json_array(response: &str) -> &str {
 /// Wire 2: check if the Vigil -> Cambium bridge is enabled.
 /// Reads ~/.temm1e/cambium.toml for the master switch. Defaults to enabled.
 fn cambium_vigil_bridge_enabled() -> bool {
-    let path = match dirs::home_dir() {
-        Some(h) => h.join(".temm1e").join("cambium.toml"),
-        None => return false,
-    };
+    let path = temm1e_core::config::data_dir().join("cambium.toml");
     match std::fs::read_to_string(&path) {
         Ok(s) => {
             // Default: enabled if file missing or empty.
@@ -564,10 +553,7 @@ async fn write_cambium_inbox_entry(
     message: &str,
     count: u32,
 ) -> Result<(), Temm1eError> {
-    let inbox_dir = match dirs::home_dir() {
-        Some(h) => h.join(".temm1e").join("cambium"),
-        None => return Err(Temm1eError::Tool("cannot resolve home directory".into())),
-    };
+    let inbox_dir = temm1e_core::config::data_dir().join("cambium");
     tokio::fs::create_dir_all(&inbox_dir)
         .await
         .map_err(|e| Temm1eError::Tool(format!("create cambium dir: {e}")))?;

@@ -39,9 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("=== TUI smoke: spawn_agent() direct-call (no ratatui) ===");
 
     // Load the same config TUI would use at launch.
-    let config_dir = dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".temm1e");
+    let config_dir = temm1e_core::config::data_dir();
     let config_path = config_dir.join("config.toml");
     let config_str = std::fs::read_to_string(&config_path).unwrap_or_default();
     let config: Temm1eConfig = if config_str.is_empty() {

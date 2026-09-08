@@ -10,6 +10,8 @@ pub enum Event {
     Terminal(crossterm::event::Event),
     /// Agent status changed (via watch channel).
     AgentStatus(AgentTaskStatus),
+    /// Ordered tool events; watch snapshots cannot serve as a history.
+    ToolLifecycle(temm1e_agent::agent_task_status::AgentToolEvent),
     /// Streaming text chunk from the agent.
     StreamChunk(StreamChunk),
     /// User submitted input (from input widget).

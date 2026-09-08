@@ -135,10 +135,7 @@ fn resolve_ledger_path(override_path: Option<&str>) -> PathBuf {
     if let Some(p) = override_path {
         return PathBuf::from(p);
     }
-    let mut home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.push(".temm1e");
-    home.push("witness.db");
-    home
+    temm1e_core::config::data_dir().join("witness.db")
 }
 
 #[cfg(test)]

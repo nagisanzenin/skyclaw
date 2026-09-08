@@ -49,8 +49,8 @@ fn read_hive_enabled() -> bool {
     fn hive_default_enabled_tui() -> bool {
         true
     }
-    dirs::home_dir()
-        .and_then(|h| std::fs::read_to_string(h.join(".temm1e/config.toml")).ok())
+    std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+        .ok()
         .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
         .and_then(|c| toml::from_str::<HC>(&c).ok())
         .map(|c| c.hive.enabled)
@@ -63,8 +63,8 @@ fn read_hive_config() -> temm1e_hive::HiveConfig {
         #[serde(default)]
         hive: temm1e_hive::HiveConfig,
     }
-    dirs::home_dir()
-        .and_then(|h| std::fs::read_to_string(h.join(".temm1e/config.toml")).ok())
+    std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+        .ok()
         .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
         .and_then(|c| toml::from_str::<HW>(&c).ok())
         .map(|w| w.hive)
@@ -164,9 +164,7 @@ pub async fn spawn_agent(
 
     // 2. Create memory backend
     let memory_url = setup.config.memory.path.clone().unwrap_or_else(|| {
-        let data_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".temm1e");
+        let data_dir = temm1e_core::config::data_dir();
         std::fs::create_dir_all(&data_dir).ok();
         format!("sqlite:{}/memory.db?mode=rwc", data_dir.display())
     });
@@ -175,10 +173,7 @@ pub async fn spawn_agent(
     );
 
     // 3. Create workspace
-    let workspace = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".temm1e")
-        .join("workspace");
+    let workspace = temm1e_core::config::data_dir().join("workspace");
     std::fs::create_dir_all(&workspace).ok();
 
     // 4. Determine personality mode
@@ -265,9 +260,7 @@ pub async fn spawn_agent(
     // ── TemDOS core registry (specialist sub-agents) ──
     let tui_core_registry = {
         let mut registry = temm1e_cores::CoreRegistry::new();
-        let ws_path = dirs::home_dir()
-            .map(|h| h.join(".temm1e"))
-            .unwrap_or_default();
+        let ws_path = temm1e_core::config::data_dir();
         registry
             .load(Some(ws_path.as_path()))
             .await
@@ -304,9 +297,7 @@ pub async fn spawn_agent(
     let tui_perp_temporal: Arc<RwLock<String>> = Arc::new(RwLock::new(String::new()));
     let tui_perpetuum: Option<Arc<temm1e_perpetuum::Perpetuum>> = if setup.config.perpetuum.enabled
     {
-        let perp_db = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".temm1e/perpetuum.db");
+        let perp_db = temm1e_core::config::data_dir().join("perpetuum.db");
         let db_url = format!("sqlite:{}?mode=rwc", perp_db.display());
         let perp_config = temm1e_perpetuum::PerpetualConfig {
             enabled: true,
@@ -376,8 +367,8 @@ pub async fn spawn_agent(
             #[serde(default)]
             eigentune: temm1e_distill::config::EigenTuneConfig,
         }
-        dirs::home_dir()
-            .and_then(|h| std::fs::read_to_string(h.join(".temm1e/config.toml")).ok())
+        std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+            .ok()
             .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
             .and_then(|c| toml::from_str::<ETWrapper>(&c).ok())
             .map(|w| w.eigentune)
@@ -385,9 +376,7 @@ pub async fn spawn_agent(
     };
     let tui_eigen_tune_engine: Option<Arc<temm1e_distill::EigenTuneEngine>> =
         if tui_eigentune_cfg.enabled {
-            let et_db = dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".temm1e/eigentune.db");
+            let et_db = temm1e_core::config::data_dir().join("eigentune.db");
             let et_url = format!("sqlite:{}?mode=rwc", et_db.display());
             match temm1e_distill::EigenTuneEngine::new(&tui_eigentune_cfg, &et_url).await {
                 Ok(engine) => {
@@ -405,9 +394,7 @@ pub async fn spawn_agent(
 
     // ── Load personality for TUI (matches server/CLI pattern) ──
     let tui_personality = Arc::new(temm1e_anima::personality::PersonalityConfig::load(
-        &dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".temm1e"),
+        &temm1e_core::config::data_dir(),
     ));
 
     // ── Social intelligence: user profile storage ──
@@ -416,10 +403,7 @@ pub async fn spawn_agent(
     {
         let social_db_url = format!(
             "sqlite:{}/social.db?mode=rwc",
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".temm1e")
-                .display()
+            temm1e_core::config::data_dir().display()
         );
         match temm1e_anima::SocialStorage::new(&social_db_url).await {
             Ok(s) => {
@@ -462,9 +446,7 @@ pub async fn spawn_agent(
     // ── Hive pack initialization for TUI ──
     let tui_hive_instance: Option<Arc<temm1e_hive::Hive>> = if tui_hive_enabled {
         let hive_config = read_hive_config();
-        let hive_db = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".temm1e/hive.db");
+        let hive_db = temm1e_core::config::data_dir().join("hive.db");
         let hive_url = format!("sqlite:{}?mode=rwc", hive_db.display());
         match temm1e_hive::Hive::new(&hive_config, &hive_url).await {
             Ok(h) => {
@@ -586,7 +568,10 @@ pub async fn spawn_agent(
         tracing::info!("JIT spawn_swarm context wired (TUI)");
     }
 
-    let agent = agent; // freeze mutability
+    let tool_event_tx = event_tx.clone();
+    let agent = agent.with_tool_observer(Arc::new(move |event| {
+        let _ = tool_event_tx.send(Event::ToolLifecycle(event));
+    }));
 
     // 7. Set up channels
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundMessage>(64);

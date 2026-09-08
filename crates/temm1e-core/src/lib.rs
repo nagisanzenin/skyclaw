@@ -7,3 +7,5 @@ pub mod types;
 
 pub use traits::*;
 pub use types::*;
+
+pub mod private_file;
