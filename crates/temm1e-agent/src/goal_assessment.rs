@@ -56,6 +56,9 @@ pub struct GoalAssessment {
     pub coverage: CriteriaCoverage,
     pub declared_outcome: AssessmentOutcome,
     pub observations: Vec<HashedObservation>,
+    /// Empty in older version-1 reports: those model reports stay ungrounded.
+    #[serde(default)]
+    pub model_evidence: Vec<temm1e_witness::evidence::PredicateEvidence>,
 }
 
 fn criteria_document(
@@ -81,9 +84,46 @@ fn criteria_document(
 fn declared_outcome(
     criteria: &GoalCriteria,
     observations: &[HashedObservation],
+    model_evidence: &[temm1e_witness::evidence::PredicateEvidence],
 ) -> Result<AssessmentOutcome, Temm1eError> {
     if observations.len() != criteria.oath.postconditions.len() || observations.len() > 128 {
         return Err(error("observations do not match the frozen set"));
+    }
+    let mut grounded = HashSet::new();
+    if model_evidence.len() > 128 {
+        return Err(error("too many evidence bundles"));
+    }
+    for bundle in model_evidence {
+        if !grounded.insert(bundle.predicate_index) {
+            return Err(error("duplicate evidence bundle"));
+        }
+        let refs = match criteria.oath.postconditions.get(bundle.predicate_index) {
+            Some(
+                Predicate::AspectVerifier { evidence_refs, .. }
+                | Predicate::AdversarialJudge { evidence_refs, .. },
+            ) => evidence_refs,
+            _ => return Err(error("evidence attached to an unmatched model predicate")),
+        };
+        if refs.is_empty()
+            || refs.len() > temm1e_witness::evidence::MAX_REFERENCES
+            || refs.len() != bundle.snapshots.len()
+        {
+            return Err(error("evidence references do not match captured sources"));
+        }
+        let mut ids = HashSet::new();
+        let mut bytes = 0usize;
+        for (id, snapshot) in refs.iter().zip(&bundle.snapshots) {
+            if id != &snapshot.id || !ids.insert(id) {
+                return Err(error("mismatched or duplicate captured reference"));
+            }
+            snapshot
+                .validate(&criteria.oath, &criteria.workspace)
+                .map_err(error)?;
+            bytes += snapshot.content_bytes;
+        }
+        if bytes > temm1e_witness::evidence::MAX_BUNDLE_BYTES {
+            return Err(error("evidence bundle exceeds bound"));
+        }
     }
     let mut requirements = Vec::new();
     let mut assessments = Vec::new();
@@ -105,6 +145,8 @@ fn declared_outcome(
         let tier = predicate.tier();
         let version = if tier == 0 {
             "temm1e-witness/tier0-v2"
+        } else if grounded.contains(&index) {
+            "temm1e-witness/model-file-evidence-v1"
         } else {
             "temm1e-witness/model-report-unresolved-v1"
         };
@@ -124,10 +166,10 @@ fn declared_outcome(
         } else {
             EvaluatorKind::ModelAssessment
         };
-        // Current model verifier wiring supplies only a workspace/subtask label,
-        // not resolved evidence_refs. Preserve its report but never promote it
-        // into grounded assessment. A deterministic failure still dominates.
-        let outcome = if tier > 0 {
+        // Legacy reports without validated captured inputs remain ungrounded.
+        // A supplied file bundle supports a model assessment of those bytes,
+        // not a deterministic proof or full request coverage. Required failures dominate.
+        let outcome = if tier > 0 && !grounded.contains(&index) {
             AssessmentOutcome::Inconclusive
         } else {
             match result.outcome {
@@ -162,6 +204,7 @@ impl ExecutionJournal {
         session: &SessionContext,
         oath: &Oath,
         verdict: &Verdict,
+        model_evidence: &[temm1e_witness::evidence::PredicateEvidence],
         expected_revision: i64,
     ) -> Result<(), Temm1eError> {
         if expected_revision < 0
@@ -199,6 +242,11 @@ impl ExecutionJournal {
                 criterion_id: format!("{}:{index}", oath.sealed_hash),
                 evaluator_version: if result.tier == 0 {
                     "temm1e-witness/tier0-v2".into()
+                } else if model_evidence
+                    .iter()
+                    .any(|bundle| bundle.predicate_index == index)
+                {
+                    "temm1e-witness/model-file-evidence-v1".into()
                 } else {
                     "temm1e-witness/model-report-unresolved-v1".into()
                 },
@@ -215,8 +263,9 @@ impl ExecutionJournal {
             schema_version: 1,
             criteria_hash: criteria_hash.clone(),
             coverage: CriteriaCoverage::Unverified,
-            declared_outcome: declared_outcome(&criteria, &observations)?,
+            declared_outcome: declared_outcome(&criteria, &observations, model_evidence)?,
             observations,
+            model_evidence: model_evidence.to_vec(),
         };
         let document = serde_json::to_string(&snapshot).map_err(error)?;
         if document.len() > MAX_DOCUMENT {
@@ -273,7 +322,8 @@ impl ExecutionJournal {
                 let criteria = criteria_document(&criteria_json, &criteria_hash, id, &objective)?;
                 if saved.schema_version != 1
                     || saved.criteria_hash != criteria_hash
-                    || declared_outcome(&criteria, &saved.observations)? != saved.declared_outcome
+                    || declared_outcome(&criteria, &saved.observations, &saved.model_evidence)?
+                        != saved.declared_outcome
                 {
                     return Err(error("invalid assessment document"));
                 }
@@ -377,7 +427,7 @@ mod tests {
         .await;
         verdict.per_predicate[0].outcome = VerdictOutcome::Fail;
         journal
-            .record_goal_assessment(&id, &session, &oath, &verdict, 1)
+            .record_goal_assessment(&id, &session, &oath, &verdict, &[], 1)
             .await
             .unwrap();
         let saved = journal.goal_assessment(&scope, &id).await.unwrap().unwrap();
@@ -410,7 +460,24 @@ mod tests {
         )
         .await;
         journal
-            .record_goal_assessment(&id, &session, &oath, &verdict, 1)
+            .record_goal_assessment(&id, &session, &oath, &verdict, &[], 1)
+            .await
+            .unwrap();
+        // Version-1 reports written before file-evidence support omitted this field.
+        let document: String =
+            sqlx::query_scalar("SELECT document FROM goal_assessments WHERE goal_id=?")
+                .bind(&id)
+                .fetch_one(&journal.pool)
+                .await
+                .unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_str(&document).unwrap();
+        legacy.as_object_mut().unwrap().remove("model_evidence");
+        let document = serde_json::to_string(&legacy).unwrap();
+        sqlx::query("UPDATE goal_assessments SET document=?,hash=? WHERE goal_id=?")
+            .bind(&document)
+            .bind(digest(&document))
+            .bind(&id)
+            .execute(&journal.pool)
             .await
             .unwrap();
         let saved = journal.goal_assessment(&scope, &id).await.unwrap().unwrap();
@@ -443,7 +510,7 @@ mod tests {
             }
             assert!(
                 journal
-                    .record_goal_assessment(&id, &caller, &oath, &changed, 1)
+                    .record_goal_assessment(&id, &caller, &oath, &changed, &[], 1)
                     .await
                     .is_err(),
                 "variant {variant}"
@@ -456,7 +523,7 @@ mod tests {
             .unwrap()
             .is_none());
         journal
-            .record_goal_assessment(&id, &session, &oath, &verdict, 1)
+            .record_goal_assessment(&id, &session, &oath, &verdict, &[], 1)
             .await
             .unwrap();
     }
@@ -467,12 +534,12 @@ mod tests {
         let (journal, session, scope, id, oath, verdict) =
             fixture(directory.path(), vec![file_check()]).await;
         let (first, second) = tokio::join!(
-            journal.record_goal_assessment(&id, &session, &oath, &verdict, 1),
-            journal.record_goal_assessment(&id, &session, &oath, &verdict, 1)
+            journal.record_goal_assessment(&id, &session, &oath, &verdict, &[], 1),
+            journal.record_goal_assessment(&id, &session, &oath, &verdict, &[], 1)
         );
         assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
         assert!(journal
-            .record_goal_assessment(&id, &session, &oath, &verdict, 2)
+            .record_goal_assessment(&id, &session, &oath, &verdict, &[], 2)
             .await
             .is_err());
         assert_eq!(journal.goal_status(&scope).await.unwrap()[0].revision, 2);
@@ -514,14 +581,14 @@ mod tests {
             fixture(directory.path(), vec![file_check()]).await;
         verdict.per_predicate[0].detail = "x".repeat(16 * 1024 + 1);
         assert!(journal
-            .record_goal_assessment(&id, &session, &oath, &verdict, 1)
+            .record_goal_assessment(&id, &session, &oath, &verdict, &[], 1)
             .await
             .is_err());
         assert_eq!(journal.goal_status(&scope).await.unwrap()[0].revision, 1);
         verdict.per_predicate[0].detail = "within bound".into();
         journal.finish(&id, "interrupted", &[], None).await.unwrap();
         assert!(journal
-            .record_goal_assessment(&id, &session, &oath, &verdict, 2)
+            .record_goal_assessment(&id, &session, &oath, &verdict, &[], 2)
             .await
             .is_err());
         assert!(journal
@@ -589,7 +656,7 @@ mod command_tests {
             latency_ms: 0,
         };
         journal
-            .record_goal_assessment(&id, &session, &oath, &verdict, 1)
+            .record_goal_assessment(&id, &session, &oath, &verdict, &[], 1)
             .await
             .unwrap();
         let report = crate::conversation::handle_owner_command(

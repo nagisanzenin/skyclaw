@@ -11,7 +11,7 @@
 
 use crate::auto_detect::detect_active_sets;
 use crate::error::WitnessError;
-use crate::types::{Oath, Predicate};
+use crate::types::{EvidenceSpec, Oath, Predicate};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -36,7 +36,12 @@ Rules for a valid Oath (the Spec Reviewer will reject violations):
    the user explicitly required tests inside the implementation file.
 4. Use 1 to 8 relevant predicates. Commands with cwd=null run in the task
    workspace. Reference real paths and commands, never placeholders.
-5. Reply ONLY as JSON matching the schema below. No prose, no markdown fences.
+5. For a semantic file review, add an AspectVerifier with explicit evidence_refs
+   and matching evidence_required file declarations. Use at most 8 references;
+   each UTF-8 file must fit 16 KiB and each verifier bundle 32 KiB. Evidence is
+   captured after execution. Missing, outside-workspace or unsupported sources
+   cannot be verified. Do not use command-output references as a way to run commands.
+6. Reply ONLY as JSON matching the schema below. No prose, no markdown fences.
 
 Schema:
 {
@@ -48,8 +53,14 @@ Schema:
     { "kind": "grep_count_at_least", "pattern": "...", "path_glob": "...", "n": 2 },
     { "kind": "command_exits", "cmd": "...", "args": ["..."], "expected_code": 0, "cwd": null, "timeout_ms": 30000 },
     ...
+  ],
+  "evidence_required": [
+    { "id": "artifact-review", "kind": { "kind": "file", "path": "relative/path" }, "description": "file to review" }
   ]
 }
+The evidence_required list is optional. An optional model postcondition uses
+{ "kind": "aspect_verifier", "rubric": "the requested review criterion", "evidence_refs": ["artifact-review"], "advisory": false }.
+Never invent a review requirement just to add a model verifier.
 
 You will be told which predicate sets are active for this project (e.g.
 "rust", "python", "javascript") so you can use the appropriate command
@@ -62,6 +73,8 @@ primitives only.
 pub struct PlannerOathDraft {
     pub goal: String,
     pub postconditions: Vec<Predicate>,
+    #[serde(default)]
+    pub evidence_required: Vec<EvidenceSpec>,
 }
 
 /// Parse a Planner LLM response into a `PlannerOathDraft`.
@@ -108,6 +121,7 @@ pub fn oath_from_draft(
     let mut oath = Oath::draft(subtask_id, root_goal_id, session_id, draft.goal);
     oath.active_predicate_sets = active_sets;
     oath.postconditions = draft.postconditions;
+    oath.evidence_required = draft.evidence_required;
     oath
 }
 
@@ -259,6 +273,7 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname=\"x\"").unwrap();
 
         let draft = PlannerOathDraft {
+            evidence_required: vec![],
             goal: "add fn foo".into(),
             postconditions: vec![Predicate::FileExists {
                 path: PathBuf::from("src/foo.rs"),

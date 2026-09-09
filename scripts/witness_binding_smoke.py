@@ -38,6 +38,11 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 draft['postconditions'].append({'kind': 'not_of', 'predicate': {
                     'kind': 'all_of', 'predicates': [{'kind': 'elapsed_under', 'start_marker': 'unset', 'max_secs': 1}]}})
                 content = json.dumps(draft)
+            if self.server.evidence_ref:
+                draft = json.loads(content)
+                draft['evidence_required'] = [{'id': 'artifact', 'kind': {'kind': 'file', 'path': 'fixture.txt'}, 'description': 'actual fixture file'}]
+                draft['postconditions'].append({'kind': 'aspect_verifier', 'rubric': 'Review supplied file', 'evidence_refs': ['artifact'], 'advisory': False})
+                content = json.dumps(draft)
             if self.server.failing_check:
                 draft = json.loads(content)
                 draft['postconditions'].append({'kind': 'file_exists', 'path': 'never-created-required.txt'})
@@ -78,6 +83,8 @@ curator = "off"
 enabled = true
 auto_planner_oath = true
 strictness = "observe"
+tier1_enabled = false
+tier2_enabled = false
 [perpetuum]
 enabled = false
 [hive]
@@ -124,11 +131,13 @@ pricing_verified = true
                 assert saved['origin'] == 'model_proposed' and saved['coverage'] == 'unverified'
                 assert saved['oath']['root_goal_id'] == goal_id
                 assert saved['oath']['goal'] == goals[goal_id]
+                if server.evidence_ref:
+                    assert len(saved['oath']['evidence_required']) == 1
                 assert saved['workspace'] == str((profile / 'workspace').resolve())
             assert not db.execute("SELECT id FROM goal_records WHERE state='succeeded'").fetchall()
             assessments = db.execute('SELECT goal_id,hash,document FROM goal_assessments').fetchall()
             assert len(assessments) == (0 if limited else 2), assessments
-            expected = 'failed' if server.failing_check else 'inconclusive' if server.unknown_composite else 'passed'
+            expected = 'failed' if server.failing_check else 'inconclusive' if server.unknown_composite or server.evidence_ref else 'passed'
             for goal_id, digest, document in assessments:
                 assert hashlib.sha256(document.encode()).hexdigest() == digest
                 saved = json.loads(document)
@@ -163,7 +172,7 @@ pricing_verified = true
                     assert verdict['outcome'] == ('fail' if server.failing_check else 'inconclusive'), verdict
                     assert verdict['per_predicate'][-1]['outcome'] == ('fail' if server.failing_check else 'inconclusive'), verdict
         return {'passed': True, 'limited': limited, 'requests': requests, 'planner_requests': planners,
-                'unique_execution_bound_oaths': len(rows), 'original_objectives_preserved': True, 'criteria_frozen_before_foreground': True, 'restart_inspection_provider_calls': 0, 'unknown_composite_checked': server.unknown_composite, 'declared_assessment': None if limited else expected}
+                'unique_execution_bound_oaths': len(rows), 'original_objectives_preserved': True, 'criteria_frozen_before_foreground': True, 'restart_inspection_provider_calls': 0, 'unknown_composite_checked': server.unknown_composite, 'declared_assessment': None if limited else expected, 'disabled_evidence_verifier_checked': server.evidence_ref}
 
 
 def main():
@@ -171,11 +180,13 @@ def main():
     parser.add_argument('binary', type=Path)
     parser.add_argument('--unknown-composite', action='store_true')
     parser.add_argument('--failing-check', action='store_true')
+    parser.add_argument('--evidence-ref', action='store_true')
     args = parser.parse_args()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
     server.requests, server.planners = [], 0
     server.unknown_composite = args.unknown_composite
     server.failing_check = args.failing_check
+    server.evidence_ref = args.evidence_ref
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

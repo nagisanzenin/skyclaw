@@ -1,5 +1,7 @@
 # Durable observations and declared-check assessment
 
+Subsequent checkpoint53 adds scoped captured file evidence; see WITNESS-EVIDENCE-IMPLEMENTATION.md. Older reports retain their explicit ungrounded status.
+
 Checkpoint 51 connects actual Witness results to the active execution goal ledger. A declared-check assessment is stored separately from overall goal achievement and from raw tool/artifact evidence.
 
 ## Contract and implementation

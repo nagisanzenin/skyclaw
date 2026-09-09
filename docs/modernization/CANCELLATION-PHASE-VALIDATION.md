@@ -25,3 +25,6 @@ All4scenarios pass (`implementation-cancellation-phases-after-tests.log`). In th
 Agent all-target clippy passed17.77s and the disk guard cleaned824.2MiB (`implementation-cancellation-phases-clippy.log`). Formatting/diff checks pass and Ruby's YAML parser accepts the modified workflow. No product source or CLI behavior changed, so no new CLI/binary acceptance is claimed. Full workspace validation remains that of51;52's Windows run is pending.
 
 Windows CI now runs the focused cancellation target with --nocapture before the full existing workspace test step, exposing phase timings on successful runs as well as failures. The broad Windows gate is retained. Inspect the actual52run before concluding that the Windows acceptance issue is resolved. These tests measure an owned async tool future; they do not validate Windows JobObjects or arbitrary child-process cleanup.
+
+
+Subsequent CI evidence: checkpoint52 run34291280676 is fully green. Windows focused timings are token20.7µs, legacy40.053ms, deadline1.003s; contention admission1.275s, deadline997.642ms, persistence8.329ms, all4cases passed. See implementation-cancellation-phases-windows-ci.log. This validates the revised Windows acceptance contract without inventing the exact cause of48.
