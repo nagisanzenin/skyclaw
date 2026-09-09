@@ -22,6 +22,10 @@
 
 ## Current position
 
+Checkpoint **54** repairs Witness provider judgment parsing and call bounds before factory wiring. See `WITNESS-VERIFIER-CONTRACT.md`: exact JSON/whole optional fence only, deny unknown fields, known verdict plus nonblank <=2KiB reason, total <=16KiB; reject reported truncation and tools/images, ignore opaque replay state. Both direct adapters validate input16/8/64KiB before calls, request4096outputtokens and retain selectedmodel. Tier2 userprompt no longer contradicts the abstention rule. Before-test reproduced prose-example acceptedasPASS; final95Witnessunit+48integrationPASS including3actualcapturingprovider-adapter cases. These are not mainfactory/live-model acceptance. FullworkspacealltargetallfeatureclippyPASS1m57s/clean2.1GiB (implementation-witness-contract-workspace-clippy.log); existingdependencyfuturecompatnotice remains. No paidcalls.
+
+53 `8a87f13` pushconfirmed; CI34295232801 pending at lastinspection. Next55 retains the configured-tier/currentresources/accounting work detailedbelow (previously labeledNext54); it was deliberately not enabled as part of the parser repair.
+
 Checkpoint **53** gives Witness model verifiers actual bounded scoped file bytes and persists them with goal assessments. Sealed optional evidence_required declarations resolve exact refs; files16KiB/bundle32KiB/8refs/serialized64KiB; unsupported/missing/foreign/binary/ambiguous/oversized inputs abstain before calls. Unix nofollow/nonblock rejects leaf symlink/FIFO; no OSsnapshot/hostileancestor-race claim. VerificationReport carries exact supplied snapshots; active runtime stores them without a second blobDB. Oldversion1reports defaultempty model_evidence and remain ungrounded. Grounded model judgments use model-file-evidence-v1; fullcoverage staysunverified. See WITNESS-EVIDENCE-IMPLEMENTATION.md.
 
 Validation: threebeforetests reproduced missing-sourcePASS, filecontentsabsentfrommodelinput and unsupported/outside-sourcePASS. Sevenfile-evidence tests and actualRuntime/planner/reviewer/SQLite sourcechange/reopen/tamper/scoping integration pass. Firstcombinedsuite failed4obsolete empty-evidence/counterfixtures; repairedwithrealfileinputs/zeroabsent-tiercalls, retainedfailurelog. Final790agentunit+76integration,94Witnessunit+45integrationPASS. CLI normal/failure/explicitdisabledtier+filedeclaration controls each4unlimited/2planners, capped1planner/0foreground; hashes/originalgoals/restart0HTTP pass. Positivegroundedmodelacceptance is actualAgentRuntime with explicitverifier, not main-configfactory. Build47.52s; fullworkspaceallfeaturealltargetclippy1m46s/clean3.6GiB. Existingdependencyfuture-compatnotice remains. NoactiveCargo/paidcalls.
@@ -41,7 +45,7 @@ Files for checkpoint 29:
 - `Cargo.toml`/lock: tools adds already-locked `fs2 0.4.3`. Cargo may rewrite lock format 3 to 4; keep format 3 if that is the only unrelated change.
 - `BROWSER-IMPLEMENTATION.md`: detailed behavior, migration/environment options, evidence and remaining boundaries. Review it against final code.
 
-After pushing checkpoint53, inspect CI and complete configured verifier resources/accounting above. Keep the following boundaries visible; the browser checkpoint is not complete product acceptance.
+After pushing checkpoint54, inspect CI and complete configured verifier resources/accounting above. Keep the following boundaries visible; the browser checkpoint is not complete product acceptance.
 
 ## Validation evidence currently available locally
 

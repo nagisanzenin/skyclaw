@@ -31,6 +31,7 @@ use temm1e_core::types::message::{ChatMessage, CompletionRequest, MessageContent
 /// deviation is treated as `Inconclusive` with the raw response recorded
 /// in the detail field.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LlmVerifierResponse {
     /// "pass" | "fail" | "inconclusive" — case-insensitive match
     pub verdict: String,
@@ -101,6 +102,7 @@ impl Tier1Verifier for ProviderTier1Verifier {
         predicate_rubric: &str,
         evidence: &str,
     ) -> Result<LlmVerifierResponse, WitnessError> {
+        validate_verifier_input(oath_goal, predicate_rubric, evidence)?;
         let user_prompt = format!(
             "Oath goal: {}\n\nPredicate to verify: {}\n\nEvidence:\n{}\n\n\
              Does the evidence satisfy the predicate? Reply ONLY as JSON: \
@@ -115,7 +117,7 @@ impl Tier1Verifier for ProviderTier1Verifier {
                 content: MessageContent::Text(user_prompt),
             }],
             tools: vec![],
-            max_tokens: None,
+            max_tokens: Some(4096),
             temperature: Some(0.0),
             system: Some(TIER1_SYSTEM_PROMPT.to_string()),
             system_volatile: None,
@@ -127,19 +129,60 @@ impl Tier1Verifier for ProviderTier1Verifier {
             .await
             .map_err(|e| WitnessError::PredicateCheck(format!("tier1 call: {e}")))?;
 
-        let text = extract_text(&resp.content);
-        parse_tier1_response(&text)
+        parse_verifier_completion(&resp)
     }
 }
 
-fn extract_text(content: &[temm1e_core::types::message::ContentPart]) -> String {
-    let mut out = String::new();
-    for part in content {
-        if let temm1e_core::types::message::ContentPart::Text { text } = part {
-            out.push_str(text);
+const MAX_VERIFIER_RESPONSE_BYTES: usize = 16 * 1024;
+const MAX_VERIFIER_REASON_BYTES: usize = 2 * 1024;
+
+fn validate_verifier_input(goal: &str, rubric: &str, evidence: &str) -> Result<(), WitnessError> {
+    if goal.trim().is_empty()
+        || rubric.trim().is_empty()
+        || evidence.trim().is_empty()
+        || goal.len() > 16 * 1024
+        || rubric.len() > 8 * 1024
+        || evidence.len() > 64 * 1024
+    {
+        return Err(WitnessError::PredicateCheck(
+            "verifier input is empty or exceeds byte bounds".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_verifier_completion(
+    response: &temm1e_core::types::message::CompletionResponse,
+) -> Result<LlmVerifierResponse, WitnessError> {
+    use temm1e_core::types::message::ContentPart;
+    if matches!(
+        response.stop_reason.as_deref(),
+        Some("length" | "max_tokens")
+    ) {
+        return Err(WitnessError::PredicateCheck(
+            "verifier response was truncated".into(),
+        ));
+    }
+    let mut text = String::new();
+    for part in &response.content {
+        match part {
+            ContentPart::Text { text: chunk } => {
+                if chunk.len() > MAX_VERIFIER_RESPONSE_BYTES.saturating_sub(text.len()) {
+                    return Err(WitnessError::PredicateCheck(
+                        "verifier response exceeds byte bound".into(),
+                    ));
+                }
+                text.push_str(chunk);
+            }
+            ContentPart::ProviderState { .. } => {} // Opaque replay state is not a verdict.
+            _ => {
+                return Err(WitnessError::PredicateCheck(
+                    "verifier returned unexpected non-text output".into(),
+                ))
+            }
         }
     }
-    out
+    parse_tier1_response(&text)
 }
 
 /// Default Tier 2 adversarial auditor backed by a `Provider` + a model name.
@@ -190,10 +233,12 @@ impl Tier2Verifier for ProviderTier2Verifier {
         predicate_rubric: &str,
         evidence: &str,
     ) -> Result<LlmVerifierResponse, WitnessError> {
+        validate_verifier_input(oath_goal, predicate_rubric, evidence)?;
         let user_prompt = format!(
             "Oath goal: {}\n\nPredicate to audit: {}\n\nEvidence:\n{}\n\n\
              Find the cheapest way this claim could be false given only the evidence shown. \
-             If you cannot find one, reply PASS. Otherwise FAIL with the falsification scenario. \
+             Return PASS only when the evidence supports the predicate, FAIL for an observed \
+             contradiction, and INCONCLUSIVE for insufficient evidence or an unverified scenario. \
              Reply ONLY as JSON: {{\"verdict\": \"pass\" | \"fail\" | \"inconclusive\", \"reason\": \"...\"}}",
             oath_goal, predicate_rubric, evidence
         );
@@ -205,7 +250,7 @@ impl Tier2Verifier for ProviderTier2Verifier {
                 content: MessageContent::Text(user_prompt),
             }],
             tools: vec![],
-            max_tokens: None,
+            max_tokens: Some(4096),
             temperature: Some(0.0),
             system: Some(TIER2_SYSTEM_PROMPT.to_string()),
             system_volatile: None,
@@ -217,37 +262,41 @@ impl Tier2Verifier for ProviderTier2Verifier {
             .await
             .map_err(|e| WitnessError::PredicateCheck(format!("tier2 call: {e}")))?;
 
-        let text = extract_text(&resp.content);
-        // Tier 2 reuses the same JSON schema parser.
-        parse_tier1_response(&text)
+        parse_verifier_completion(&resp)
     }
 }
 
-/// Parse a Tier 1 / Tier 2 verifier response. Tolerates surrounding
-/// markdown fences (```json) and trailing text.
+/// Parse exactly one bounded verdict object, optionally inside one complete
+/// Markdown fence. Prose containing a JSON example is not a verifier report.
 pub fn parse_tier1_response(text: &str) -> Result<LlmVerifierResponse, WitnessError> {
-    // Strip markdown code fences if present.
-    let stripped = text
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-
-    // Find the first JSON object in the response.
-    let start = stripped.find('{');
-    let end = stripped.rfind('}');
-    let json_str = match (start, end) {
-        (Some(s), Some(e)) if e >= s => &stripped[s..=e],
-        _ => {
-            return Err(WitnessError::PredicateCheck(format!(
-                "tier1 response has no JSON object: {}",
-                stripped
-            )));
-        }
+    if text.len() > MAX_VERIFIER_RESPONSE_BYTES {
+        return Err(WitnessError::PredicateCheck(
+            "verifier response exceeds byte bound".into(),
+        ));
+    }
+    let trimmed = text.trim();
+    let json = if let Some(fenced) = trimmed
+        .strip_prefix("```json\n")
+        .or_else(|| trimmed.strip_prefix("```\n"))
+    {
+        fenced
+            .strip_suffix("```")
+            .ok_or_else(|| WitnessError::PredicateCheck("incomplete verifier JSON fence".into()))?
+            .trim()
+    } else {
+        trimmed
     };
-
-    serde_json::from_str::<LlmVerifierResponse>(json_str).map_err(WitnessError::Json)
+    let mut response: LlmVerifierResponse = serde_json::from_str(json)?;
+    response.verdict = response.verdict.to_ascii_lowercase();
+    if !matches!(response.verdict.as_str(), "pass" | "fail" | "inconclusive")
+        || response.reason.trim().is_empty()
+        || response.reason.len() > MAX_VERIFIER_REASON_BYTES
+    {
+        return Err(WitnessError::PredicateCheck(
+            "invalid verifier verdict or explanation".into(),
+        ));
+    }
+    Ok(response)
 }
 
 /// The Witness: verifies sealed Oaths and records verdicts to the Ledger.
@@ -1309,6 +1358,22 @@ mod tests {
     }
 
     #[test]
+    fn verifier_response_rejects_ambiguous_or_unbounded_reports() {
+        for text in [
+            r#"Not a valid verdict: {"verdict":"pass","reason":"example only"}"#.to_string(),
+            r#"{"verdict":"pass","reason":"ok","override":true}"#.to_string(),
+            r#"{"verdict":"maybe","reason":"uncertain"}"#.to_string(),
+            r#"{"verdict":"pass","reason":"   "}"#.to_string(),
+            format!(r#"{{"verdict":"pass","reason":"{}"}}"#, "a".repeat(2049)),
+        ] {
+            assert!(
+                parse_tier1_response(&text).is_err(),
+                "accepted invalid report"
+            );
+        }
+    }
+
+    #[test]
     fn parse_tier1_response_handles_plain_json() {
         let out = parse_tier1_response(r#"{"verdict": "pass", "reason": "ok"}"#).unwrap();
         assert_eq!(out.verdict, "pass");
@@ -1323,12 +1388,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_tier1_response_handles_trailing_prose() {
+    fn parse_tier1_response_rejects_trailing_prose() {
         let out = parse_tier1_response(
             r#"Here is my verdict: {"verdict": "pass", "reason": "good"} done."#,
-        )
-        .unwrap();
-        assert_eq!(out.verdict, "pass");
+        );
+        assert!(out.is_err());
     }
 
     #[test]

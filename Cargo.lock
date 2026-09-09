@@ -7543,6 +7543,7 @@ version = "5.8.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures",
  "glob",
  "hex",
  "libc",
