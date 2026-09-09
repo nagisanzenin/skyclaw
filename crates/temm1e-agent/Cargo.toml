@@ -33,6 +33,7 @@ dirs.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 temm1e-test-utils.workspace = true
 temm1e-tools.workspace = true
 temm1e-cambium.workspace = true

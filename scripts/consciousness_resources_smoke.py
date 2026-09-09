@@ -24,6 +24,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
         assert request['model'] == 'consciousness-fixture'
         systems = '\n'.join(str(m.get('content', '')) for m in request['messages'] if m['role'] == 'system')
         kind = 'pre' if systems.startswith('You are the consciousness layer') and 'You observe' in systems else 'post' if systems.startswith('You are the consciousness layer') else 'foreground'
+        if kind in ("pre", "post"):
+            assert request.get("max_tokens") == min(1024, self.server.output_limit), request.get("max_tokens")
         self.server.requests.append((kind, request))
         content = {'pre': 'Keep the requested function signature.', 'post': 'POST_INSIGHT_SENTINEL keep the signature.', 'foreground': 'CONSCIOUS_FOREGROUND_RETURNED'}[kind]
         body = json.dumps({'id': 'fixture', 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': content}, 'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120}}).encode()
@@ -34,13 +36,14 @@ class Provider(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def run(binary, enabled, limited):
+def run(binary, enabled, limited, output_limit=4096):
     with tempfile.TemporaryDirectory(prefix='temm1e-consciousness-') as temporary:
         root = Path(temporary)
         profile = root / 'profile'
         profile.mkdir(mode=0o700)
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
         server.requests = []
+        server.output_limit = output_limit
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -67,11 +70,11 @@ enabled = false
 [consciousness]
 enabled = {str(enabled).lower()}
 ''')
-            (profile / 'custom_models.toml').write_text('''[[models]]
+            (profile / 'custom_models.toml').write_text(f'''[[models]]
 provider = "openai"
 name = "consciousness-fixture"
 context_window = 32768
-max_output_tokens = 4096
+max_output_tokens = {output_limit}
 input_price_per_1m = 1.0
 output_price_per_1m = 1.0
 pricing_verified = true
@@ -91,7 +94,7 @@ pricing_verified = true
             elif enabled:
                 assert 'POST_INSIGHT_SENTINEL' in json.dumps(server.requests[3][1])
                 assert 'Consciousness-T1' in json.dumps(server.requests[3][1])
-            print(f'PASS enabled={enabled} limited={limited} actual HTTP calls={kinds}')
+            print(f'PASS enabled={enabled} limited={limited} output_limit={output_limit} actual HTTP calls={kinds}')
         finally:
             server.shutdown()
             server.server_close()
@@ -104,3 +107,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
     for enabled, limited in [(True, False), (False, False), (True, True)]:
         run(args.binary.resolve(), enabled, limited)
+    run(args.binary.resolve(), True, False, output_limit=256)

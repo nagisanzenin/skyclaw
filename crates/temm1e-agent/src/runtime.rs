@@ -993,10 +993,13 @@ impl AgentRuntime {
                 Arc::new(scoped)
             }
         });
-        let turn_consciousness = self
-            .consciousness
-            .as_ref()
-            .map(|observer| observer.for_runtime(self.auxiliary_provider(), &self.model));
+        let turn_consciousness = self.consciousness.as_ref().map(|observer| {
+            observer.for_runtime(
+                self.auxiliary_provider(),
+                &self.model,
+                self.max_context_tokens,
+            )
+        });
         let mut oath_sealed_this_turn: Option<temm1e_witness::types::Oath> = None;
         if self.auto_seal_planner_oath {
             if let Some(ref witness) = turn_witness {
