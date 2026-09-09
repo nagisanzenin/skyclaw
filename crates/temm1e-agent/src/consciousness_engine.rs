@@ -9,13 +9,17 @@
 
 use crate::budget;
 use crate::consciousness::{ConsciousnessConfig, TurnObservation};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 use temm1e_core::types::message::{ChatMessage, CompletionRequest, MessageContent, Role};
 use temm1e_core::{types::error::Temm1eError, Provider};
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_INSIGHT_BYTES: usize = 8 * 1024;
 const MAX_NOTES: usize = 64;
+const MAX_SCOPES: usize = 64;
 const OBSERVER_OUTPUT_TOKENS: usize = 1024;
 const OBSERVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -47,10 +51,13 @@ pub struct ConsciousnessEngine {
     model: String,
     model_pricing: budget::ModelPricing,
     state: Arc<ObservationState>,
+    scopes: Arc<Mutex<ScopedObservations>>,
     input_limit: usize,
     model_window: usize,
     model_output: usize,
 }
+
+type ScopedObservations = VecDeque<(String, Arc<ObservationState>)>;
 
 #[derive(Default)]
 struct ObservationState {
@@ -75,6 +82,7 @@ impl ConsciousnessEngine {
             model,
             model_pricing,
             state: Arc::new(ObservationState::default()),
+            scopes: Arc::new(Mutex::new(VecDeque::new())),
             input_limit: model_window,
             model_window,
             model_output,
@@ -89,19 +97,43 @@ impl ConsciousnessEngine {
         provider: Arc<dyn Provider>,
         model: &str,
         input_limit: usize,
-    ) -> Self {
+        session: &temm1e_core::types::session::SessionContext,
+    ) -> Option<Self> {
+        if !self.config.enabled {
+            return None;
+        }
+        let key = observer_scope(session)?;
+        let state = {
+            let mut scopes = self.scopes.lock().ok()?;
+            let state = if let Some(index) = scopes.iter().position(|(stored, _)| stored == &key) {
+                scopes.remove(index)?.1
+            } else {
+                if scopes.len() >= MAX_SCOPES {
+                    // Only evict idle states. An in-flight immutable view pins
+                    // its own trajectory until the turn releases it.
+                    let idle = scopes
+                        .iter()
+                        .position(|(_, state)| Arc::strong_count(state) == 1)?;
+                    scopes.remove(idle);
+                }
+                Arc::new(ObservationState::default())
+            };
+            scopes.push_back((key, state.clone()));
+            state
+        };
         let (model_window, model_output) =
             temm1e_core::types::model_registry::model_limits_with_custom(provider.name(), model);
-        Self {
+        Some(Self {
             config: self.config.clone(),
             model_pricing: budget::get_pricing_with_custom(provider.name(), model),
             provider,
             model: model.to_owned(),
-            state: self.state.clone(),
+            state,
+            scopes: self.scopes.clone(),
             input_limit,
             model_window,
             model_output,
-        }
+        })
     }
 
     async fn complete_observation(
@@ -489,6 +521,33 @@ impl ConsciousnessEngine {
     }
 }
 
+/// Structured identities avoid delimiter aliases. Invalid scope skips optional
+/// observation; it must never fall back to another conversation's trajectory.
+fn observer_scope(session: &temm1e_core::types::session::SessionContext) -> Option<String> {
+    if [
+        &session.channel,
+        &session.chat_id,
+        &session.user_id,
+        &session.session_id,
+    ]
+    .iter()
+    .any(|identity| identity.is_empty() || identity.len() > 4096)
+    {
+        return None;
+    }
+    let key = serde_json::to_string(&(
+        "observer-scope-v1",
+        session.workspace_path.canonicalize().ok()?,
+        &session.channel,
+        &session.chat_id,
+        &session.user_id,
+        session.role,
+        &session.session_id,
+    ))
+    .ok()?;
+    (key.len() <= 32 * 1024).then_some(key)
+}
+
 /// Treat opaque replay state as transport metadata; never inject tools or a
 /// partial/truncated answer as an observer instruction. Usage is retained by caller.
 fn observation_text(response: &temm1e_core::types::message::CompletionResponse) -> Option<String> {
@@ -704,5 +763,79 @@ mod tests {
         assert_eq!(before.elapsed(), std::time::Duration::from_secs(30));
         assert_eq!(owner.snapshot().recorded_calls, 1);
         assert_eq!(owner.snapshot().unpriced_calls, 1);
+    }
+    #[test]
+    fn scoped_views_pin_trajectory_and_evict_only_idle_entries() {
+        use temm1e_test_utils::{make_session, MockProvider};
+        let provider = Arc::new(MockProvider::with_text("unused"));
+        let observer = ConsciousnessEngine::new(
+            ConsciousnessConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            provider.clone(),
+            "fixture".into(),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = make_session();
+        session.workspace_path = directory.path().into();
+        let mut active = Vec::new();
+        for index in 0..64 {
+            session.session_id = format!("epoch-{index}");
+            active.push(
+                observer
+                    .for_runtime(provider.clone(), "first-model", 8192, &session)
+                    .unwrap(),
+            );
+        }
+        active[0].push_note("preserved pinned trajectory".into());
+        session.session_id = "new-epoch".into();
+        assert!(observer
+            .for_runtime(provider.clone(), "second-model", 8192, &session)
+            .is_none());
+        assert_eq!(active[0].session_notes(), ["preserved pinned trajectory"]);
+        drop(active.pop()); // Only epoch63 is now idle/evictable.
+        let replacement = observer
+            .for_runtime(provider.clone(), "second-model", 8192, &session)
+            .unwrap();
+        assert!(replacement.session_notes().is_empty());
+        session.session_id = "epoch-0".into();
+        let rebound = observer
+            .for_runtime(provider.clone(), "second-model", 8192, &session)
+            .unwrap();
+        assert_eq!(rebound.session_notes(), ["preserved pinned trajectory"]);
+        assert_eq!(active[0].model, "first-model");
+        assert_eq!(rebound.model, "second-model");
+        assert_eq!(observer.scopes.lock().unwrap().len(), 64);
+        drop(active);
+        session.session_id = "epoch-63".into();
+        let expired = observer
+            .for_runtime(provider, "second-model", 8192, &session)
+            .unwrap();
+        assert!(expired.session_notes().is_empty());
+    }
+
+    #[test]
+    fn scope_requires_resolvable_workspace_and_structured_nonempty_identities() {
+        use temm1e_test_utils::make_session;
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = make_session();
+        session.workspace_path = directory.path().into();
+        session.user_id = "a:b".into();
+        session.chat_id = "c".into();
+        let first = observer_scope(&session).unwrap();
+        session.user_id = "a".into();
+        session.chat_id = "b:c".into();
+        assert_ne!(observer_scope(&session).unwrap(), first);
+        let canonical = observer_scope(&session).unwrap();
+        session.workspace_path = directory.path().join(".");
+        assert_eq!(observer_scope(&session).unwrap(), canonical);
+        session.workspace_path = directory.path().join("does-not-exist");
+        assert!(observer_scope(&session).is_none());
+        session.workspace_path = directory.path().into();
+        session.user_id.clear();
+        assert!(observer_scope(&session).is_none());
+        session.user_id = "x".repeat(4097);
+        assert!(observer_scope(&session).is_none());
     }
 }

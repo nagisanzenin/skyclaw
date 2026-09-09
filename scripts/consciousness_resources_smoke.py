@@ -36,7 +36,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def run(binary, enabled, limited, output_limit=4096):
+def run(binary, enabled, limited, output_limit=4096, new_conversation=False):
     with tempfile.TemporaryDirectory(prefix='temm1e-consciousness-') as temporary:
         root = Path(temporary)
         profile = root / 'profile'
@@ -82,7 +82,7 @@ pricing_verified = true
             env = {k: v for k, v in os.environ.items() if not k.endswith(('_API_KEY', '_TOKEN')) and not k.startswith('TEMM1E_')}
             env['TEMM1E_DATA_DIR'] = str(profile)
             objective = 'In the workspace, write `demo.rs` with pub fn greet(name: &str) -> String.'
-            commands = [objective] * (1 if limited else 2) + ['/quit', '']
+            commands = ([objective, '/session-new', objective] if new_conversation else [objective] * (1 if limited else 2)) + ['/quit', '']
             result = subprocess.run([str(binary), 'chat'], input='\n'.join(commands), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=root, env=env, timeout=45)
             assert result.returncode == 0, result.stdout[-4000:]
             kinds = [kind for kind, _ in server.requests]
@@ -92,9 +92,10 @@ pricing_verified = true
                 assert 'Budget exceeded' in result.stdout, result.stdout[-4000:]
                 assert 'CONSCIOUS_FOREGROUND_RETURNED' not in result.stdout
             elif enabled:
-                assert 'POST_INSIGHT_SENTINEL' in json.dumps(server.requests[3][1])
-                assert 'Consciousness-T1' in json.dumps(server.requests[3][1])
-            print(f'PASS enabled={enabled} limited={limited} output_limit={output_limit} actual HTTP calls={kinds}')
+                second_pre = json.dumps(server.requests[3][1])
+                assert ('POST_INSIGHT_SENTINEL' in second_pre) == (not new_conversation), second_pre
+                assert ('Consciousness-T1' in second_pre) == (not new_conversation), second_pre
+            print(f'PASS enabled={enabled} limited={limited} output_limit={output_limit} new_conversation={new_conversation} actual HTTP calls={kinds}')
         finally:
             server.shutdown()
             server.server_close()
@@ -108,3 +109,5 @@ if __name__ == '__main__':
     for enabled, limited in [(True, False), (False, False), (True, True)]:
         run(args.binary.resolve(), enabled, limited)
     run(args.binary.resolve(), True, False, output_limit=256)
+
+    run(args.binary.resolve(), True, False, new_conversation=True)

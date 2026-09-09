@@ -236,3 +236,71 @@ async fn dropped_observation_records_one_unknown_attempt_without_foreground_call
     assert_eq!(owner.snapshot().recorded_calls, 1);
     assert_eq!(owner.snapshot().unpriced_calls, 1);
 }
+
+#[tokio::test]
+async fn observer_trajectory_never_crosses_workspace_principal_or_conversation_epoch() {
+    for boundary in ["user", "chat", "channel", "role", "workspace", "epoch"] {
+        let provider = Arc::new(QueuedMockProvider::with_responses(vec![
+            QueuedMockProvider::text_response("PRIVATE_OBSERVER_NOTE for the first conversation."),
+            QueuedMockProvider::text_response("First foreground reply."),
+            QueuedMockProvider::text_response("PRIVATE_OBSERVER_INSIGHT from first conversation."),
+            QueuedMockProvider::text_response("OK"),
+            QueuedMockProvider::text_response("Second foreground reply."),
+            QueuedMockProvider::text_response("OK"),
+        ]));
+        let runtime = AgentRuntime::new(
+            provider.clone(),
+            Arc::new(MockMemory::new()),
+            vec![],
+            "fixture".into(),
+            None,
+        )
+        .with_v2_optimizations(false)
+        .with_self_audit_enabled(false)
+        .with_consciousness(ConsciousnessEngine::new(
+            ConsciousnessConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            provider.clone(),
+            "fixture".into(),
+        ));
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        let mut first = make_session();
+        first.workspace_path = first_dir.path().into();
+        let mut second = first.clone();
+        second.history.clear();
+        match boundary {
+            "user" => second.user_id = "another-user".into(),
+            "chat" => second.chat_id = "another-chat".into(),
+            "channel" => second.channel = "another-channel".into(),
+            "role" => second.role = temm1e_core::types::rbac::Role::User,
+            "workspace" => second.workspace_path = second_dir.path().into(),
+            "epoch" => second.session_id = "another-epoch".into(),
+            _ => unreachable!(),
+        }
+        for session in [&mut first, &mut second] {
+            let mut message = make_inbound_msg(
+                "In the workspace, write `demo.rs` with pub fn greet(name: &str) -> String.",
+            );
+            message.user_id = session.user_id.clone();
+            message.chat_id = session.chat_id.clone();
+            message.channel = session.channel.clone();
+            runtime
+                .process_message(&message, session, None, None, None, None, None)
+                .await
+                .unwrap();
+        }
+        runtime
+            .shutdown_background(std::time::Duration::from_secs(1))
+            .await;
+        let requests = provider.captured_requests.lock().await;
+        assert_eq!(requests.len(), 6);
+        let second_pre = serde_json::to_string(&requests[3]).unwrap();
+        assert!(
+            !second_pre.contains("PRIVATE_OBSERVER"),
+            "observer crossed {boundary}: {second_pre}"
+        );
+    }
+}
