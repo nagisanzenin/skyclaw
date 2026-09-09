@@ -16,6 +16,8 @@ Updated September 9, 2026. The creator is asleep and explicitly authorized auton
 
 ## Current release-goal execution
 
+Checkpoint72 latest: native build completed0; binary ../bench-binaries/modern-6.0-cli reports6.0.0/50e1e4c; lifecycle3controls passed; cleaned2.5GiB guarded cache.92b56fe CI34335590537 ALL8GREEN. Actual release matrix is6primary binaries+4aliases+checksum, NOT4; protocol corrected. No active builds/paidcalls/imagegen. Creator answered nagisanzenin is primary account; follow-up asks sole maintainer for this release, awaiting answer. Do not treat primary-account identity alone as sole-maintainer confirmation. Once final doc checkpoint CI green and exception established, admin squash merge authorized under protocol, tagv6.0.0, verify all11assets and update v5.8.1→v6.0.0.
+
 Checkpoint71: candidate50e1e4c pushed, PR ready/release body updated. Native guarded build active session67627, log ../release-6.0-build-native.log (uses --keep-cache; copy binary/verify6.0.0 then clean target/guarded). Original guard syntax rejection retained in ../release-6.0-build.log. No paid calls or imagegen active. Original A/B and clarification both fully complete. Final art149c163 pushed. Current CI must finish; main review barrier unresolved.
 
 Checkpoint70: A/B report and evidence archive complete; version metadata6.0.0 candidate. Next refresh lockfile, commit/push, verify candidate CI and --version, then resolve review gate. Original strict gate false; clarified engineering assessment supports candidate, not a benchmark win. Final18 cozy Den illustrations saved in repo and local/outputs; exact prompts and hashes preserved. RBAC board corrected to actual Admin/User roles. TUI monitor is conceptual, not a screenshot. No production change since15734b7.

@@ -226,12 +226,12 @@ git push origin vX.Y.Z
 After pushing the tag:
 1. GitHub Actions `release.yml` triggers automatically
 2. CI runs checks (cargo check, test, clippy, fmt)
-3. Builds 4 binaries (linux-musl, linux-desktop, macos-x86, macos-arm)
+3. Builds6primary binaries (Linux x86_64 and ARM64, each server/musl and desktop/glibc; macOS Intel and Apple Silicon), plus4legacy updater aliases
 4. Creates GitHub Release with binaries + checksums + auto release notes
 5. **Verify the release**: `gh run list --limit 1` and check the Actions tab
 
 Do NOT declare the release done until the workflow completes successfully
-and the GitHub Release page shows all 4 binaries.
+and the GitHub Release page shows all6primary binaries,4legacy aliases and the checksum manifest.
 
 ### 10.5 Update-Path Smoke — MANDATORY (added in v5.5.2)
 

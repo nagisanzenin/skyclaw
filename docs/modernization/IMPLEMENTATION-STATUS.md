@@ -607,3 +607,7 @@ All60 original runs and the separately frozen clarification pair are preserved i
 ## Checkpoint71 — release verification in progress
 
 Candidate50e1e4c pushed and PR74 marked ready for review, with complete benchmark evidence and explicit raw-gate limitation. Cargo lock contains26Temm1e package entries at6.0.0, external entries unchanged. Offline all-target metadata lacked an Android-only cached crate; incorrect guard syntax was rejected before build. Corrected native locked build runs with disk limits; CI checks candidate. README points to actual published GitHub releases and evidence without prematurely asserting publication. Review still required; no merge/tag/release.
+
+## Checkpoint72 — verified native candidate and release matrix
+
+Native6.0.0 candidate build passed, reports50e1e4c, and actual CLI quit/EOF/server SIGTERM checks passed; guarded cache2.5GiB cleaned.92b56fe CI34335590537 all8jobs passed. Corrected stale protocol count: actual workflow produces6primary binaries,4legacy aliases and one checksum manifest. No workflow/runtime edits. Final publication and previous-version update smoke still required; maintainer identity clarification pending for review exception.

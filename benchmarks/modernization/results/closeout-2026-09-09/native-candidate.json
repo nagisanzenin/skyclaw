@@ -1,0 +1,24 @@
+{
+  "version": "temm1e 6.0.0 \u2014 commit: 50e1e4c \u2014 date: 20260909",
+  "sha256": "f43a78094231b42e6d454e9e772bc19774d9623c063c76c9e14551f673602418",
+  "native_build": "cargo build --locked through cargo_guard;2m24s; exit0",
+  "lifecycle": {
+    "quit": {
+      "exit": 0,
+      "seconds": 0.09967091702856123,
+      "ended": true
+    },
+    "eof": {
+      "exit": 0,
+      "seconds": 0.07490637502633035,
+      "ended": true
+    },
+    "sigterm": {
+      "exit": 0,
+      "seconds": 0.008785084006376565
+    }
+  },
+  "cache_cleanup": "cargo clean target/guarded removed2.5GiB",
+  "publication": "not yet merged/tagged/published",
+  "head": "92b56fec4c1cb24a2ea009f78f56c555fa9c26a5"
+}

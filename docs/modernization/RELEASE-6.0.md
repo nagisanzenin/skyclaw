@@ -1,6 +1,6 @@
 # Temm1e 6.0 — modernization candidate
 
-Status:6.0.0 candidate; not yet merged, tagged or published.
+This is the6.0 preparation and validation record. Publication status and final artifact checksums are on [GitHub Releases](https://github.com/temm1e-labs/temm1e/releases). The record below predates publication.
 
 Tem keeps its identity as a persistent companion that uses the model you choose. This release rebuilds important execution boundaries around that idea: provider-native context, scoped conversation storage, model/resource identity, interrupted delivery, evidence and background ownership.
 
@@ -31,6 +31,8 @@ A/B completed60runs: baseline30/30, modernization29/30. The sole discordant case
 
 Tem remains a personal-host agent, not a certified multi-tenant sandbox. Automatic durable pursuit, complete experimental growth/cloud/telemetry implementations, every external messaging/account integration and native Windows TUI behavior are outside these validation guarantees. Model-proposed criteria do not prove coverage of the entire goal; model verdicts do not prove execution. Local usage accounting is not provider account-wide quota or atomic per-goal USD reservation. See the feature ledger, upgrade guide and closeout validation for specific boundaries.
 
-Release/merge method, published artifact hashes and previous-version update smoke: pending.
+Publication checklist: the workflow builds6primary binaries and4legacy updater aliases, plus a checksum manifest. Verify all of them, then run v5.8.1→v6.0.0 update smoke on the maintainer host. Final results and merge method belong in the published release notes.
 
 Candidate preparation:26Temm1e package entries now use6.0.0; external dependency entries are unchanged. Full offline metadata stopped on an uncached Android-only crate after refreshing the lockfile. A guard invocation with an extra cargo token was rejected before build; corrected native locked build is running. Neither attempt is counted as a passed check.
+
+Native candidate build passed2m24s and reports `temm1e6.0.0 — commit:50e1e4c — date:20260909` (spaces preserved in the machine record). CLI quit/EOF and server SIGTERM smokes passed on that binary;2.5GiB build cache removed. CI34335590537 on92b56fe passed all8jobs, including Docker and Linux/Windows. Subsequent changes in this checkpoint are documentation/evidence only.
