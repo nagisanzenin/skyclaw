@@ -587,3 +587,7 @@ Before Core failed call recorded0; after1unknown. Combined scoped991tests pass,3
 ## Sixty-sixth checkpoint — product closeout acceptance and documentation
 
 Final default CLI and real TUI bridge builds passed. All13local-provider acceptance groups plus PTY, streamed headless bridge, gateway onboarding, lifecycle and conversation/interrupted-delivery checks passed. CI34305585814 all8jobs green; separate Linux3138passed21ignored / Windows3109passed20ignored, zero failures. Full evidence and boundaries in [closeout validation](CLOSEOUT-VALIDATION.md). README rewritten for user flow, command reference corrected, [upgrade guide](UPGRADING.md) added. All18approved images match manifest and local documentation links resolve. No redundant image generation. Frozen30-pair paid A/B is running, not yet a release verdict. No bump/merge/tag.
+
+## Sixty-seventh checkpoint — retained character identity
+
+Creator refined artwork toward inhabited cozy future rooms, playful multiple Tems and slim biped/quadruped figures with original Gaze-style hair and expressive faces. Accepted model study and16-expression atlas now archived in `assets/character/`, with exact prompts/hashes and canonical art/face/body guides. Local copies and original brief addendum saved. Final18scene replacement still in progress; prototype scene assets are not the finalized art set. A/B continues unchanged; no code/version/release change.

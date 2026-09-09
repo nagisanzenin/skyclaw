@@ -14,6 +14,12 @@ Updated September 9, 2026. The creator is asleep and explicitly authorized auton
 - D01 personal/shared-host semantics and D02 delivery vs automatic durable pursuit remain open in `DECISIONS.md`. Preserve existing defaults while adding safe foundations. D04 growth-specific trust/effect evidence remains a separate boundary; generic verified prose must not confer unrelated capability.
 - Do not spawn agents unless current user/developer/AGENTS instructions explicitly authorize delegation. An agent handoff file is not a delegation request.
 
+## Artwork steering and current generation state
+
+Creator approved punk/science/personal direction, then required playful multiple Tems/bipeds, full cozy inhabited Den backgrounds, original Gaze-style pretty messy hair, original expressive faces, and original Anima slim bodies/scene grounding. Creator explicitly accepted the character sheet and requested local+repo archival and more expressions. `assets/character/` now contains the accepted model study plus16-expression atlas, hashes/prompts and docs. Local copies in Downloads/TEMM1E/modernization-design and operation outputs/art-directions; original downloaded brief gets a dated superseding addendum, backup retained privately.
+
+Do NOT finish the series using the early bald/round-body examples. `assets/modernization/` currently has UNCOMMITTED partial prototype replacements and stale manifest; normalize all18with accepted character references and cozy environment before committing final art. Current production-code source15734b7 remains unchanged; A/B session5169 continues. Image generation states/paths are recorded privately in work/art-v2-progress.json plus functions store art_character_study/art_expression_atlas/art_cozy_banner/art_v3_i. If recovering without tool store, use generated_images paths in logs or character manifest references. New `docs/ART_DIRECTION.md` and `docs/TEM_CHARACTER_EXPRESSIONS.md` are canonical.
+
 ## Live closeout state (September 9, 2026)
 
 Checkpoint65 `7b85b67` pushed. Paid A/B `../closeout-ab-01` running via `closeout.py`; log `../closeout-ab-01.log`, session5169. Do not start a duplicate or change the frozen corpus. Production binaries still15734b7. First pair completed both pass; this is not an aggregate verdict. User requires today/quota-conscious wrap-up. README/upgrade/reference refreshed; existing18approved artwork assets verified, not regenerated unnecessarily.
