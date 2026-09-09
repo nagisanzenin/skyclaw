@@ -111,3 +111,11 @@ The guard owns `target/guarded`, disables debug/incremental output, reserves8GiB
 The private companion `work/MODERNIZATION-RESUME.md` contains machine paths and only the secret file location, never its content. Use it to recover active local command IDs after interruption. Last quota read:60%used/40%remaining; no reset authorization or consumption.
 
 For every push: finish scoped implementation and appropriate checks; record actual changes, failures, limits and next steps; inspect staged diff; use normal hooks; commit and push this branch; record commit/CI status in the next update. Continue useful work after the push. Keep Vietnamese progress updates meaningful and do not promise a completion date without evidence.
+
+## Post-release: entity essay, mathematics and web delivery
+
+Branch `codex/entity-essay-and-web-images` documents the creator's entity/AGI-oriented architecture. README now features the entity thesis and implemented mathematics: lambda decay, Bayesian artifact scoring, Perpetuum activity denominator, Hive selection, Wilson intervals, SPRT and Witness knownness. The illustrated static essay is in `docs/index.html`, with CSS and two WebP illustrations. GitHub Pages already serves main `/docs`; no new hosting configuration or runtime release is required.
+
+All 38 archival PNGs are preserved. WebP derivatives and byte/hash manifest are in `assets/web`; embedded documentation images use the smaller copies. Regeneration script is `scripts/optimize_web_images.py` (Pillow/WebP). No Rust behavior, version or prior benchmark observations changed. See `docs/modernization/ENTITY-ESSAY-DELIVERY.md` for validation and publication status.
+
+Essay flow revised after creator feedback: one overnight investigation motivates each mechanism; mathematics is integrated into the relevant step. Latest static export replaces the initial feature-catalogue draft.

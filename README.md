@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/modernization/banner.png" alt="TEMM1E — Your persistent AI companion" width="100%">
+  <img src="assets/web/modernization/banner.webp" alt="TEMM1E — Your persistent AI companion" width="100%">
 </p>
 
 <p align="center">
@@ -12,9 +12,98 @@
 
 Choose your model, connect your tools, and keep the same companion across conversations. Tem combines practical work with memory and personality; execution records help you inspect what actually happened.
 
-[Get started](#get-started) · [Tem’s mind](#tems-mind) · [Features](#coding-and-computer-use) · [Connections](#choose-your-connection) · [Architecture](#architecture) · [Commands](#commands) · [Upgrade](docs/modernization/UPGRADING.md)
+[Get started](#get-started) · [Vision](#an-entity-one-api-call-at-a-time) · [Mathematics](#the-mathematics-inside-tem) · [Tem’s mind](#tems-mind) · [Features](#coding-and-computer-use) · [Connections](#choose-your-connection) · [Architecture](#architecture) · [Commands](#commands) · [Upgrade](docs/modernization/UPGRADING.md)
 
 Tem is a companion you can work with over time: a practical agent with memory, a familiar personality, and room to explore. The systems below explain how that idea becomes code, browser work, specialist collaboration, reflection and scheduled activity. They have different maturity levels; each section links to the design behind it.
+
+## An entity, one API call at a time
+
+Temm1e is built around an ambition: **give episodic intelligence a continuing existence.** The LLM supplies reasoning, intelligence and verdicts one call at a time. Tem supplies an environment to act in, memory to carry forward, temporal machinery to return to work, and records of what happened.
+
+Computer use and native browser sessions let Tem inhabit a digital environment. Perpetuum explores around-the-clock availability and scheduled return. Persistence and recovery aim to preserve continuity when a call or process stops. This is an **AGI-oriented architectural direction**, not a claim that Tem has achieved AGI, consciousness or uninterrupted autonomous operation.
+
+[Read the illustrated essay: **An entity, one API call at a time**](https://temm1e-labs.github.io/temm1e/)
+
+## The mathematics inside Tem
+
+Tem is mathematically curious. Its equations make design choices inspectable: how attention fades, how lessons are ranked, how workers select tasks, and how much evidence supports a verdict. Mathematical correctness, useful proxies and proven user outcomes are different things; the explanations below keep that distinction visible.
+
+### λ-memory: a continuous attention curve
+
+$$
+s(t)=I_{\mathrm{eff}}e^{-\lambda\Delta t},\qquad I_{\mathrm{eff}}=\operatorname{clamp}(I+b,0.1,5.0)
+$$
+
+The score combines importance and recall boost with exponential decay in **hours since last access**. Lower scores move memories toward smaller context representations; raw stored content can remain available for recall. At $\lambda=0.01\,\mathrm{h}^{-1}$, the score half-life is $\ln(2)/\lambda\approx69.3$ hours, or **2.89 days**, with effective importance held fixed. This controls context attention, not factual truth or guaranteed archival retention.
+
+<details>
+<summary>Learning artifacts: Bayesian quality × recency × use</summary>
+
+$$
+V=\frac{\alpha}{\alpha+\beta}\,e^{-0.015d}\,[1+0.3\ln(1+u)]
+$$
+
+Here $d$ is days since creation and $u$ counts applications. The Beta mean contributes estimated quality; exponential recency has a 46.2-day half-life; logarithmic reinforcement gives repeated use diminishing marginal influence. Model confidence $c$ initializes $\alpha=2+3c$ and $\beta=2+3(1-c)$, keeping the initial mean between $2/7$ and $5/7$ for $c\in[0,1]$.
+
+This is a ranking heuristic. A model-seeded prior is not independent evidence, and application counts measure exposure rather than demonstrated benefit. [Implementation](crates/temm1e-agent/src/learning.rs).
+
+</details>
+
+<details>
+<summary>Perpetuum: time, observations and a Beta prior</summary>
+
+$$
+\hat p=\frac{a+1}{n+2}
+$$
+
+For matching local weekday/hour slots in the previous 28 completed local calendar days, $a$ counts active slots and $n$ eligible slots after the first recorded day. Beta(1,1) smoothing gives **2/6** for one active slot out of four, and 0.5 when there are no eligible slots. Missing slots currently count as inactive after recording starts; this estimates recorded behavior, not verified online exposure. Non-whole-hour timezone offsets remain approximate with existing UTC buckets. [Implementation](crates/temm1e-perpetuum/src/store.rs).
+
+</details>
+
+<details>
+<summary>Many Tems: a mathematical policy for task selection</summary>
+
+$$
+S=A^\alpha U^\beta(1-D)^\gamma(1-F)^\delta R^\zeta
+$$
+
+Affinity, urgency, difficulty, failure and reward signals combine into a worker/task priority score. Exponents control their relative influence; the implementation floors or clamps inputs. It is a coordination heuristic, not a proof of optimal scheduling, fairness or speedup. Dependency checks and claims are separate mechanisms. [Implementation](crates/temm1e-hive/src/selection.rs).
+
+</details>
+
+<details>
+<summary>Eigen-Tune: Wilson intervals and sequential evidence</summary>
+
+For observed proportion $\hat p=k/n$, the Wilson lower bound is:
+
+$$
+L=\frac{\hat p+z^2/(2n)-z\sqrt{\hat p(1-\hat p)/n+z^2/(4n^2)}}{1+z^2/n}
+$$
+
+At **99% two-sided confidence**, even 30/30 successes has a lower bound of only **0.818891**. The checked implementation rejects zero trials, impossible counts and invalid confidence. Binomial assumptions and label quality still matter. [Wilson implementation](crates/temm1e-distill/src/stats/wilson.rs).
+
+The sequential probability ratio test accumulates:
+
+$$
+\Lambda_n=\sum_{i=1}^{n}\left[x_i\ln\frac{p_1}{p_0}+(1-x_i)\ln\frac{1-p_1}{1-p_0}\right]
+$$
+
+It compares this with Wald boundaries $\ln((1-\beta)/\alpha)$ and $\ln(\beta/(1-\alpha))$. Reaching the sample cap without crossing a boundary returns **Inconclusive**. Error-control arguments depend on independent Bernoulli outcomes and fixed hypotheses; they do not automatically apply to an adaptive agent. Here $\alpha,\beta$ are error targets, not the learning prior parameters above. [SPRT implementation](crates/temm1e-distill/src/stats/sprt.rs).
+
+</details>
+
+<details>
+<summary>Witness: preserve unknowns when composing verdicts</summary>
+
+$$
+\neg\,? = ?,\qquad \mathrm{T}\land ? = ?,\qquad \mathrm{F}\land ? = \mathrm{F}
+$$
+
+Three-valued logic keeps verified, failed and inconclusive checks distinct. Negating missing evidence cannot create success. Under the explicit verification policy, empty and entirely advisory check sets remain inconclusive. A model verdict still does not prove that an action executed. [Implementation and truth tables](docs/modernization/WITNESS-KNOWNNESS-IMPLEMENTATION.md).
+
+</details>
+
+[λ-memory implementation](crates/temm1e-agent/src/lambda_memory.rs) · [Complete mathematical audit](docs/modernization/MATH-AUDIT.md) · [Feature implementation ledger](docs/modernization/FEATURE-COVERAGE.md)
 
 ## Get started
 
@@ -81,7 +170,7 @@ A typical request is “find why this test fails, fix it and show what you ran.�
 
 [Research](tems_lab/code/RESEARCH.md)
 
-![Tem-Code: inspect, edit and test](assets/modernization/tem-code-overview.png)
+![Tem-Code: inspect, edit and test](assets/web/modernization/tem-code-overview.webp)
 
 ### Prowl and Gaze
 
@@ -91,9 +180,9 @@ Gaze extends the idea to the desktop through screenshots and input actions. It i
 
 [Desktop design](tems_lab/gaze/DESIGN.md) · [Deployment](docs/DEPLOY_AUTONOMOUS_DESKTOP.md)
 
-![Prowl: search, read and act](assets/modernization/tem-prowl-overview.png)
+![Prowl: search, read and act](assets/web/modernization/tem-prowl-overview.webp)
 
-![Gaze: observe, interact and verify](assets/modernization/tem-gaze-overview.png)
+![Gaze: observe, interact and verify](assets/web/modernization/tem-gaze-overview.webp)
 
 ### Web search
 
@@ -103,7 +192,7 @@ Backend availability, rate limits and freshness differ. Search results are input
 
 [Search research](docs/web_search/RESEARCH.md)
 
-![Web search: query, sources and results](assets/modernization/web-search-overview.png)
+![Web search: query, sources and results](assets/web/modernization/web-search-overview.webp)
 
 ## Memory and personality
 
@@ -115,7 +204,7 @@ Engram handles longer-lived facts and explicit “remember this,” corrections 
 
 [λ-Memory](tems_lab/LAMBDA_MEMORY.md) · [Engram](tems_lab/ENGRAM_MEMORY.md) · [Context and caching audit](docs/modernization/07-CONTEXT-CACHING.md)
 
-![λ-Memory: detail, summary, essence and reference](assets/modernization/lambda-memory-overview.png)
+![λ-Memory: detail, summary, essence and reference](assets/web/modernization/lambda-memory-overview.webp)
 
 ### Blueprints and artifact value
 
@@ -125,7 +214,7 @@ Artifact value is the selection idea behind memories, lessons and procedures com
 
 [Blueprint design](docs/design/BLUEPRINT_SYSTEM.md) · [Artifact value design](tems_lab/ARTIFACT_VALUE_FUNCTION.md) · [Math audit](docs/modernization/MATH-AUDIT.md)
 
-![Artifact value: quality, recency and utility](assets/modernization/tem-artifact-value-overview.png)
+![Artifact value: quality, recency and utility](assets/web/modernization/tem-artifact-value-overview.webp)
 
 ### Conscious and Anima
 
@@ -135,9 +224,9 @@ Anima gives the companion a recognizable voice and relationship continuity: a Te
 
 [Conscious research](tems_lab/consciousness/RESEARCH_PAPER.md) · [Anima architecture](tems_lab/social/TEM_EMOTIONAL_INTELLIGENCE_ARCHITECTURE.md)
 
-![Conscious: reflect, remember and apply](assets/modernization/tem-conscious-overview.png)
+![Conscious: reflect, remember and apply](assets/web/modernization/tem-conscious-overview.webp)
 
-![Anima: voice, tone and expression](assets/modernization/tem-anima-overview.png)
+![Anima: voice, tone and expression](assets/web/modernization/tem-anima-overview.webp)
 
 ## Coordination
 
@@ -149,7 +238,7 @@ Coordination introduces its own cost. Shared-state updates, cancellation, task d
 
 [Swarm design](tems_lab/swarm/DESIGN.md) · [Historical experiment](docs/swarm/experiment_artifacts/EXPERIMENT_REPORT.md)
 
-![Many Tems: task plan, workers and shared Den](assets/modernization/tem-swarm-overview.png)
+![Many Tems: task plan, workers and shared Den](assets/web/modernization/tem-swarm-overview.webp)
 
 ### TemDOS
 
@@ -159,7 +248,7 @@ The modernization tightens the relationship between a core’s selected model, p
 
 [TemDOS research](tems_lab/temdos/TEMDOS_RESEARCH_PAPER.md)
 
-![TemDOS specialist cores](assets/modernization/temdos-overview.png)
+![TemDOS specialist cores](assets/web/modernization/temdos-overview.webp)
 
 ## Persistent work
 
@@ -171,7 +260,7 @@ Those services need clear ownership, current model/resource bindings and honest 
 
 [Perpetuum vision](tems_lab/perpetuum/VISION.md)
 
-![Perpetuum: schedule, work and review](assets/modernization/tem-perpetuum-overview.png)
+![Perpetuum: schedule, work and review](assets/web/modernization/tem-perpetuum-overview.webp)
 
 ### Terminal and messaging
 
@@ -181,7 +270,7 @@ Messaging brings the same companion into the channels you use. The CLI, TUI and 
 
 [TUI design plan](docs/modernization/08-TUI.md) · [Commands](docs/CLI_REFERENCE.md)
 
-![Terminal concept: transcript, tools and panels](assets/modernization/tem-tui-overview.png)
+![Terminal concept: transcript, tools and panels](assets/web/modernization/tem-tui-overview.webp)
 
 ### Access control
 
@@ -191,7 +280,7 @@ Role checks, scoped records and private files address different boundaries. A ho
 
 [Isolation findings](docs/modernization/03-FINDINGS.md)
 
-![Access control: identity, role and permissions](assets/modernization/rbac.png)
+![Access control: identity, role and permissions](assets/web/modernization/rbac.webp)
 
 ## Extensions and experiments
 
@@ -209,7 +298,7 @@ Collection/training and user-facing local routing are **separate opt-ins**. Stat
 
 [Design](tems_lab/eigen/DESIGN.md) · [Setup](tems_lab/eigen/SETUP.md) · [Routing safety](tems_lab/eigen/LOCAL_ROUTING_SAFETY.md)
 
-![Eigen-Tune: examples, training and evaluation](assets/modernization/tem-eigentune-overview.png)
+![Eigen-Tune: examples, training and evaluation](assets/web/modernization/tem-eigentune-overview.webp)
 
 ### Cambium
 
@@ -219,7 +308,7 @@ This is an experimental capability, not permission to trust arbitrary self-modif
 
 [Research](tems_lab/cambium/CAMBIUM_RESEARCH_PAPER.md) · [Protected zones](docs/lab/cambium/PROTECTED_ZONES.md)
 
-![Cambium: propose, evaluate and review](assets/modernization/tem-cambium-overview.png)
+![Cambium: propose, evaluate and review](assets/web/modernization/tem-cambium-overview.webp)
 
 ## Evidence and diagnostics
 
@@ -231,7 +320,7 @@ The modernized file-evidence path binds checks to captured content and explicit 
 
 [Witness research](tems_lab/witness/RESEARCH_PAPER.md)
 
-![Witness: claim, check and evidence](assets/modernization/tem-witness-overview.png)
+![Witness: claim, check and evidence](assets/web/modernization/tem-witness-overview.webp)
 
 ### Vigil
 
@@ -241,7 +330,7 @@ Reporting to an external destination depends on configuration and consent. A dia
 
 [Vigil design](tems_lab/vigil/DESIGN.md)
 
-![Vigil: detect, record and report](assets/modernization/tem-vigil-overview.png)
+![Vigil: detect, record and report](assets/web/modernization/tem-vigil-overview.webp)
 
 ## Channels and tools
 

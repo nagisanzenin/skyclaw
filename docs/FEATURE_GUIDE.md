@@ -12,7 +12,7 @@ Inspect a codebase, make targeted edits and run checks. The design emphasizes re
 
 [Research](../tems_lab/code/RESEARCH.md)
 
-![Tem-Code: inspect, edit and test](../assets/modernization/tem-code-overview.png)
+![Tem-Code: inspect, edit and test](../assets/web/modernization/tem-code-overview.webp)
 
 ### Prowl and Gaze
 
@@ -20,9 +20,9 @@ Prowl provides browser-oriented workflows, including separate browser authentica
 
 [Desktop design](../tems_lab/gaze/DESIGN.md) · [Deployment](DEPLOY_AUTONOMOUS_DESKTOP.md)
 
-![Prowl: search, read and act](../assets/modernization/tem-prowl-overview.png)
+![Prowl: search, read and act](../assets/web/modernization/tem-prowl-overview.webp)
 
-![Gaze: observe, interact and verify](../assets/modernization/tem-gaze-overview.png)
+![Gaze: observe, interact and verify](../assets/web/modernization/tem-gaze-overview.webp)
 
 ### Web search
 
@@ -30,7 +30,7 @@ A unified search tool can query multiple sources and return results for the mode
 
 [Search research](web_search/RESEARCH.md)
 
-![Web search: query, sources and results](../assets/modernization/web-search-overview.png)
+![Web search: query, sources and results](../assets/web/modernization/web-search-overview.webp)
 
 ## Memory and personality
 
@@ -40,7 +40,7 @@ A unified search tool can query multiple sources and return results for the mode
 
 [λ-Memory](../tems_lab/LAMBDA_MEMORY.md) · [Engram](../tems_lab/ENGRAM_MEMORY.md) · [Context and caching audit](modernization/07-CONTEXT-CACHING.md)
 
-![λ-Memory: detail, summary, essence and reference](../assets/modernization/lambda-memory-overview.png)
+![λ-Memory: detail, summary, essence and reference](../assets/web/modernization/lambda-memory-overview.webp)
 
 ### Blueprints and artifact value
 
@@ -48,7 +48,7 @@ Blueprints capture reusable procedures. Memories, lessons and other artifacts ha
 
 [Blueprint design](design/BLUEPRINT_SYSTEM.md) · [Artifact value design](../tems_lab/ARTIFACT_VALUE_FUNCTION.md) · [Math audit](modernization/MATH-AUDIT.md)
 
-![Artifact value: quality, recency and utility](../assets/modernization/tem-artifact-value-overview.png)
+![Artifact value: quality, recency and utility](../assets/web/modernization/tem-artifact-value-overview.webp)
 
 ### Conscious and Anima
 
@@ -56,9 +56,9 @@ Conscious provides reflective observations and lessons. Anima is Tem's personali
 
 [Conscious research](../tems_lab/consciousness/RESEARCH_PAPER.md) · [Anima architecture](../tems_lab/social/TEM_EMOTIONAL_INTELLIGENCE_ARCHITECTURE.md)
 
-![Conscious: reflect, remember and apply](../assets/modernization/tem-conscious-overview.png)
+![Conscious: reflect, remember and apply](../assets/web/modernization/tem-conscious-overview.webp)
 
-![Anima: voice, tone and expression](../assets/modernization/tem-anima-overview.png)
+![Anima: voice, tone and expression](../assets/web/modernization/tem-anima-overview.webp)
 
 ## Coordination
 
@@ -68,7 +68,7 @@ The swarm decomposes suitable work into tasks, coordinates workers through a sha
 
 [Swarm design](../tems_lab/swarm/DESIGN.md) · [Historical experiment](swarm/experiment_artifacts/EXPERIMENT_REPORT.md)
 
-![Many Tems: task plan, workers and shared Den](../assets/modernization/tem-swarm-overview.png)
+![Many Tems: task plan, workers and shared Den](../assets/web/modernization/tem-swarm-overview.webp)
 
 ### TemDOS
 
@@ -76,7 +76,7 @@ TemDOS provides specialist cores with distinct roles and continuity. It is a dif
 
 [TemDOS research](../tems_lab/temdos/TEMDOS_RESEARCH_PAPER.md)
 
-![TemDOS specialist cores](../assets/modernization/temdos-overview.png)
+![TemDOS specialist cores](../assets/web/modernization/temdos-overview.webp)
 
 ## Persistent work
 
@@ -86,7 +86,7 @@ Perpetuum adds schedules, concerns, monitors and background initiative. The mode
 
 [Perpetuum vision](../tems_lab/perpetuum/VISION.md)
 
-![Perpetuum: schedule, work and review](../assets/modernization/tem-perpetuum-overview.png)
+![Perpetuum: schedule, work and review](../assets/web/modernization/tem-perpetuum-overview.webp)
 
 ### Terminal and messaging
 
@@ -94,7 +94,7 @@ The TUI is the interactive terminal front end. Its confirmed modernization direc
 
 [TUI design plan](modernization/08-TUI.md) · [Commands](CLI_REFERENCE.md)
 
-![Terminal concept: transcript, tools and panels](../assets/modernization/tem-tui-overview.png)
+![Terminal concept: transcript, tools and panels](../assets/web/modernization/tem-tui-overview.webp)
 
 ### Access control
 
@@ -102,7 +102,7 @@ Roles determine available operations. Personal host access and shared-service is
 
 [Isolation findings](modernization/03-FINDINGS.md)
 
-![Access control: identity, role and permissions](../assets/modernization/rbac.png)
+![Access control: identity, role and permissions](../assets/web/modernization/rbac.webp)
 
 ## Extensions and experiments
 
@@ -118,7 +118,7 @@ Eigen-Tune collects examples, trains a local model and evaluates it before optio
 
 [Design](../tems_lab/eigen/DESIGN.md) · [Setup](../tems_lab/eigen/SETUP.md) · [Routing safety](../tems_lab/eigen/LOCAL_ROUTING_SAFETY.md)
 
-![Eigen-Tune: examples, training and evaluation](../assets/modernization/tem-eigentune-overview.png)
+![Eigen-Tune: examples, training and evaluation](../assets/web/modernization/tem-eigentune-overview.webp)
 
 ### Cambium
 
@@ -126,7 +126,7 @@ Cambium is the self-growth idea: propose capability changes, evaluate them and r
 
 [Research](../tems_lab/cambium/CAMBIUM_RESEARCH_PAPER.md) · [Protected zones](lab/cambium/PROTECTED_ZONES.md)
 
-![Cambium: propose, evaluate and review](../assets/modernization/tem-cambium-overview.png)
+![Cambium: propose, evaluate and review](../assets/web/modernization/tem-cambium-overview.webp)
 
 ## Evidence and diagnostics
 
@@ -136,7 +136,7 @@ Witness records pre-committed checks and their verdicts in a ledger. Its purpose
 
 [Witness research](../tems_lab/witness/RESEARCH_PAPER.md)
 
-![Witness: claim, check and evidence](../assets/modernization/tem-witness-overview.png)
+![Witness: claim, check and evidence](../assets/web/modernization/tem-witness-overview.webp)
 
 ### Vigil
 
@@ -144,7 +144,7 @@ Vigil detects failures and prepares diagnostic reports. Reports need relevant ev
 
 [Vigil design](../tems_lab/vigil/DESIGN.md)
 
-![Vigil: detect, record and report](../assets/modernization/tem-vigil-overview.png)
+![Vigil: detect, record and report](../assets/web/modernization/tem-vigil-overview.webp)
 
 ## What proves an improvement?
 
