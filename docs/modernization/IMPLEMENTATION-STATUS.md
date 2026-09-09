@@ -611,3 +611,7 @@ Candidate50e1e4c pushed and PR74 marked ready for review, with complete benchmar
 ## Checkpoint72 — verified native candidate and release matrix
 
 Native6.0.0 candidate build passed, reports50e1e4c, and actual CLI quit/EOF/server SIGTERM checks passed; guarded cache2.5GiB cleaned.92b56fe CI34335590537 all8jobs passed. Corrected stale protocol count: actual workflow produces6primary binaries,4legacy aliases and one checksum manifest. No workflow/runtime edits. Final publication and previous-version update smoke still required; maintainer identity clarification pending for review exception.
+
+## Checkpoint73 — creator-requested full illustrated README
+
+The creator replaced the concise-README preference with a full feature/explanation tour like the original. README now has358lines/about3500words, all18new illustrations, Tem’s Mind/context/cache, each named subsystem, channels/tools, recovery, architecture, connection/subscription setup and commands. All local links exist and image paths are18unique valid assets; CLI command names checked against the6.0candidate. Claims retain experimental boundaries and raw A/B results. Release Protocol updated to preserve this requested breadth. No runtime changes or paid reruns. Creator confirmed primary-maintainer/direct-main rights; use standing merge authorization via documented admin PR merge after checks, not an invented independent approval.

@@ -12,9 +12,9 @@
 
 Choose your model, connect your tools, and keep the same companion across conversations. Tem combines practical work with memory and personality; execution records help you inspect what actually happened.
 
-[Get started](#get-started) · [Features](docs/FEATURE_GUIDE.md) · [Commands](docs/CLI_REFERENCE.md) · [Vision](VISION.md) · [Upgrade guide](docs/modernization/UPGRADING.md) · [Release history](docs/RELEASE_HISTORY.md)
+[Get started](#get-started) · [Tem’s mind](#tems-mind) · [Features](#coding-and-computer-use) · [Connections](#choose-your-connection) · [Architecture](#architecture) · [Commands](#commands) · [Upgrade](docs/modernization/UPGRADING.md)
 
-> **6.0 modernization:** the installer below uses the latest published GitHub release. For the evidence behind this source revision, see the [A/B results](docs/modernization/CLOSEOUT-RESULTS.md), [acceptance evidence](docs/modernization/CLOSEOUT-VALIDATION.md) and [remaining boundaries](docs/modernization/IMPLEMENTATION-STATUS.md).
+Tem is a companion you can work with over time: a practical agent with memory, a familiar personality, and room to explore. The systems below explain how that idea becomes code, browser work, specialist collaboration, reflection and scheduled activity. They have different maturity levels; each section links to the design behind it.
 
 ## Get started
 
@@ -51,52 +51,291 @@ Tem supports Anthropic, OpenAI-compatible services, Gemini and local endpoints. 
 
 A coding subscription and a general API account are distinct connections. Tem's new Z.ai coding-plan adapter rejects accidental substitution of the general API endpoint. Its live smoke test establishes technical compatibility; it does not establish official provider support for Temm1e. See [subscription research and constraints](docs/modernization/06-SUBSCRIPTIONS.md).
 
-## What Tem can do
+## Tem’s mind
 
-| Area | Features | Read more |
+A model provides reasoning; the harness decides how a turn is assembled, which tools it can use, what fits in context, how work is recorded and when resources are released. Tem’s agent loop brings those responsibilities together:
+
+1. **Understand the request.** Combine the current conversation with relevant instructions, memory and available tools. Complexity-aware planning can break suitable work into steps.
+2. **Act and observe.** Execute tools and return their real output to the model. Track failures so the next attempt can change strategy instead of blindly repeating the same action.
+3. **Manage context.** Keep the current request and execution state useful within the model’s context window, with room reserved for output.
+4. **Record the outcome.** Preserve conversation, execution and final-reply state. Checks and evidence establish specific properties; a final answer alone does not certify the goal.
+5. **Release owned work.** Bound background activity and account for its provider usage, including failure and cancellation paths.
+
+The selected model remains part of the user’s control. CLI/server model changes preserve running state and do not silently rewrite saved defaults. Optional local routing has its own explicit qualification and enablement path.
+
+### Context, compaction and caching
+
+Long conversations need more than dropping the oldest messages. Modernization keeps raw history and source references when it compacts the active context, so scoped recall can recover detail that no longer fits in a request. Provider-native replay preserves the forms of conversation state that each backend needs; incompatible state is normalized when deriving a request for a different model.
+
+Context compaction, long-term memory and provider caching solve different problems. Compaction determines what is sent now. Memory retains useful information across work. Provider caching may reduce repeated processing when the provider supports it. Tem reports cache reads/writes when supplied and preserves unknown usage as unknown; it does not assume a cache hit or that a coding subscription makes requests free.
+
+[Context and caching](docs/modernization/07-CONTEXT-CACHING.md) · [Runtime model ownership](docs/modernization/RUNTIME-MODEL-CLOSEOUT.md) · [Feature and math audit](docs/modernization/FEATURE-COVERAGE.md)
+
+## Coding and computer use
+
+### Tem-Code
+
+Tem-Code is the hands-on coding layer: inspect files and repository state, change the relevant code, then run checks that exercise the requested behavior. Shell, file and Git operations let Tem work in an existing project rather than only produce snippets. Useful state and execution evidence remain available when work spans multiple turns.
+
+A typical request is “find why this test fails, fix it and show what you ran.” The model chooses actions; tool output and independent checks establish what happened. A successful command is evidence for that command, not a blanket guarantee about the project.
+
+[Research](tems_lab/code/RESEARCH.md)
+
+![Tem-Code: inspect, edit and test](assets/modernization/tem-code-overview.png)
+
+### Prowl and Gaze
+
+Prowl is for work in a browser: inspect a page, follow navigation, interact with controls and use a dedicated authenticated browser profile. Its login workflow lets browser work retain a session without automatically copying your everyday Chrome profile. Explicit profile import is bounded and remains an intentional action.
+
+Gaze extends the idea to the desktop through screenshots and input actions. It is useful when an application has no suitable API or browser interface. Browser and desktop permissions, display availability and the chosen model’s vision support determine what Tem can do; verify the resulting application state after an action.
+
+[Desktop design](tems_lab/gaze/DESIGN.md) · [Deployment](docs/DEPLOY_AUTONOMOUS_DESKTOP.md)
+
+![Prowl: search, read and act](assets/modernization/tem-prowl-overview.png)
+
+![Gaze: observe, interact and verify](assets/modernization/tem-gaze-overview.png)
+
+### Web search
+
+Search gives Tem a way to discover sources before opening and comparing them. The unified interface can fan out to configured backends, while query parameters and ordering are part of the cache identity. You can ask Tem to investigate a subject and bring back the source material that supports its answer.
+
+Backend availability, rate limits and freshness differ. Search results are inputs to research; their presence does not establish that a claim is true. The research documentation describes the backend design without treating historical backend counts as a permanent service guarantee.
+
+[Search research](docs/web_search/RESEARCH.md)
+
+![Web search: query, sources and results](assets/modernization/web-search-overview.png)
+
+## Memory and personality
+
+### λ-Memory and Engram
+
+λ-Memory is built around a companion that can forget detail without losing the path back to an experience. An episode can be represented at several levels—detail, summary, essence and reference—so useful meaning can fit into limited context while the source remains available for recall.
+
+Engram handles longer-lived facts and explicit “remember this,” corrections and forgetting. Its records must stay attached to the right identity; the modernization adds stricter scoping and persistence behavior. Neither a high memory score nor repeated recall proves a remembered fact is correct. Your correction should remain more important than an old model inference.
+
+[λ-Memory](tems_lab/LAMBDA_MEMORY.md) · [Engram](tems_lab/ENGRAM_MEMORY.md) · [Context and caching audit](docs/modernization/07-CONTEXT-CACHING.md)
+
+![λ-Memory: detail, summary, essence and reference](assets/modernization/lambda-memory-overview.png)
+
+### Blueprints and artifact value
+
+Blueprints turn useful procedures into material Tem can reuse: the steps, preconditions and lessons from solving a kind of problem. A blueprint is a starting point for the next task, and still needs to fit the current repository, tools and constraints.
+
+Artifact value is the selection idea behind memories, lessons and procedures competing for attention. Quality, recency and utility help rank what to bring into context. These are decision signals, not measured probabilities of correctness. The math audit distinguishes implemented calculations, repaired numerical boundaries and longer-term redesign proposals.
+
+[Blueprint design](docs/design/BLUEPRINT_SYSTEM.md) · [Artifact value design](tems_lab/ARTIFACT_VALUE_FUNCTION.md) · [Math audit](docs/modernization/MATH-AUDIT.md)
+
+![Artifact value: quality, recency and utility](assets/modernization/tem-artifact-value-overview.png)
+
+### Conscious and Anima
+
+Conscious provides a reflection layer that can observe activity and retain lessons. In the modernization, observer state is bounded and tied to the current workspace, conversation and user, and its model calls participate in owning resource accounting. Reflection should help the next decision rather than silently replace the user’s objective.
+
+Anima gives the companion a recognizable voice and relationship continuity: a Tem that can be playful, attentive, curious or constructively disagree. Personality and user preferences shape how Tem communicates; they do not turn an emotional impression into a fact. The creator’s vision is expressed through behavior as well as the character’s visual identity.
+
+[Conscious research](tems_lab/consciousness/RESEARCH_PAPER.md) · [Anima architecture](tems_lab/social/TEM_EMOTIONAL_INTELLIGENCE_ARCHITECTURE.md)
+
+![Conscious: reflect, remember and apply](assets/modernization/tem-conscious-overview.png)
+
+![Anima: voice, tone and expression](assets/modernization/tem-anima-overview.png)
+
+## Coordination
+
+### Many Tems
+
+Many Tems is the swarm model: split suitable work into dependency-aware tasks, give workers bounded responsibilities, then collect their outcomes through a shared Den. Independent investigation and implementation can proceed together when their inputs and outputs are clear.
+
+Coordination introduces its own cost. Shared-state updates, cancellation, task dependencies and owning budgets matter just as much as starting workers. Modernization strengthens those boundaries; it does not claim that every task gets faster by adding more agents. Historical swarm experiments remain available with their original workloads and conditions.
+
+[Swarm design](tems_lab/swarm/DESIGN.md) · [Historical experiment](docs/swarm/experiment_artifacts/EXPERIMENT_REPORT.md)
+
+![Many Tems: task plan, workers and shared Den](assets/modernization/tem-swarm-overview.png)
+
+### TemDOS
+
+TemDOS gives Tem specialist cores with their own role and continuity—such as research, code review or debugging. A core can keep expertise and context associated with that role across work, while a temporary swarm worker exists to complete a bounded assignment.
+
+The modernization tightens the relationship between a core’s selected model, pricing metadata, tool resources and parent budget. Changing models must not silently reuse incompatible provider state or charge the same work twice. Specialist identity is useful organization; it is not proof of expertise or correctness.
+
+[TemDOS research](tems_lab/temdos/TEMDOS_RESEARCH_PAPER.md)
+
+![TemDOS specialist cores](assets/modernization/temdos-overview.png)
+
+## Persistent work
+
+### Perpetuum
+
+Perpetuum expresses the idea that Tem can return to things over time: schedules, concerns, monitors and background initiative. You can keep an ongoing concern alongside an immediate conversation, with time-aware work handled by the configured services.
+
+Those services need clear ownership, current model/resource bindings and honest outcomes. A skipped maintenance action is reported as skipped. A saved reply does not mean an entire long-running goal has been achieved. Fully automatic durable pursuit across every restart and failure remains a separate design boundary.
+
+[Perpetuum vision](tems_lab/perpetuum/VISION.md)
+
+![Perpetuum: schedule, work and review](assets/modernization/tem-perpetuum-overview.png)
+
+### Terminal and messaging
+
+The terminal centers the conversation: streamed text, compact tool rows, expandable details and optional activity panels. Use **Ctrl+T** to expand or collapse tool details and **Ctrl+O** for the activity panel. Saved history lets a conversation continue without reconstructing everything from a screenshot or an old scrollback.
+
+Messaging brings the same companion into the channels you use. The CLI, TUI and gateway have distinct initialization and delivery paths, so their acceptance evidence is checked separately. The drawing below is a concept illustration; the command reference describes the actual controls.
+
+[TUI design plan](docs/modernization/08-TUI.md) · [Commands](docs/CLI_REFERENCE.md)
+
+![Terminal concept: transcript, tools and panels](assets/modernization/tem-tui-overview.png)
+
+### Access control
+
+Tem uses **Admin** and **User** roles to determine which management operations and tools are available. This lets a personal owner distinguish their own controls from other participants in a channel. Server recovery and management commands require the appropriate existing role.
+
+Role checks, scoped records and private files address different boundaries. A host-level shell or desktop tool still acts with the process’s operating-system access. Use a dedicated host or an external isolation layer where that access must be constrained; Tem does not claim complete multi-tenant sandboxing.
+
+[Isolation findings](docs/modernization/03-FINDINGS.md)
+
+![Access control: identity, role and permissions](assets/modernization/rbac.png)
+
+## Extensions and experiments
+
+### Skills and MCP
+
+Skills package reusable instructions and working methods in global or workspace directories. They help Tem approach recurring tasks consistently while keeping the user’s current request in charge. Use `temm1e skill list` to inspect available skills.
+
+MCP connects external tools and services through supported transports. Use `/mcp` to inspect connected servers and the command reference for configuration. Tools extend what the agent can do, while their returned text remains external input. Custom tools and self-created extensions also need review appropriate to the access they receive.
+
+### Eigen-Tune
+
+Eigen-Tune explores a companion that learns from examples and can eventually route suitable work to a local model. The pipeline collects training pairs, trains with a supported backend and evaluates the result against a reference before qualification. It is useful to experiment with a narrower local capability while retaining a stronger reference model.
+
+Collection/training and user-facing local routing are **separate opt-ins**. Statistical gates can be inconclusive when the sample is insufficient; reaching a sample cap must not manufacture graduation. Training and inference consume compute and storage, and a change in the reference model can invalidate previous qualification. Start with the setup and routing-safety guides.
+
+[Design](tems_lab/eigen/DESIGN.md) · [Setup](tems_lab/eigen/SETUP.md) · [Routing safety](tems_lab/eigen/LOCAL_ROUTING_SAFETY.md)
+
+![Eigen-Tune: examples, training and evaluation](assets/modernization/tem-eigentune-overview.png)
+
+### Cambium
+
+Cambium is Tem’s self-growth research: identify a capability gap, propose a change, evaluate it and preserve a recoverable history. Protected zones, the watchdog and review stages are intended to keep growth from erasing the foundations it depends on.
+
+This is an experimental capability, not permission to trust arbitrary self-modification. Growth-specific evaluation remains distinct from ordinary answer verification. A passing file check or a confident model verdict must not grant unrelated deployment authority. Read the research and protected-zone documentation before enabling or extending the growth pipeline.
+
+[Research](tems_lab/cambium/CAMBIUM_RESEARCH_PAPER.md) · [Protected zones](docs/lab/cambium/PROTECTED_ZONES.md)
+
+![Cambium: propose, evaluate and review](assets/modernization/tem-cambium-overview.png)
+
+## Evidence and diagnostics
+
+### Witness
+
+Witness connects claims with pre-committed checks and recorded evidence. Goal and assessment inspection make it possible to distinguish “the model returned an answer” from “this particular condition was checked.” Evidence can be attached to the execution that produced it rather than inferred from reassuring prose.
+
+The modernized file-evidence path binds checks to captured content and explicit limits. A verifier can still have incomplete criteria: checking that a file exists does not establish that its algorithm is right. Unknown evidence stays unknown, and a local hash chain is not protection against an owner who can rewrite the whole store.
+
+[Witness research](tems_lab/witness/RESEARCH_PAPER.md)
+
+![Witness: claim, check and evidence](assets/modernization/tem-witness-overview.png)
+
+### Vigil
+
+Vigil is the diagnostic layer: notice a failure, collect relevant context and prepare a report that can help explain it. A useful report separates the symptom, observed evidence and likely cause, with sensitive material excluded.
+
+Reporting to an external destination depends on configuration and consent. A diagnosis is a starting point for investigation, not an automatic repair or proof that an upstream project is at fault.
+
+[Vigil design](tems_lab/vigil/DESIGN.md)
+
+![Vigil: detect, record and report](assets/modernization/tem-vigil-overview.png)
+
+## Channels and tools
+
+| Surface | What it is for | Details |
 |---|---|---|
-| Work on your computer | Shell, file operations, Tem-Code editing, browser and desktop tools | [Coding and computer use](docs/FEATURE_GUIDE.md#coding-and-computer-use) |
-| Remember and adapt | λ-Memory, Engram, reusable blueprints, reflective lessons and Anima | [Memory and personality](docs/FEATURE_GUIDE.md#memory-and-personality) |
-| Coordinate work | Many Tems swarm and TemDOS specialist cores | [Coordination](docs/FEATURE_GUIDE.md#coordination) |
-| Stay available | Messaging gateway, schedules, Perpetuum concerns and monitors | [Persistent work](docs/FEATURE_GUIDE.md#persistent-work) |
-| Extend capabilities | Skills, MCP tools, optional Eigen-Tune and Cambium | [Extensions and experiments](docs/FEATURE_GUIDE.md#extensions-and-experiments) |
-| Inspect outcomes | Witness checks, Vigil diagnostics, usage reporting | [Evidence and diagnostics](docs/FEATURE_GUIDE.md#evidence-and-diagnostics) |
+| TUI | Interactive terminal conversation, streaming and inspectable tool activity | [Commands](docs/CLI_REFERENCE.md) |
+| CLI chat | A simpler terminal conversation | [CLI](docs/channels/cli.md) |
+| Telegram | A messaging companion through a bot connection | [Telegram setup](docs/channels/telegram.md) |
+| Discord | Work with Tem in Discord | [Discord setup](docs/channels/discord.md) |
+| Slack | Channel conversations and file delivery | [Slack setup](docs/channels/slack.md) |
+| WhatsApp | Web-session and Cloud API integrations | [WhatsApp setup](docs/WHATSAPP_INTEGRATION.md) |
+| HTTP gateway | Health/readiness, management and service integration | [Configuration](docs/CLI_REFERENCE.md) |
 
-These systems have different maturity levels. The [feature audit](docs/modernization/FEATURE-COVERAGE.md) traces the intended behavior to code, identifies gaps, and defines the remaining modernization work. Feature illustrations show concepts; they are not screenshots or benchmark results.
+Tool families include shell execution, file read/write/list, Git, web fetch/search, browser interaction, desktop input, memory operations and recall, messaging/file delivery, key management, MCP management and custom extensions. Availability depends on build features, configuration, the selected model, platform support and role. External channel/account compatibility is distinct from local fixture acceptance.
 
-## What changes in the modernization
+### Recovery and saved replies
 
-- **A clearer terminal:** compact conversations, expandable tool activity and optional panels, with streamed replies and saved history.
-- **Longer conversations:** compaction retains source references and raw history; scoped recall can recover omitted detail. Final context checks leave room for the answer.
-- **Current connections:** native provider replay, an updated model catalog, Z.ai coding-plan setup and safer credential replacement.
-- **Recoverable work:** saved final replies, interrupted-turn inspection, execution records and evidence that separates an answer from a verified outcome.
-- **Controlled resources:** bounded background work, shared usage accounting, private browser profiles and an updater that downloads verified binaries.
+Tem saves final replies before delivery. When a process dies during a send, it preserves uncertainty rather than automatically sending another copy. `/delivery-status` and `/delivery-show` let you inspect the saved reply; `/delivery-resume` is for a reply that has never been attempted. A destination accepting a message is different from you reading it.
 
-Cache usage is reported when the provider supplies it; a cache hit or cost saving is never assumed. Full multi-tenant isolation, automatic durable pursuit and every experimental growth feature are outside the guarantees above. The [audit and implementation record](docs/modernization/README.md) documents those boundaries.
+Conversation records are scoped to the selected profile’s canonical workspace and conversation identity. Legacy chats are preserved and imported explicitly; Tem does not guess which project an old unscoped chat belonged to. `/session-new` starts a new epoch while retaining old evidence. `/session-recover` restores recorded evidence without replaying tools. In the TUI, `/clear` clears the display only.
 
-## Run as a messaging companion
+[History and delivery commands](docs/CLI_REFERENCE.md#conversation-history) · [Upgrade and rollback](docs/modernization/UPGRADING.md)
 
-Configure your provider, then supply the token for a channel you use:
+## Architecture
+
+Tem is a Rust workspace organized around shared traits and distinct runtime services. The root binary assembles the CLI, TUI and gateway paths; feature crates provide the implementations.
+
+| Layer | Packages and responsibilities |
+|---|---|
+| Shared contracts | `temm1e-core`: types, configuration, traits, policy and resource identities |
+| Agent execution | `temm1e-agent`: context, tool loop, planning, recovery and evidence integration |
+| Coordination | `temm1e-hive`: swarm workers and shared task state; `temm1e-cores`: TemDOS specialists |
+| Models | `temm1e-providers`: native and compatible protocols; `temm1e-codex-oauth`: login and refresh |
+| Interfaces | `temm1e-tui`, `temm1e-channels`, `temm1e-gateway`: terminal, messaging and HTTP entrypoints |
+| Tools and extensions | `temm1e-tools`, `temm1e-gaze`, `temm1e-mcp`, `temm1e-skills` |
+| Persistent data | `temm1e-memory`, `temm1e-vault`, `temm1e-filestore`: memory, encrypted secrets and files |
+| Continuity | `temm1e-automation`, `temm1e-perpetuum`, `temm1e-anima`: schedules, concerns and personality |
+| Evaluation and growth | `temm1e-distill`, `temm1e-cambium`, `temm1e-witness`: distillation, growth and verification |
+| Operations | `temm1e-observable`, `temm1e-watchdog`, `temm1e-test-utils`: diagnostics, supervision and test support |
+
+The same feature appearing in a library does not establish that every entrypoint exercises it. [Acceptance evidence](docs/modernization/CLOSEOUT-VALIDATION.md) records actual checks and their limits. Cloud orchestration, global tenant isolation and complete telemetry export remain separate maturity boundaries.
+
+## Setup and access
+
+The first-run wizard is the easiest way to configure a provider. For a messaging gateway, configure the provider, supply your chosen channel’s credentials and start Tem:
 
 ```bash
 export TELEGRAM_BOT_TOKEN="your-bot-token"
 temm1e start
 ```
 
-Discord is available through `DISCORD_BOT_TOKEN`. Other channel integrations and deployment options are documented in the repository. Review access controls before exposing a shared deployment: a personal agent with shell or desktop access operates with substantial access to its host.
+Discord uses `DISCORD_BOT_TOKEN`; follow the linked setup guide for other channels. Browser tools need Chrome/Chromium. Gaze requires the relevant OS permissions and display session. The selected model must support the requested capabilities.
 
-Configuration normally lives in `~/.temm1e/config.toml`. `temm1e config validate` checks configuration. Back up your configuration and persistent data before upgrading. The [upgrade guide](docs/modernization/UPGRADING.md) explains preserved histories, explicit import, changed model-selection behavior and rollback.
+Configuration normally lives in `~/.temm1e/config.toml`. `TEMM1E_DATA_DIR` selects a different application profile; launching from another directory alone does not select a new project workspace. `temm1e config validate` checks configuration. Back up the selected profile before upgrading.
 
-## Learn more
+Tem can execute tools with substantial access to its host. Private credentials, role checks, scoped state and bounded processes improve specific boundaries; they do not provide an OS sandbox. Use external isolation when serving untrusted users or constraining host access. Self-growth, local training and external reporting deserve explicit configuration appropriate to their scope.
 
-- [Feature guide](docs/FEATURE_GUIDE.md) — a concise tour with links to each design.
-- [CLI reference](docs/CLI_REFERENCE.md) — terminal and in-chat commands.
-- [Product vision](VISION.md) — the creator's guiding principles.
-- [Research lab](tems_lab/) — feature designs and historical experiments.
-- [Modernization audit](docs/modernization/README.md) — findings, implementation plans and validation status.
-- [Release history](docs/RELEASE_HISTORY.md) — previous versions, preserved separately for readability.
+## Commands
 
-## Development
+```text
+temm1e setup                 Configure a provider
+temm1e tui                   Open the terminal interface
+temm1e chat                  Start a basic terminal conversation
+temm1e start                 Start the gateway
+temm1e stop                  Request graceful shutdown
+temm1e status                Inspect running state
+temm1e auth login            Start Codex OAuth login
+temm1e auth status           Inspect authentication
+temm1e config validate       Validate configuration
+temm1e update                Download and verify the latest release
+```
+
+| In conversation | Purpose |
+|---|---|
+| `/model`, `/model <id>` | Inspect or select the active model |
+| `/memory`, `/memory lambda`, `/memory echo` | Inspect or choose memory strategy |
+| `/usage`, `/keys`, `/mcp` | Inspect usage, connections and external tools |
+| `/login <service>` | Start a browser login workflow |
+| `/eigentune` | Inspect and control optional distillation |
+| `/history-import`, `/session-new`, `/session-recover` | Import or inspect preserved conversation state |
+| `/delivery-status`, `/delivery-show <id>` | Inspect saved final replies |
+| `/goal-status`, `/goal-assessment` | Inspect recorded execution and assessment evidence |
+
+Model-selection persistence and command authorization differ by entrypoint; see the [complete CLI reference](docs/CLI_REFERENCE.md) for arguments and behavior.
+
+## What changed in 6.0?
+
+The modernization audits the creator’s feature ideas against their implementation, then repairs execution boundaries while preserving Tem’s personality and persistent-companion direction. Major changes include compact streaming TUI interaction, scoped native history and recovery, source-backed compaction, provider-native replay, explicit coding-plan setup, shared owning usage, model/resource binding, bounded background work and evidence records.
+
+The frozen coding A/B used the same GLM-5.3-Flash Coding Plan connection and resource limits for both versions. Main passed 30/30; modern passed 29/30. The sole discordant prompt had an ambiguous return type; a separately frozen explicit-contract pair passed both. The original score stays unchanged. This supports a bounded engineering assessment, not a universal speedup or statistical equivalence claim.
+
+[Full A/B results and traces](docs/modernization/CLOSEOUT-RESULTS.md) · [Product acceptance](docs/modernization/CLOSEOUT-VALIDATION.md) · [Release record](docs/modernization/RELEASE-6.0.md) · [Upgrade guide](docs/modernization/UPGRADING.md)
+
+## Development and research
 
 ```bash
 cargo check --workspace
@@ -105,6 +344,15 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
 
-See [CLAUDE.md](CLAUDE.md) for repository conventions and the [release protocol](docs/RELEASE_PROTOCOL.md) for release gates. Test counts and historical benchmarks are evidence for specific checks, not guarantees that every production path works.
+Use Rust 1.91.1 or newer. On a storage-constrained machine, `python3 scripts/cargo_guard.py -- build` reserves free space and removes disposable build output; see the [release protocol](docs/RELEASE_PROTOCOL.md) before keeping build caches. Test counts describe executed checks, not a guarantee about every user workflow.
+
+- [Vision](VISION.md) — the creator’s guiding ideas.
+- [Tem’s Lab](tems_lab/) — designs, research and historical experiments.
+- [Modernization research](docs/modernization/README.md) — frontier harness comparisons, audit and implementation plans.
+- [Feature coverage](docs/modernization/FEATURE-COVERAGE.md) — all 65 audited feature families and remaining gaps.
+- [Implementation record](docs/modernization/IMPLEMENTATION-STATUS.md) — repairs and validation, with historical checkpoints preserved.
+- [Artwork guidelines](docs/ART_DIRECTION.md) — character construction, expressions and the cozy punk-science Den.
+- [Release history](docs/RELEASE_HISTORY.md) — previous versions and their original claims.
+- [Repository conventions](CLAUDE.md) — development practices and workspace structure.
 
 [MIT license declared in package metadata](Cargo.toml). Built for people who want a companion they can run, understand and improve.

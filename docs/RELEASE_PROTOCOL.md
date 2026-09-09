@@ -38,16 +38,16 @@ Update `[workspace.package].version` in `Cargo.toml`, refresh the generated lock
 
 ### 4. README and user documentation
 
-The README is now a concise product entry point. Review semantic sections rather than historical line numbers:
+The creator requests a full illustrated feature tour, like the original README but with clearer explanations and current artwork. Preserve feature depth, architecture, setup and commands. Review semantic sections rather than historical line numbers:
 
 - Version badge and any release-specific examples agree with Cargo metadata.
 - Install/upgrade commands match actual published assets and supported platforms.
 - Provider, coding-plan and login claims distinguish tested compatibility from official support; unknown subscription cost is not zero.
-- Links lead to feature, setup, CLI and architecture documentation. New capability details belong there, with direct acceptance evidence and explicit limitations.
+- Links lead to feature, setup, CLI and architecture documentation. Keep useful feature explanations in the README and link to detailed acceptance evidence and limitations.
 - Artwork follows the approved Tem visual brief and is uniform. Do not regenerate unchanged assets on each release.
 - Release notes summarize user-visible changes, migration behavior and known limitations, with links to the validation report and A/B results.
 
-Do not restore the previous sprawling README's source-line, tool-count or benchmark marketing claims just to satisfy obsolete checklist coordinates.
+Preserve the original README's feature breadth without restoring unverified source-line, tool-count or benchmark marketing claims.
 
 ### 5. CLAUDE.md — Update Stale References
 
