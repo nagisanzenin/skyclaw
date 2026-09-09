@@ -20,3 +20,7 @@ The essay production build and TypeScript check passed. Focused lint of authored
 Formulas were checked against v6.0.0 source commit `10f4cc603940bccde087e0c47e73a27bea394257`. The narrative retains unresolved durable-pursuit work, the original 30/30 versus 29/30 A/B result and clarified-pair distinction, and inherited dependency advisory disclosure. No Rust code, release version or historical benchmark result changes.
 
 A Sites source checkout at `work/temm1e-essay` retains the React authoring source and a no-JavaScript static exporter. Its separate private preview is optional for public readers; the GitHub Pages copy is self-contained. Future editors can directly maintain the static HTML/CSS or regenerate from the authoring source.
+
+## Narrative revision
+
+After creator feedback that the first draft felt scattered, the essay follows one explicit design scenario: give Tem work, leave, return later. Each section introduces the next requirement—environment/action, memory, temporal return, evidence, then continuity through interruption/model changes. All seven mathematical mechanisms remain, introduced where they answer the corresponding engineering question rather than grouped into a catalogue. The scenario is explicitly a design objective, not an end-to-end demo claim.

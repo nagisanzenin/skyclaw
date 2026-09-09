@@ -117,3 +117,5 @@ For every push: finish scoped implementation and appropriate checks; record actu
 Branch `codex/entity-essay-and-web-images` documents the creator's entity/AGI-oriented architecture. README now features the entity thesis and implemented mathematics: lambda decay, Bayesian artifact scoring, Perpetuum activity denominator, Hive selection, Wilson intervals, SPRT and Witness knownness. The illustrated static essay is in `docs/index.html`, with CSS and two WebP illustrations. GitHub Pages already serves main `/docs`; no new hosting configuration or runtime release is required.
 
 All 38 archival PNGs are preserved. WebP derivatives and byte/hash manifest are in `assets/web`; embedded documentation images use the smaller copies. Regeneration script is `scripts/optimize_web_images.py` (Pillow/WebP). No Rust behavior, version or prior benchmark observations changed. See `docs/modernization/ENTITY-ESSAY-DELIVERY.md` for validation and publication status.
+
+Essay flow revised after creator feedback: one overnight investigation motivates each mechanism; mathematics is integrated into the relevant step. Latest static export replaces the initial feature-catalogue draft.
