@@ -16,14 +16,19 @@ Updated September 9, 2026. The creator is asleep and explicitly authorized auton
 
 ## Current position
 
-Checkpoint **57** captures context/output limits once per configured Witness provider turn and clamps output to the selected model's declared limit, request limit and half-context ceiling. Zero allowance rejects before calls. See `WITNESS-MODEL-LIMITS.md`.
+Checkpoint **58** makes custom-model saves private/atomic and locks cooperating writers. Scoped upsert/removal use strict loading so malformed/unreadable data is preserved instead of erased. Full-file save remains an explicit replacement, not CAS. See `CUSTOM-MODEL-STORAGE.md` for symlink behavior and error/compatibility boundaries.
 
-Before regression reproduced a1,024-token custom model receiving4,096output tokens. The isolated child-process fixture now verifies original limits survive a custom-model file edit, a new provider adopts128-token output, and invalid0/0limits make no call. Agent794unit+77integration tests pass; three existing doc tests ignored. Minimal CLI+TUI build passed47.32s (four existing feature-conditional warnings). Actual CLI small-model switch passes1,024/512token HTTP limits,6total requests, exact saved evidence and restart0calls; finite-owner control1planner/0foreground/verifier. Full workspace/all-feature/all-target clippy passed1m47s and cleaned3.7GiB (`implementation-witness-limits-workspace-clippy.log`); existing dependency future-compatibility notice remains. No active Cargo. Ready to commit/push57. No paid calls.
+Before-test reproduced an upsert erasing malformed TOML. Core282unit tests pass (one existing ignored), one doc test passes; post-review fixture verifies private0600and preserving a symlink target, lock contention and an independent reader during64replacements. Minimal CLI+TUI build51.97s, with four existing conditional warnings. Actual CLI with saved route passes add/remove, foreign-provider preservation, busy-lock and corrupt-file preservation, with0provider calls. Full workspace/all-feature/all-target clippy passed1m48s and cleaned2.3GiB (`implementation-custom-model-storage-workspace-clippy.log`); existing dependency future-compatibility notice remains. No active Cargo. Ready to commit/push58. No paid calls.
+
+**Next59 — actual command-provider bug:** the first CLI fixture is connected via config.toml but `/addmodel` reports no active provider. `handle_addmodel_command`, `handle_removemodel_command` and `handle_listmodels_command` in src/main.rs re-read credentials instead of the current runtime provider/model. Keep logs `implementation-custom-model-storage-cli{,-v2}.log`. Run `scripts/custom_model_storage_smoke.py <binary> --config-only` to reproduce. Pass current runtime identity explicitly at CLI/server command sites; include list-model active/current markers and a foreign saved-route control. Do not substitute a stale saved provider or mutate the foreign registry. CLI `/model` is also not intercepted in the current chat path even though model help suggests it; record/fix that separately using coherent current connection state, not another credential-mixing shortcut. No59source edits yet.
+
+57 `08d2579` pushed; CI34298119205 pending at last inspection.56 `b952d27` CI34297272830 and55 `c47581d` CI34296965921 are fully green.54's historical Markdown failure stays recorded and is repaired by56.57 model-limit snapshot tests/actual1,024/512CLI HTTP acceptance and full workspace lint1m47/clean3.7GiB passed. No active57commands.
 
 Latest pushed commits:
 
 | Checkpoint | Commit | Concrete result |
 |---|---|---|
+|57|`08d2579`|Per-turn verifier model limits and small-model output capacity, with actual CLI wire acceptance.|
 |56|`b952d27`|Markdown append flushes before store acknowledges success; actual old race reproduced and unchanged Engram preservation assertion passes.|
 |55|`c47581d`|Explicit bounded-call configured Witness tiers bind current provider/model and owning meter per turn; honest unavailable cost readout.|
 |54|`38b2918`|Bounded exact verifier JSON, output/input caps, truncation/tool-output rejection and consistent abstention prompt.|
@@ -33,7 +38,7 @@ Latest pushed commits:
 |50|`2009d8f`|Three-valued predicate logic and seal integrity before verification effects.|
 |49|`e92a645`|Scoped immutable model-proposed criteria saved before foreground work; coverage remains unverified.|
 
-CI at last inspection:56 run34297272830 and55 run34296965921 pending.53 run34295232801 and52 run34291280676 fully green. **54 run34295726293 failed** on Markdown write visibility;56 reproduces and repairs the production cause. Keep the original log `implementation-witness-contract-ci-failed.log`; never call54 green. Verify final CI on the actual release revision.
+CI:57 pending;56,55,53,52 fully green. **54 run34295726293 failed** on Markdown write visibility;56 reproduces and repairs the production cause. Keep `implementation-witness-contract-ci-failed.log`; never call54 green. Verify final CI on the actual release revision.
 
 ## Recent implementation contracts — retain these
 
@@ -68,7 +73,7 @@ Read next: `IMPLEMENTATION-STATUS.md`, `FEATURE-COVERAGE.md`, `03-FINDINGS.md`, 
 1. Finish current checkpoint and verify its CI. Continue per-goal USD reservations/knownness, actual durable verifier attempts, execution-bound non-file evidence, queue leases/reconciliation/child lineage and multi-turn goal semantics. Preserve full-coverage unknownness.
 2. Complete resource/accounting composition in remaining CoreRuntime errors/cancellation, Consciousness, Perpetuum and Eigen-Tune paths. Provider retry attempts, unknown outcome, durable global accounting and exact whole-wire/model capability/cache contracts remain separate from logical-call counters.
 3. Complete remaining feature-family acceptance and classify genuine blockers vs documented boundaries. Open areas include channel/principal namespaces, memory/vault/browser ownership, attachments/interim/control delivery, server/channel restart, retention/GC, Windows process ownership/PTY, MCP lifecycle/rich results, Cambium growth-specific trust, cloud capacity/adapters, S3 abort, Slack paging, OTLP export, and Engram EMA/cadence/Markdown fallback/provenance.
-4. Audit custom-model storage: reads are currently unbounded and `save_custom_models` claims atomicity but uses direct std::fs::write. No repair has been made yet; preserve real profiles and use isolated race/atomicity fixtures.
+4. Custom-model atomic writes/strict mutations are repaired58. Bounded reads, full capability-knownness propagation, field-level merge semantics and current command-provider identity remain separate; next59 targets the actual entrypoint identity bug above.
 5. Freeze broader paired held-out A/B corpus, margins, sample and stopping rule before results. Same authorized GLM/model settings, endpoint/account, resources and tools on immutable baseline vs final candidate. Proposed80independent scenarios×3repeats is not a fixed required minimum; repetitions are not independent tasks. Actual entrypoint/factory acceptance must supplement the legacy core harness.
 6. The four-task pilot02 passed4/4artifact checks on both versions. A257.003s/B241.266s foreground, A27/B29requests; not broad noninferiority or cost proof. Baseline cache reads unknown; subscription token counts are not invoice savings. False test-success prose occurred in B, so artifact success is not truthfulness. Pilot01 had unfinished background calls and is not efficiency evidence.
 7. Release only after final CI/fmt/test/lint/MSRV, CLI/server/TUI and old-profile/update acceptance, broader A/B and `docs/RELEASE_PROTOCOL.md`. Then finalize README/release notes/assets, bump6.0.0, merge and release under the creator's conditional authorization. Keep PR draft until ready. Refresh final output ZIP/patch/manifests last; old bundles are stale.
