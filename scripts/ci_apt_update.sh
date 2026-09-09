@@ -7,8 +7,5 @@ if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
   echo 'This helper is only for disposable GitHub Actions runners.' >&2
   exit 2
 fi
-for source in /etc/apt/sources.list.d/*.list; do
-  [[ -f "$source" ]] || continue
-  sudo sed -E -i '/https?:\/\/dl[.]google[.]com\/linux\/chrome[^[:space:]]*\/deb/d' "$source"
-done
+sudo env GITHUB_ACTIONS=true python3 "$(dirname "$0")/ci_apt_sources.py"
 sudo apt-get update

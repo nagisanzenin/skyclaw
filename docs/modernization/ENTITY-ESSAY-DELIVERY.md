@@ -34,3 +34,5 @@ Editorial pass informed by https://github.com/blader/humanizer/blob/main/SKILL.m
 For future editing, `docs/index.html` and `docs/essay.css` are now the canonical source as well as the deployable files. Edit them directly. The earlier private Sites/React checkout is historical and must not overwrite this version. GitHub Pages remains the requested public host. No JavaScript build or Sites deployment is needed for these static prose edits.
 
 Publication runner issue: two consecutive CI attempts failed before Rust checks because the preinstalled Google Chrome apt source returned a mismatched Packages index. The CI-only apt helper filters that source from legacy .list files on disposable Actions runners; Ubuntu sources, installed Chrome and signature/hash validation remain intact. Workflow installation steps use the helper. A separate Windows command_check_echo failure was retained and retried.
+
+The runner uses a source format missed by the initial legacy-only filter. The helper now supports Deb822 .sources as well; fixtures cover multiline URIs and preservation of unrelated/mixed source stanzas.
