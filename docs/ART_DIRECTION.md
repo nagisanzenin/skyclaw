@@ -40,7 +40,7 @@ Use simple correct mathematics when explicit notation is needed: a labelled comp
 ## Repeatable generation workflow
 
 1. Read this guide and the feature's current implementation/limitations. Write the exact title, tagline, three optional labels and one concrete scene.
-2. Use `assets/modernization/banner.png`, the approved direction with a cozy inhabited Den, as the primary visual reference. Use original multi-Tem artwork only for character activity/bipedal poses; explicitly prohibit copying its obsolete copy, numerical claims and ornate framing.
+2. Use `assets/character/tem-character-study.png` as the primary character reference and `assets/character/tem-expression-atlas.png` for expressions. Use `assets/modernization/banner.png` ONLY for the cozy Den environment and lighting; never let an environmental reference override approved hair, face or slim body proportions. Use original multi-Tem artwork only for character activity/bipedal poses; explicitly prohibit copying its obsolete copy, numerical claims and ornate framing.
 3. Preserve character invariants in every prompt. State the actions of individual Tems and the intended interaction.
 4. Generate one asset per request with imagegen. Inspect the actual result for title spelling, eye colors, scarf/mark, character variation, readable scene, excessive copy and misleading mathematics/claims.
 5. Save approved assets in `assets/modernization/` under their existing semantic filenames. Update `MANIFEST.json` with actual SHA-256 values and keep exact per-asset prompts in `assets/modernization/PROMPTS.json`.

@@ -1,74 +1,74 @@
 [
   {
     "file": "banner.png",
-    "sha256": "4154a5ed84ffa164afb15f708f91d87a51c349712c9a2a3912be5ac9435819df"
-  },
-  {
-    "file": "lambda-memory-overview.png",
-    "sha256": "5dfb67ee3bb08af9738d4be0f72652510ef658493bad0242c789da8a1962ad85"
-  },
-  {
-    "file": "rbac.png",
-    "sha256": "342dc8e34efbf33faf15d4c2468b1e11f80a596bf9327c523a23a912431de10e"
-  },
-  {
-    "file": "tem-anima-overview.png",
-    "sha256": "0b422a177cb7682ea8a538a5b7f92ba2f23e3e97c0b28e2978e1306df30284bf"
-  },
-  {
-    "file": "tem-artifact-value-overview.png",
-    "sha256": "ddab569a843a34d207aa0107394b4081884d092625aaa9be9ccd934a34f55c7e"
-  },
-  {
-    "file": "tem-cambium-overview.png",
-    "sha256": "2e4c409b78aa83ccf1e0e77a128640fd9b8b5b5c7a355125fdcaeee1caf9ed3e"
+    "sha256": "3143aa1b63784066179dc76c3ae42b7561b22c1977f8813f585c78600d4ef3b3"
   },
   {
     "file": "tem-code-overview.png",
-    "sha256": "762f72dfde8d2837b37d79299b5c2eb6920cf9842990205e535775ba7aaaf2bf"
-  },
-  {
-    "file": "tem-conscious-overview.png",
-    "sha256": "cc67fb4eb78e96f0ee30f73798b606cc48225cf31757f789fe2498bf3ebcd308"
-  },
-  {
-    "file": "tem-eigentune-overview.png",
-    "sha256": "37fd7648ce87ea27b7ad21cfe241ad739f2cfa38979c7d86295179c483585606"
-  },
-  {
-    "file": "tem-gaze-overview.png",
-    "sha256": "9330f7970201bf74a0e422d182d87aba5a8ff6b23d66551adbc5a836d79def01"
-  },
-  {
-    "file": "tem-perpetuum-overview.png",
-    "sha256": "0ffcd7cee628ba91b5f1c5a3265b6416495577e25a452a8188cebc0243cdf47d"
-  },
-  {
-    "file": "tem-prowl-overview.png",
-    "sha256": "7b80b28a8029a26cefcee0d06d4fa8d2278ab0b00d4d515dfec91b306e3ae0fd"
+    "sha256": "bf95fb15f43f3265bb51c27f4a9efa97746e8fe8107acd73fc27b0d5498528fc"
   },
   {
     "file": "tem-swarm-overview.png",
-    "sha256": "3c40435ac3f49b0a79adba3b66678df028267d7e85bdb7da7b8e60f0b4832860"
-  },
-  {
-    "file": "tem-tui-overview.png",
-    "sha256": "027f191fa7e75234044cf15539e438213b831ceb70b61738e2a8d45302e2270c"
-  },
-  {
-    "file": "tem-vigil-overview.png",
-    "sha256": "93af4fdcd4d82d72743497dcd9e40d38629df8d590373a16686a5457756ee88a"
-  },
-  {
-    "file": "tem-witness-overview.png",
-    "sha256": "61da855d6aa43c0e071a303915edbaf83f6e0b9991126c9895a04d590088ff9e"
+    "sha256": "f25cfb65fb9a5ee90da013bbba787406a55c2d190414a85eb9a9e9f2d17a9758"
   },
   {
     "file": "temdos-overview.png",
-    "sha256": "90610d10027b538d2ab9bef03c603ba25cc0787bd48165232010752e948d15ce"
+    "sha256": "fec40964be03ac5a28e008a8b66f167f18d3825bbda1c76a05dac82cbb75ee08"
+  },
+  {
+    "file": "lambda-memory-overview.png",
+    "sha256": "ea8e68b614e6a56c119a23ee17a9f89ea3c36adb37004820b8f642cc5e16fb4b"
+  },
+  {
+    "file": "rbac.png",
+    "sha256": "11e995153758ce3be9112187b42c6fa19288061e344365132006ddfa51e107b7"
+  },
+  {
+    "file": "tem-anima-overview.png",
+    "sha256": "da2beb55cd8aa11c35d4da8a768906d59d67fdff97d02e9330df84cac2b0cd73"
+  },
+  {
+    "file": "tem-artifact-value-overview.png",
+    "sha256": "4dd52ae1536ead42962b8549969874797edc108442b1b8f93bce1b51dbdf7982"
+  },
+  {
+    "file": "tem-conscious-overview.png",
+    "sha256": "c6604e2c8ba702c15f6a0feb34a272eb3a7993a8976ea39acf35a72a8db803ca"
+  },
+  {
+    "file": "tem-eigentune-overview.png",
+    "sha256": "076c3a788d24f6e2f2cd1f17583056f688d84d0aee9b4e50be9ca852e4638f51"
+  },
+  {
+    "file": "tem-gaze-overview.png",
+    "sha256": "28739a588cf053094870d4c469ad9ba3f5ed347dea64f3374ea73df554c55a6d"
+  },
+  {
+    "file": "tem-perpetuum-overview.png",
+    "sha256": "338cab30a974fe73b466e4315ff99fbe1112bfa7b473c95186418ab04af908fd"
+  },
+  {
+    "file": "tem-prowl-overview.png",
+    "sha256": "960381da46e7d6390cf25e735a9c7a8734b10673e0f0c1fc46d05527e23e6b4e"
+  },
+  {
+    "file": "tem-tui-overview.png",
+    "sha256": "52913f438a5c16c0f697f06611e3a948f46d8bac90ee97ad6f4cac77d958062e"
+  },
+  {
+    "file": "tem-vigil-overview.png",
+    "sha256": "155421554359144917f710b796c06ba09543378c906bddb500a17748a345e7b0"
+  },
+  {
+    "file": "tem-witness-overview.png",
+    "sha256": "d38e175678a4b0bceb13678f6a4ff51972c02547a03ff4f600c6270ac1976be1"
+  },
+  {
+    "file": "tem-cambium-overview.png",
+    "sha256": "de910047fc52db353cdb57beff1b01354d309c9131900022acae6b6a6592bfcf"
   },
   {
     "file": "web-search-overview.png",
-    "sha256": "4a4fa88d93e2e13b354c3895aaac7ab83467f4506ee6255c8cb39e4edb92141f"
+    "sha256": "3d534135cb47465eb398d10a0349e2dd053e5a034081599ae4c283ab19a71096"
   }
 ]

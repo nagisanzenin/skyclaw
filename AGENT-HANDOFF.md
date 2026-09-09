@@ -16,11 +16,13 @@ Updated September 9, 2026. The creator is asleep and explicitly authorized auton
 
 ## Current release-goal execution
 
-User explicitly set goal to release modernization; active Codex goal created (no token budget). Source15734b7 unchanged. Original A/B session5169 continues, last observed38/60. Pagination pair B failed external oracle (IDs vs dict rows), A passed. Investigation found original prompt says Select IDs but never defines selected element type; preserve raw failure, do not call original strict gate clean. CLOSEOUT-CLARIFICATION.md and frozen closeout-clarification.json document ambiguity; run clarification.py once B-first/A-second AFTER original60finish, identical binaries, no replacement of old records or best-of retries. Other observed cases passed so far. Analyze all outcomes, tool claims and workspace violations before release.
+Checkpoint69: final18 cozy Den illustrations saved in repo and local/outputs; exact prompts and hashes preserved. RBAC board corrected to actual Admin/User roles. TUI monitor is conceptual, not a screenshot. No production change since15734b7.
 
-Final art direction locked after creator accepted study and expression atlas. Work/art-final-plan.json contains exact18scene specs, final prompt and3reference paths; work/art-final-progress.json tracks completed final illustrations (v4, slim approved character + cozy Den). Final indices0–2done/copied,3–17remaining. Do not use earlier v2/v3bald/round prototypes. Continue imagegen per asset using plan, inspect each, persist paths/prompts and update manifest whenall18done. Current scene files are uncommitted/mixed with old entries; do not publish manifest as verified until completed.
+Original closeout A/B finished60/60: baseline30/30, modern29/30; only loss pagination_cursor (undefined selected element type). Zero runtime/process failures, request errors/cancellations/pending, or protected corruption. Frozen clarification pair also finished: bothpass. Keep original strict gate FALSE; clarification is separate, not a replaced score. Raw evidence in ../closeout-ab-01 and ../closeout-clarification-01; summary and full claim-review generated. Finish claim/workspace review and publish truthful report before release verdict. No paid calls active.
 
-Merge preflight: protection requires1approval; enforce_admins=false. Auth nagisanzenin and collaborator walter-temm1e both have admin rights. Sole-maintainer exception is not established; no messages/review requests sent. Resolve reviewer gate only once concrete release candidate/gates ready; do not silently claim admin exception satisfied.
+CI source15734b7 all8green; final actual acceptance complete as described in CLOSEOUT-VALIDATION.md. No Cargo active,4GiB guarded build outputs cleaned. Version still5.8.1. Next: finalize benchmark report/release notes, version6.0candidate, final checks, review/merge/tag/assets/update smoke. No release yet.
+
+Protection requires1approval, reviews empty. Auth nagisanzenin and collaborator walter-temm1e bothadmin; sole-maintainer exception not established. No external messages or review requests authorized/sent. Resolve review barrier once concrete candidate ready; do not bypass silently.
 
 ## Artwork steering and current generation state
 
