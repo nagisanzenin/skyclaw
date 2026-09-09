@@ -50,3 +50,7 @@ Use simple correct mathematics when explicit notation is needed: a labelled comp
 ## Prompt template
 
 > Wide 2:1 Temm1e illustration in the approved playful punk-science notebook style. Full-bleed cozy futuristic room with depth, warm lamps, shelves, plants, soft resting spaces and personal scientific tools. Ragged pixel Tems, ink/tape details on physical objects, pink/cyan/gold/lavender accents. Preserve black fluff, white face, amber-left/cyan-right eyes, pink heart scarf and gold1mark. Include [number] distinct Tems: [individual actions], with [bipedal role] and [play/rest moment]. Scene: [feature-specific activity]. Exact title: “[title]”. Exact tagline: “[tagline]”. Optional labels: [labels]. Keep most incidental prop text abstract. No copied historical benchmark claims, fake UI data, generic cyberpunk, human cat-ear characters or cloned poses. Strong legibility within a rich inhabited background; no empty paper canvas. Conceptual artwork, not a screenshot.
+
+## Web delivery
+
+Keep original generated PNGs and their source manifests as the archival art. Publish small WebP presentation copies through `scripts/optimize_web_images.py`; record their hashes and dimensions separately in `assets/web/MANIFEST.json`. README and feature-document embedded images should use these derivatives. Preserve full-resolution source links for character/art reviews. The essay uses two compressed images, intrinsic image dimensions and lazy loading below the opening image. Do not regenerate character artwork merely to reduce file size.

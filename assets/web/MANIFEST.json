@@ -1,0 +1,350 @@
+{
+  "format": "WebP",
+  "quality": 84,
+  "method": 6,
+  "resized": false,
+  "images": [
+    {
+      "source": "assets/banner.png",
+      "web": "assets/web/banner.webp",
+      "source_bytes": 9151737,
+      "web_bytes": 522590,
+      "width": 2760,
+      "height": 1504,
+      "sha256": "d9b9c8e3a4c2edcdbb61b9e19a7ccc8f3aa0c5a04687d6a3dc172607887c186b"
+    },
+    {
+      "source": "assets/character/tem-character-study.png",
+      "web": "assets/web/character/tem-character-study.webp",
+      "source_bytes": 1961592,
+      "web_bytes": 214492,
+      "width": 1774,
+      "height": 887,
+      "sha256": "6ee5e8048f1bba355f6f298b1023e919c9d584bf7236388f7aa646c9c92fd595"
+    },
+    {
+      "source": "assets/character/tem-expression-atlas.png",
+      "web": "assets/web/character/tem-expression-atlas.webp",
+      "source_bytes": 1823074,
+      "web_bytes": 177636,
+      "width": 1254,
+      "height": 1254,
+      "sha256": "aa0df29e8b27dfacfa99b4f66b27c3837a39ddbfa595f757c2111b21ee6deed4"
+    },
+    {
+      "source": "assets/lambda-memory-overview.png",
+      "web": "assets/web/lambda-memory-overview.webp",
+      "source_bytes": 6152511,
+      "web_bytes": 272178,
+      "width": 2816,
+      "height": 1536,
+      "sha256": "84918a40919e4ce8858513b40cf063aa3db5805afa2887474f70c3a64a5a9c48"
+    },
+    {
+      "source": "assets/modernization/banner.png",
+      "web": "assets/web/modernization/banner.webp",
+      "source_bytes": 2870710,
+      "web_bytes": 418690,
+      "width": 1774,
+      "height": 887,
+      "sha256": "bc98d9162c0a5178d7fc9ed88407225a41a2861c24d9636ac3d1035efd61a17a"
+    },
+    {
+      "source": "assets/modernization/lambda-memory-overview.png",
+      "web": "assets/web/modernization/lambda-memory-overview.webp",
+      "source_bytes": 2695548,
+      "web_bytes": 380822,
+      "width": 1774,
+      "height": 887,
+      "sha256": "4f318064943351705be6d026d0f064bba1e891e5601530885adc88d0dcbfd7fc"
+    },
+    {
+      "source": "assets/modernization/rbac.png",
+      "web": "assets/web/modernization/rbac.webp",
+      "source_bytes": 2550878,
+      "web_bytes": 336832,
+      "width": 1774,
+      "height": 887,
+      "sha256": "6a69439fbb7a9b4cd26644ad7baaf4071a6f004b85eb0461e5481772b6d4402e"
+    },
+    {
+      "source": "assets/modernization/tem-anima-overview.png",
+      "web": "assets/web/modernization/tem-anima-overview.webp",
+      "source_bytes": 2807777,
+      "web_bytes": 396104,
+      "width": 1774,
+      "height": 887,
+      "sha256": "6cf60677d92e338e7bf8208e7fbb400156bfe051e5ed647b8ccef58f607016e7"
+    },
+    {
+      "source": "assets/modernization/tem-artifact-value-overview.png",
+      "web": "assets/web/modernization/tem-artifact-value-overview.webp",
+      "source_bytes": 2616141,
+      "web_bytes": 359684,
+      "width": 1774,
+      "height": 887,
+      "sha256": "b9db300d3f565dfb6734c91f118edaa291f4a18550ec4f0d3af967da2203f8d7"
+    },
+    {
+      "source": "assets/modernization/tem-cambium-overview.png",
+      "web": "assets/web/modernization/tem-cambium-overview.webp",
+      "source_bytes": 2866538,
+      "web_bytes": 407900,
+      "width": 1774,
+      "height": 887,
+      "sha256": "a010a7bcb803ff799dc0766db0005acea102c613f3ca580818162f26d07a336c"
+    },
+    {
+      "source": "assets/modernization/tem-code-overview.png",
+      "web": "assets/web/modernization/tem-code-overview.webp",
+      "source_bytes": 2690280,
+      "web_bytes": 369414,
+      "width": 1774,
+      "height": 887,
+      "sha256": "0610d44a47b00c5d4cbe6fe245b47ba84390074a7a8bc31f52a136258a72b378"
+    },
+    {
+      "source": "assets/modernization/tem-conscious-overview.png",
+      "web": "assets/web/modernization/tem-conscious-overview.webp",
+      "source_bytes": 2774439,
+      "web_bytes": 381122,
+      "width": 1774,
+      "height": 887,
+      "sha256": "cc9ad629d00198b9f0a6d21766a5ddb8237ff5018dad5a518fabd42f8d33d842"
+    },
+    {
+      "source": "assets/modernization/tem-eigentune-overview.png",
+      "web": "assets/web/modernization/tem-eigentune-overview.webp",
+      "source_bytes": 2753962,
+      "web_bytes": 397128,
+      "width": 1774,
+      "height": 887,
+      "sha256": "486096ad12c2c56f872dd649462287d282175cec6284b449b3589141d4c0e8d5"
+    },
+    {
+      "source": "assets/modernization/tem-gaze-overview.png",
+      "web": "assets/web/modernization/tem-gaze-overview.webp",
+      "source_bytes": 2717368,
+      "web_bytes": 385096,
+      "width": 1774,
+      "height": 887,
+      "sha256": "3395b277e1bade02392b26c900a1203a1a77daf727dca5a517759a365fdb3503"
+    },
+    {
+      "source": "assets/modernization/tem-perpetuum-overview.png",
+      "web": "assets/web/modernization/tem-perpetuum-overview.webp",
+      "source_bytes": 2663090,
+      "web_bytes": 359118,
+      "width": 1774,
+      "height": 887,
+      "sha256": "30fb05698a120703a027451e944b9376b5bc4eb0eb8b64549835cbf065dcf8e8"
+    },
+    {
+      "source": "assets/modernization/tem-prowl-overview.png",
+      "web": "assets/web/modernization/tem-prowl-overview.webp",
+      "source_bytes": 2724796,
+      "web_bytes": 387690,
+      "width": 1774,
+      "height": 887,
+      "sha256": "9934701663cee8e6ebe4bcca268adb138ef7e18624ee3496812f6e4cafcaddb1"
+    },
+    {
+      "source": "assets/modernization/tem-swarm-overview.png",
+      "web": "assets/web/modernization/tem-swarm-overview.webp",
+      "source_bytes": 2710981,
+      "web_bytes": 389580,
+      "width": 1774,
+      "height": 887,
+      "sha256": "7e735b15110e6e33ae2f64d56b700955c662ec7d58cf4a8c6586d4cd326202c7"
+    },
+    {
+      "source": "assets/modernization/tem-tui-overview.png",
+      "web": "assets/web/modernization/tem-tui-overview.webp",
+      "source_bytes": 2374298,
+      "web_bytes": 296780,
+      "width": 1774,
+      "height": 887,
+      "sha256": "70be888a2165966d01a9c69011af31c6fab0dc1d0a770a10011e3dfdfae286ff"
+    },
+    {
+      "source": "assets/modernization/tem-vigil-overview.png",
+      "web": "assets/web/modernization/tem-vigil-overview.webp",
+      "source_bytes": 2688469,
+      "web_bytes": 368762,
+      "width": 1774,
+      "height": 887,
+      "sha256": "11f62866cddcaab2a363660f056161dd073c807bc6cc636130352bb3068e061b"
+    },
+    {
+      "source": "assets/modernization/tem-witness-overview.png",
+      "web": "assets/web/modernization/tem-witness-overview.webp",
+      "source_bytes": 2757067,
+      "web_bytes": 383072,
+      "width": 1774,
+      "height": 887,
+      "sha256": "fb0139e396235654b4fbcae78cc17380d74853aa0f2428982fec580b2f101a45"
+    },
+    {
+      "source": "assets/modernization/temdos-overview.png",
+      "web": "assets/web/modernization/temdos-overview.webp",
+      "source_bytes": 2767427,
+      "web_bytes": 395468,
+      "width": 1774,
+      "height": 887,
+      "sha256": "3a483d807087e1e6886cf1c005ac590af24a5d30c8829040014d555de1be7ab3"
+    },
+    {
+      "source": "assets/modernization/web-search-overview.png",
+      "web": "assets/web/modernization/web-search-overview.webp",
+      "source_bytes": 2771767,
+      "web_bytes": 386394,
+      "width": 1774,
+      "height": 887,
+      "sha256": "6a8e915994e304fbb204e03dfe2557cbfff43065ff4611cbfaa91eea07753f6f"
+    },
+    {
+      "source": "assets/rbac.png",
+      "web": "assets/web/rbac.webp",
+      "source_bytes": 8656869,
+      "web_bytes": 501092,
+      "width": 2754,
+      "height": 1536,
+      "sha256": "a55e0cc34e8dc66087a922807b90e4f7fc9e99adf225c9bc818b300126ccdbcd"
+    },
+    {
+      "source": "assets/tem-anima-overview.png",
+      "web": "assets/web/tem-anima-overview.webp",
+      "source_bytes": 8382097,
+      "web_bytes": 463256,
+      "width": 2754,
+      "height": 1536,
+      "sha256": "d1d8a8d646b6daacbe715f3d2facbbe6a58f9575962ae1c669c68b3d71df52ab"
+    },
+    {
+      "source": "assets/tem-artifact-value-overview.png",
+      "web": "assets/web/tem-artifact-value-overview.webp",
+      "source_bytes": 8610763,
+      "web_bytes": 428858,
+      "width": 2760,
+      "height": 1504,
+      "sha256": "6a6fd1323c2110856b754326d28e4a2466134e073443ea79d406900f353a1269"
+    },
+    {
+      "source": "assets/tem-cambium-overview.png",
+      "web": "assets/web/tem-cambium-overview.webp",
+      "source_bytes": 1715078,
+      "web_bytes": 223646,
+      "width": 1377,
+      "height": 768,
+      "sha256": "f4625e21b4d592ca1bf8bd3cb7bf52c52d065b2aba1ab9e45f966505751a0464"
+    },
+    {
+      "source": "assets/tem-code-overview.png",
+      "web": "assets/web/tem-code-overview.webp",
+      "source_bytes": 8975946,
+      "web_bytes": 503358,
+      "width": 3168,
+      "height": 1344,
+      "sha256": "016db1f7e395e9fb302b92c72d4d2c6e8c4e89a4b4fa4c747842a9fb13688391"
+    },
+    {
+      "source": "assets/tem-conscious-overview.png",
+      "web": "assets/web/tem-conscious-overview.webp",
+      "source_bytes": 8807495,
+      "web_bytes": 561008,
+      "width": 3178,
+      "height": 1344,
+      "sha256": "94a03632283aaed63ecbb6c8f3f30fd18925a58f85164f4d2bc68d408ec4e852"
+    },
+    {
+      "source": "assets/tem-eigentune-overview.png",
+      "web": "assets/web/tem-eigentune-overview.webp",
+      "source_bytes": 8527371,
+      "web_bytes": 463884,
+      "width": 2752,
+      "height": 1536,
+      "sha256": "e408620f97367d60622ae7b4c9631b7fe77774f370f10ae60dd5ab17cc93f158"
+    },
+    {
+      "source": "assets/tem-gaze-overview.png",
+      "web": "assets/web/tem-gaze-overview.webp",
+      "source_bytes": 8786084,
+      "web_bytes": 507208,
+      "width": 3172,
+      "height": 1344,
+      "sha256": "e5f174e080911a4d5f2701d2fc1b9b92c9c1f7ff0c583f3560dd0250a9adb1fd"
+    },
+    {
+      "source": "assets/tem-perpetuum-overview.png",
+      "web": "assets/web/tem-perpetuum-overview.webp",
+      "source_bytes": 8088580,
+      "web_bytes": 405274,
+      "width": 3178,
+      "height": 1344,
+      "sha256": "56d8fe15488878a27f77bfcf7f4ac291c80bb4769463d97136ac5b126d3d2691"
+    },
+    {
+      "source": "assets/tem-prowl-overview.png",
+      "web": "assets/web/tem-prowl-overview.webp",
+      "source_bytes": 8894570,
+      "web_bytes": 474240,
+      "width": 2752,
+      "height": 1536,
+      "sha256": "eaf0a19a92596440477044977e7a5dcb55a57c14803f0336ee3f8510daf31d02"
+    },
+    {
+      "source": "assets/tem-swarm-overview.png",
+      "web": "assets/web/tem-swarm-overview.webp",
+      "source_bytes": 8605514,
+      "web_bytes": 422406,
+      "width": 2760,
+      "height": 1504,
+      "sha256": "c5b920a2c30818df9539ac6ce3207f33028027b66afc615fd46fcacb078cc76a"
+    },
+    {
+      "source": "assets/tem-tui-overview.png",
+      "web": "assets/web/tem-tui-overview.webp",
+      "source_bytes": 9332648,
+      "web_bytes": 537168,
+      "width": 2754,
+      "height": 1536,
+      "sha256": "5f8da1ed4d789df9b4aa56e09212aae3a8d2b7ee94dc36208955d50ece19ba3c"
+    },
+    {
+      "source": "assets/tem-vigil-overview.png",
+      "web": "assets/web/tem-vigil-overview.webp",
+      "source_bytes": 8258989,
+      "web_bytes": 458314,
+      "width": 3178,
+      "height": 1344,
+      "sha256": "511f2f1c864b4b957c3e375bc1320facf979bf596a38b94629c40521a670a52d"
+    },
+    {
+      "source": "assets/tem-witness-overview.png",
+      "web": "assets/web/tem-witness-overview.webp",
+      "source_bytes": 1245345,
+      "web_bytes": 140868,
+      "width": 1279,
+      "height": 542,
+      "sha256": "6fe798d5c8b1703018351ec16edae5c099f2d20a2f56cd87e44fead1c5b3c6d7"
+    },
+    {
+      "source": "assets/temdos-overview.png",
+      "web": "assets/web/temdos-overview.webp",
+      "source_bytes": 8658175,
+      "web_bytes": 439370,
+      "width": 3172,
+      "height": 1344,
+      "sha256": "e0b0977072b29da1803b1efbdebd5ec7301eeb2e41c10429b59d6d02e14b7123"
+    },
+    {
+      "source": "assets/web-search-overview.png",
+      "web": "assets/web/web-search-overview.webp",
+      "source_bytes": 9583585,
+      "web_bytes": 603882,
+      "width": 2760,
+      "height": 1504,
+      "sha256": "8bd64bc30c250963471841e98af93a6acafaf379444fdf41f30055fad3f39098"
+    }
+  ]
+}
