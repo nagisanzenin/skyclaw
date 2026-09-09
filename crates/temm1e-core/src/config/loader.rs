@@ -57,12 +57,14 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<Temm1eConfig, Temm1eE
     // Try TOML first (native format + ZeroClaw compat)
     if let Ok(config) = toml::from_str::<Temm1eConfig>(&expanded) {
         config.memory.engram.validate()?;
+        config.witness.validate()?;
         return Ok(config);
     }
 
     // Try YAML (OpenClaw compat)
     if let Ok(config) = serde_yaml::from_str::<Temm1eConfig>(&expanded) {
         config.memory.engram.validate()?;
+        config.witness.validate()?;
         return Ok(config);
     }
 
@@ -580,6 +582,39 @@ max_turns = 200
             assert!(
                 load_config(Some(file.path())).is_err(),
                 "accepted {content}"
+            );
+        }
+    }
+    #[test]
+    fn witness_policy_validation_runs_in_toml_and_yaml_even_when_disabled() {
+        for content in [
+            "[witness]\nmax_overhead_pct = nan",
+            "[witness]\nenabled = false\nmax_overhead_pct = inf",
+            "[witness]\nmax_overhead_pct = -1.0",
+            "[witness]\nmodel_verification_max_calls = 9",
+            "witness:\n  model_verification_max_calls: 9",
+            "witness:\n  max_overhead_pct: .nan",
+        ] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), content).unwrap();
+            assert!(
+                load_config(Some(file.path())).is_err(),
+                "accepted {content}"
+            );
+        }
+        for calls in [0, 1, 8] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(
+                file.path(),
+                format!("[witness]\nmodel_verification_max_calls = {calls}"),
+            )
+            .unwrap();
+            assert_eq!(
+                load_config(Some(file.path()))
+                    .unwrap()
+                    .witness
+                    .model_verification_max_calls,
+                Some(calls)
             );
         }
     }

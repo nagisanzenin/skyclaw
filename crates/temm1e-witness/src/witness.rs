@@ -305,6 +305,7 @@ pub struct Witness {
     ledger: Arc<Ledger>,
     workspace_root: std::path::PathBuf,
     command_execution_allowed: bool,
+    configured_tiers: Option<(bool, bool, Option<u32>)>,
     tier1: Option<Arc<dyn Tier1Verifier>>,
     tier2: Option<Arc<dyn Tier2Verifier>>,
 }
@@ -315,6 +316,7 @@ impl Witness {
             ledger,
             workspace_root: workspace_root.into(),
             command_execution_allowed: true, // Explicit legacy host construction is trusted.
+            configured_tiers: None,
             tier1: None,
             tier2: None,
         }
@@ -338,6 +340,40 @@ impl Witness {
         let mut scoped = self.for_workspace(workspace);
         scoped.command_execution_allowed &= role.is_tool_allowed("shell");
         scoped
+    }
+
+    /// Factory policy only. Explicit custom verifier attachments remain authoritative.
+    pub fn with_configured_tiers(
+        mut self,
+        tier1: bool,
+        tier2: bool,
+        max_calls: Option<u32>,
+    ) -> Self {
+        self.configured_tiers = Some((tier1, tier2, max_calls));
+        self
+    }
+
+    pub fn configured_model_call_limit(&self) -> Option<u32> {
+        self.configured_tiers.and_then(|(_, _, limit)| limit)
+    }
+
+    /// Called on an owned turn-local copy with a current, bounded, metered provider.
+    /// Never replaces explicit host attachments or mutates another turn's binding.
+    pub fn bind_configured_provider(mut self, provider: Arc<dyn Provider>, model: &str) -> Self {
+        if let Some((tier1, tier2, Some(limit))) = self.configured_tiers {
+            if limit > 0 {
+                if tier1 && self.tier1.is_none() {
+                    self.tier1 = Some(Arc::new(ProviderTier1Verifier::new(
+                        provider.clone(),
+                        model,
+                    )));
+                }
+                if tier2 && self.tier2.is_none() {
+                    self.tier2 = Some(Arc::new(ProviderTier2Verifier::new(provider, model)));
+                }
+            }
+        }
+        self
     }
 
     /// Attach a Tier 1 verifier. Without this, Tier 1 predicates
@@ -840,11 +876,14 @@ pub fn format_readout(verdict: &Verdict) -> String {
         String::new()
     };
     format!(
-        "─── Witness: {}/{} PASS{}. Cost: ${:.4}. Latency: +{}ms. Tiers: {}. ───",
+        "─── Witness: {}/{} PASS{}. Model verification cost: {}. Latency: +{}ms. Tiers: {}. ───",
         verdict.pass_count(),
         verdict.total_count(),
         fail_suffix,
-        verdict.cost_usd,
+        verdict
+            .attributable_verifier_cost_usd()
+            .map(|cost| format!("${cost:.4}"))
+            .unwrap_or_else(|| "unavailable".into()),
         verdict.latency_ms,
         tiers,
     )
@@ -1585,7 +1624,8 @@ mod tests {
         };
         let s = format_readout(&v);
         assert!(s.contains("0/0 PASS"));
-        assert!(s.contains("$0.0123"));
+        assert!(s.contains("Model verification cost: unavailable"));
+        assert!(!s.contains("$0.0123"));
         assert!(s.contains("+2ms"));
         assert!(s.contains("T0×3"));
         assert!(s.contains("T1×1"));

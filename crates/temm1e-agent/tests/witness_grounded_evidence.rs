@@ -141,3 +141,81 @@ async fn actual_runtime_retains_inspected_bytes_after_source_changes_and_rejects
         .unwrap();
     assert!(reopened.goal_assessment(&scope, id).await.is_err());
 }
+
+#[tokio::test]
+async fn configured_factory_tiers_obey_explicit_allowance_and_current_runtime_model() {
+    use temm1e_agent::witness_init::build_witness_attachments;
+    use temm1e_core::types::config::WitnessConfig;
+    for (allowance, tier1, expected_reviews) in [
+        (None, true, 0),
+        (Some(0), true, 0),
+        (Some(1), false, 0),
+        (Some(1), true, 1),
+        (Some(2), true, 2),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("artifact.txt"),
+            "token token CURRENT_BYTES",
+        )
+        .unwrap();
+        let attachments = build_witness_attachments(&WitnessConfig {
+            ledger_path: Some(directory.path().join("witness.db").to_string_lossy().into()),
+            model_verification_max_calls: allowance,
+            tier1_enabled: tier1,
+            tier2_enabled: false,
+            ..WitnessConfig::default()
+        })
+        .await
+        .unwrap();
+        for model in ["current-model-one", "replacement-model-two"] {
+            let draft = serde_json::json!({"goal":"draft", "postconditions":[
+                {"kind":"file_exists","path":"artifact.txt"},
+                {"kind":"grep_count_at_least","pattern":"token","path_glob":"*.txt","n":2},
+                {"kind":"grep_absent","pattern":"TODO","path_glob":"*.txt"},
+                {"kind":"aspect_verifier","rubric":"Review file", "evidence_refs":["artifact"],"advisory":false},
+                {"kind":"aspect_verifier","rubric":"Review again", "evidence_refs":["artifact"],"advisory":false}],
+                "evidence_required":[{"id":"artifact","kind":{"kind":"file","path":"artifact.txt"},"description":"actual bytes"}]}).to_string();
+            let mut responses = vec![
+                QueuedMockProvider::text_response(&draft),
+                QueuedMockProvider::text_response("foreground"),
+            ];
+            responses.extend((0..expected_reviews).map(|_| {
+                QueuedMockProvider::text_response(
+                    r#"{"verdict":"pass","reason":"read actual bytes"}"#,
+                )
+            }));
+            let provider = Arc::new(QueuedMockProvider::with_responses(responses));
+            let runtime = AgentRuntime::new(
+                provider.clone(),
+                Arc::new(MockMemory::new()),
+                vec![],
+                model.into(),
+                Some("fixture".into()),
+            )
+            .with_v2_optimizations(false)
+            .with_self_audit_enabled(false)
+            .with_witness_attachments(attachments.as_ref());
+            let mut session = make_session();
+            session.workspace_path = directory.path().into();
+            runtime.process_message(&make_inbound_msg("In the workspace, write `demo.rs` with pub fn greet(name: &str) -> String."), &mut session, None, None, None, None, None).await.unwrap();
+            let requests = provider.captured_requests.lock().await;
+            assert_eq!(
+                requests.len(),
+                2 + expected_reviews,
+                "allowance={allowance:?} tier1={tier1}"
+            );
+            assert!(requests.iter().all(|request| request.model == model));
+            for request in requests.iter().skip(2) {
+                assert!(serde_json::to_string(request)
+                    .unwrap()
+                    .contains("CURRENT_BYTES"));
+                assert_eq!(request.max_tokens, Some(4096));
+            }
+            assert_eq!(
+                runtime.budget_snapshot().recorded_calls as usize,
+                requests.len()
+            );
+        }
+    }
+}

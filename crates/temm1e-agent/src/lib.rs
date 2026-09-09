@@ -71,3 +71,5 @@ pub use watchdog::{HealthReport, SubsystemStatus, Watchdog, WatchdogConfig};
 pub mod goal_assessment;
 pub mod goal_criteria;
 pub mod goal_ledger;
+
+mod witness_provider;

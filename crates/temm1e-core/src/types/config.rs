@@ -236,15 +236,17 @@ pub struct WitnessConfig {
     #[serde(default = "default_witness_strictness")]
     pub strictness: String,
     /// When true, runs the Planner LLM (clean-slate) before each `process_message`
-    /// to seal a Root Oath. Adds ~1 LLM call per turn (~$0.001 on Claude 3.5 Sonnet).
+    /// to seal a Root Oath when the turn-selection policy admits it. This call
+    /// is metered separately from model-verification call allowance.
     #[serde(default = "default_true")]
     pub auto_planner_oath: bool,
     /// When true, append a one-line readout (`Witness: 4/5 PASS. Cost: $X. Latency: +Yms.`)
     /// to every reply regardless of strictness. Default false (telemetry-only).
     #[serde(default)]
     pub show_readout: bool,
-    /// Maximum LLM cost overhead allowed (% of base agent cost) before degrading
-    /// to Tier 0 only. Default 15.0 (matches lab theory's 12-14% target with margin).
+    /// Intended USD verification overhead percentage. Until per-goal USD
+    /// reservation is implemented, this policy abstains from model verification.
+    /// An explicit model_verification_max_calls selects call-based admission instead.
     #[serde(default = "default_witness_max_overhead_pct")]
     pub max_overhead_pct: f64,
     /// Enable Tier 1 LLM-backed AspectVerifier. Default true.
@@ -253,6 +255,12 @@ pub struct WitnessConfig {
     /// Enable Tier 2 LLM-backed AdversarialJudge (advisory only). Default true.
     #[serde(default = "default_true")]
     pub tier2_enabled: bool,
+    /// Explicit alternative to USD percentage admission for model verification.
+    /// None preserves Tier-0-only fallback until a USD reservation is available.
+    /// Some(n) permits at most n Tier1+Tier2 attempts per turn (0 disables, max8).
+    /// This bounds calls, not subscription quota or dollars. Planner is separate.
+    #[serde(default)]
+    pub model_verification_max_calls: Option<u32>,
     /// Path to the Witness Ledger SQLite DB. None = ~/.temm1e/witness.db.
     #[serde(default)]
     pub ledger_path: Option<String>,
@@ -268,8 +276,28 @@ impl Default for WitnessConfig {
             max_overhead_pct: default_witness_max_overhead_pct(),
             tier1_enabled: true,
             tier2_enabled: true,
+            model_verification_max_calls: None,
             ledger_path: None,
         }
+    }
+}
+
+impl WitnessConfig {
+    pub fn validate(&self) -> Result<(), crate::types::error::Temm1eError> {
+        if !self.max_overhead_pct.is_finite() || self.max_overhead_pct < 0.0 {
+            return Err(crate::types::error::Temm1eError::Config(
+                "witness.max_overhead_pct must be finite and nonnegative".into(),
+            ));
+        }
+        if self
+            .model_verification_max_calls
+            .is_some_and(|calls| calls > 8)
+        {
+            return Err(crate::types::error::Temm1eError::Config(
+                "witness.model_verification_max_calls must be between 0 and 8".into(),
+            ));
+        }
+        Ok(())
     }
 }
 

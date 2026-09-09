@@ -378,11 +378,18 @@ pub struct Verdict {
     pub per_predicate: Vec<PredicateResult>,
     pub tier_usage: TierUsage,
     pub reason: String,
+    /// Legacy scalar retained for ledger compatibility; zero is not proof of free model usage.
     pub cost_usd: f64,
     pub latency_ms: u64,
 }
 
 impl Verdict {
+    /// No attributable model price is carried by this legacy verdict schema.
+    /// Zero is only known for verifier calls when neither model tier ran.
+    pub fn attributable_verifier_cost_usd(&self) -> Option<f64> {
+        (self.tier_usage.tier1_calls == 0 && self.tier_usage.tier2_calls == 0).then_some(0.0)
+    }
+
     pub fn pass_count(&self) -> u32 {
         self.per_predicate
             .iter()

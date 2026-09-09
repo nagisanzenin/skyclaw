@@ -28,6 +28,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
         assert self.headers.get('Authorization') == 'Bearer local-witness-fixture'
         planner = any(m.get('role') == 'system' and str(m.get('content', '')).startswith('You are the Oath Planner') for m in request.get('messages', []))
         self.server.planners += int(planner)
+        reviewer = any(m.get('role') == 'system' and str(m.get('content', '')).startswith('You are a predicate verifier') for m in request.get('messages', []))
         if planner:
             content = json.dumps({'goal': 'weaker model-authored goal', 'postconditions': [
                 {'kind': 'file_exists', 'path': 'fixture.txt'},
@@ -47,6 +48,11 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 draft = json.loads(content)
                 draft['postconditions'].append({'kind': 'file_exists', 'path': 'never-created-required.txt'})
                 content = json.dumps(draft)
+        elif reviewer:
+            assert request['model'] in ('witness-fixture', 'witness-fixture-two')
+            assert request.get('max_tokens') == 4096, request
+            assert 'token token' in json.dumps(request)
+            content = json.dumps({'verdict': 'pass', 'reason': 'reviewed fixture bytes'})
         else:
             with sqlite3.connect(self.server.profile / 'executions.db') as db:
                 active = db.execute("SELECT COUNT(*) FROM goal_criteria c JOIN goal_records g ON g.id=c.goal_id WHERE g.state='running'").fetchone()[0]
@@ -83,8 +89,10 @@ curator = "off"
 enabled = true
 auto_planner_oath = true
 strictness = "observe"
-tier1_enabled = false
+tier1_enabled = {str(server.model_calls is not None).lower()}
 tier2_enabled = false
+{f'model_verification_max_calls = {server.model_calls}' if server.model_calls is not None else ''}
+show_readout = true
 [perpetuum]
 enabled = false
 [hive]
@@ -103,12 +111,16 @@ input_price_per_1m = 1.0
 output_price_per_1m = 1.0
 pricing_verified = true
 ''')
+        if server.switch_model:
+            with (profile / 'custom_models.toml').open('a') as models:
+                models.write('\n[[models]]\nprovider = "openai"\nname = "witness-fixture-two"\ncontext_window = 32768\nmax_output_tokens = 4096\ninput_price_per_1m = 1.0\noutput_price_per_1m = 1.0\npricing_verified = true\n')
         env = {k: v for k, v in os.environ.items() if not k.endswith(('_API_KEY', '_TOKEN')) and not k.startswith('TEMM1E_')}
         env['TEMM1E_DATA_DIR'] = str(profile)
         objectives = OBJECTIVES[:1] if limited else OBJECTIVES
         server.profile = profile
         before, planners_before = len(server.requests), server.planners
-        result = subprocess.run([str(binary), 'chat'], input='\n'.join(objectives + ['/quit', '']), text=True,
+        commands = [objectives[0], f'proxy openai http://127.0.0.1:{server.server_port}/v1 local-witness-fixture model:witness-fixture-two', objectives[1]] if server.switch_model and not limited else objectives
+        result = subprocess.run([str(binary), 'chat'], input='\n'.join(commands + ['/quit', '']), text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=root, env=env, timeout=45)
         assert result.returncode == 0, result.stdout[-3000:]
         requests, planners = len(server.requests) - before, server.planners - planners_before
@@ -117,8 +129,11 @@ pricing_verified = true
             assert 'WITNESS_FOREGROUND_RETURNED' not in result.stdout
             assert 'Budget exceeded' in result.stdout, result.stdout[-3000:]
         else:
-            assert (requests, planners) == (4, 2), (requests, planners)
+            assert (requests, planners) == (6 if server.evidence_ref and server.model_calls else 4, 2), (requests, planners)
             assert 'WITNESS_FOREGROUND_RETURNED' in result.stdout
+            if server.switch_model:
+                per_turn = 3 if server.evidence_ref and server.model_calls else 2
+                assert [request['model'] for request in server.requests[before:]] == ['witness-fixture'] * per_turn + ['witness-fixture-two'] * per_turn
         with sqlite3.connect(profile / 'executions.db') as db:
             goals = dict(db.execute('SELECT id,objective FROM goal_records').fetchall())
             assert len(goals) == len(objectives)
@@ -137,11 +152,15 @@ pricing_verified = true
             assert not db.execute("SELECT id FROM goal_records WHERE state='succeeded'").fetchall()
             assessments = db.execute('SELECT goal_id,hash,document FROM goal_assessments').fetchall()
             assert len(assessments) == (0 if limited else 2), assessments
-            expected = 'failed' if server.failing_check else 'inconclusive' if server.unknown_composite or server.evidence_ref else 'passed'
+            expected = 'failed' if server.failing_check else 'inconclusive' if server.unknown_composite or (server.evidence_ref and not server.model_calls) else 'passed'
             for goal_id, digest, document in assessments:
                 assert hashlib.sha256(document.encode()).hexdigest() == digest
                 saved = json.loads(document)
                 assert saved['coverage'] == 'unverified' and saved['declared_outcome'] == expected, saved
+                if server.evidence_ref and server.model_calls:
+                    assert len(saved['model_evidence']) == 1
+                    assert saved['model_evidence'][0]['snapshots'][0]['content'] == 'token token'
+                    assert 'Model verification cost: unavailable' in result.stdout
                 for entry in saved['observations']:
                     raw = json.dumps(entry['observation'], ensure_ascii=False, separators=(',', ':')).encode()
                     assert hashlib.sha256(raw).hexdigest() == entry['hash']
@@ -172,7 +191,7 @@ pricing_verified = true
                     assert verdict['outcome'] == ('fail' if server.failing_check else 'inconclusive'), verdict
                     assert verdict['per_predicate'][-1]['outcome'] == ('fail' if server.failing_check else 'inconclusive'), verdict
         return {'passed': True, 'limited': limited, 'requests': requests, 'planner_requests': planners,
-                'unique_execution_bound_oaths': len(rows), 'original_objectives_preserved': True, 'criteria_frozen_before_foreground': True, 'restart_inspection_provider_calls': 0, 'unknown_composite_checked': server.unknown_composite, 'declared_assessment': None if limited else expected, 'disabled_evidence_verifier_checked': server.evidence_ref}
+                'unique_execution_bound_oaths': len(rows), 'original_objectives_preserved': True, 'criteria_frozen_before_foreground': True, 'restart_inspection_provider_calls': 0, 'unknown_composite_checked': server.unknown_composite, 'declared_assessment': None if limited else expected, 'disabled_evidence_verifier_checked': server.evidence_ref and not server.model_calls, 'configured_model_call_limit': server.model_calls}
 
 
 def main():
@@ -181,12 +200,16 @@ def main():
     parser.add_argument('--unknown-composite', action='store_true')
     parser.add_argument('--failing-check', action='store_true')
     parser.add_argument('--evidence-ref', action='store_true')
+    parser.add_argument('--model-calls', type=int)
+    parser.add_argument('--switch-model', action='store_true')
     args = parser.parse_args()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
     server.requests, server.planners = [], 0
     server.unknown_composite = args.unknown_composite
     server.failing_check = args.failing_check
     server.evidence_ref = args.evidence_ref
+    server.model_calls = args.model_calls
+    server.switch_model = args.switch_model
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

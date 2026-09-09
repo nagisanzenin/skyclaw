@@ -980,7 +980,18 @@ impl AgentRuntime {
         // Planner-sealed turns whose workspace state was mutated by a
         // sibling session) from being applied to unrelated replies.
         let turn_witness = self.witness.as_ref().map(|witness| {
-            Arc::new(witness.for_authority(session.workspace_path.clone(), session.role))
+            let scoped = witness.for_authority(session.workspace_path.clone(), session.role);
+            if let Some(limit) = scoped.configured_model_call_limit() {
+                let provider = Arc::new(crate::witness_provider::WitnessProvider::new(
+                    self.auxiliary_provider(),
+                    self.model.clone(),
+                    self.max_context_tokens,
+                    limit,
+                ));
+                Arc::new(scoped.bind_configured_provider(provider, &self.model))
+            } else {
+                Arc::new(scoped)
+            }
         });
         let mut oath_sealed_this_turn: Option<temm1e_witness::types::Oath> = None;
         if self.auto_seal_planner_oath {
@@ -2757,7 +2768,7 @@ impl AgentRuntime {
                                 pass = verdict.pass_count(),
                                 fail = verdict.fail_count(),
                                 inconclusive = verdict.inconclusive_count(),
-                                cost_usd = verdict.cost_usd,
+                                cost_usd = ?verdict.attributable_verifier_cost_usd(),
                                 latency_ms = verdict.latency_ms,
                                 "witness verdict rendered"
                             );
