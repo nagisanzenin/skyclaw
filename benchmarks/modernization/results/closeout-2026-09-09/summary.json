@@ -1,0 +1,315 @@
+{
+  "complete": true,
+  "pairs": [
+    {
+      "task": "utf8_excerpt",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 119713,
+      "B_ms": 65351
+    },
+    {
+      "task": "lru_eviction",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 63403,
+      "B_ms": 70779
+    },
+    {
+      "task": "ini_layering",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 95569,
+      "B_ms": 38074
+    },
+    {
+      "task": "query_redaction",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 55307,
+      "B_ms": 44024
+    },
+    {
+      "task": "archive_paths",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 46591,
+      "B_ms": 78703
+    },
+    {
+      "task": "sqlite_transfer",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 74311,
+      "B_ms": 65073
+    },
+    {
+      "task": "atomic_text",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 85487,
+      "B_ms": 58588
+    },
+    {
+      "task": "json_lines_chunks",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 85297,
+      "B_ms": 44256
+    },
+    {
+      "task": "stable_topk",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 81443,
+      "B_ms": 64841
+    },
+    {
+      "task": "nested_secrets",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 75168,
+      "B_ms": 85974
+    },
+    {
+      "task": "retry_after",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 49490,
+      "B_ms": 45613
+    },
+    {
+      "task": "rolling_counts",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 81203,
+      "B_ms": 110462
+    },
+    {
+      "task": "bounded_async_map",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 83016,
+      "B_ms": 121401
+    },
+    {
+      "task": "csv_projection",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 50417,
+      "B_ms": 50525
+    },
+    {
+      "task": "sql_literal_search",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 79035,
+      "B_ms": 46891
+    },
+    {
+      "task": "ttl_cache",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 69680,
+      "B_ms": 78648
+    },
+    {
+      "task": "json_pointer",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 68480,
+      "B_ms": 78475
+    },
+    {
+      "task": "event_idempotence",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 51897,
+      "B_ms": 36660
+    },
+    {
+      "task": "pagination_cursor",
+      "A": true,
+      "B": false,
+      "loss": true,
+      "gain": false,
+      "A_ms": 49750,
+      "B_ms": 28639
+    },
+    {
+      "task": "histogram_quantile",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 77321,
+      "B_ms": 45634
+    },
+    {
+      "task": "line_endings",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 70954,
+      "B_ms": 42320
+    },
+    {
+      "task": "shell_free_command",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 56891,
+      "B_ms": 45091
+    },
+    {
+      "task": "casefold_groups",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 53379,
+      "B_ms": 55290
+    },
+    {
+      "task": "escaped_key_values",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 40273,
+      "B_ms": 25949
+    },
+    {
+      "task": "bounded_decompression",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 160008,
+      "B_ms": 86313
+    },
+    {
+      "task": "finite_weighted_mean",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 74733,
+      "B_ms": 59164
+    },
+    {
+      "task": "html_text_extraction",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 39578,
+      "B_ms": 43298
+    },
+    {
+      "task": "filename_manifest",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 56361,
+      "B_ms": 62781
+    },
+    {
+      "task": "version_comparison",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 156059,
+      "B_ms": 113319
+    },
+    {
+      "task": "state_transition",
+      "A": true,
+      "B": true,
+      "loss": false,
+      "gain": false,
+      "A_ms": 52805,
+      "B_ms": 37340
+    }
+  ],
+  "totals": {
+    "A": {
+      "runs": 30,
+      "passed": 30,
+      "foreground_ms": 2203619,
+      "wall_seconds": 3558.6364418717567,
+      "requests": 254,
+      "errors": 0,
+      "cancelled": 0,
+      "pending": 0,
+      "input_tokens": 478428,
+      "output_tokens": 154036,
+      "cache_read_tokens": 0,
+      "cache_unknown_calls": 254,
+      "unknown_totals_calls": 254
+    },
+    "B": {
+      "runs": 30,
+      "passed": 29,
+      "foreground_ms": 1829476,
+      "wall_seconds": 2959.1540076615056,
+      "requests": 230,
+      "errors": 0,
+      "cancelled": 0,
+      "pending": 0,
+      "input_tokens": 334896,
+      "output_tokens": 121768,
+      "cache_read_tokens": 81920,
+      "cache_unknown_calls": 0,
+      "unknown_totals_calls": 0
+    }
+  },
+  "runtime_failures": [],
+  "reported_pending": [],
+  "losses": 1,
+  "gains": 0,
+  "protected_corruptions": [],
+  "process_failures": [],
+  "observed_artifact_gate_pass": false,
+  "release_authorized_by_this_script": false
+}

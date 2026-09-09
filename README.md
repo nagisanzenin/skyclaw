@@ -14,7 +14,7 @@ Choose your model, connect your tools, and keep the same companion across conver
 
 [Get started](#get-started) · [Features](docs/FEATURE_GUIDE.md) · [Commands](docs/CLI_REFERENCE.md) · [Vision](VISION.md) · [Upgrade guide](docs/modernization/UPGRADING.md) · [Release history](docs/RELEASE_HISTORY.md)
 
-> **Modernization branch:** the 6.0 overhaul is in progress. The installer below installs the latest published release, not this branch. See the [implementation status](docs/modernization/IMPLEMENTATION-STATUS.md), [audit](docs/modernization/README.md) and [A/B protocol](docs/modernization/BENCHMARK-PROTOCOL.md). No 6.0 performance improvement or release readiness is claimed yet.
+> **6.0 release candidate:** publication is pending. The installer below installs the latest published release. See the [A/B results](docs/modernization/CLOSEOUT-RESULTS.md), [acceptance evidence](docs/modernization/CLOSEOUT-VALIDATION.md) and [remaining boundaries](docs/modernization/IMPLEMENTATION-STATUS.md).
 
 ## Get started
 
@@ -46,7 +46,7 @@ Tem supports Anthropic, OpenAI-compatible services, Gemini and local endpoints. 
 |---|---|---|
 | Provider API key | `temm1e setup` or the TUI wizard | Provider API billing and limits apply. |
 | ChatGPT / Codex login | `temm1e auth login` | Uses the existing Codex OAuth integration; account eligibility and limits apply. |
-| Z.ai Coding Plan | Choose **Z.ai Coding Plan** in the TUI wizard | Added on this branch. Uses the dedicated coding-plan endpoint with `glm-5.3-flash`; validated by a live tool-use smoke test. |
+| Z.ai Coding Plan | Choose **Z.ai Coding Plan** in the TUI wizard | Uses the dedicated coding-plan endpoint with `glm-5.3-flash`; validated by a live tool-use smoke test. |
 | Local / compatible service | Configure a compatible endpoint | Supported capabilities depend on the endpoint and model. |
 
 A coding subscription and a general API account are distinct connections. Tem's new Z.ai coding-plan adapter rejects accidental substitution of the general API endpoint. Its live smoke test establishes technical compatibility; it does not establish official provider support for Temm1e. See [subscription research and constraints](docs/modernization/06-SUBSCRIPTIONS.md).

@@ -8,7 +8,7 @@ Updated September 9, 2026. The creator is asleep and explicitly authorized auton
 - Immutable A/B baseline: `da503c09ca5c0f41c308c99e42d4736aa3611f8a`, version5.8.1. Do not modify or move the baseline to improve comparisons.
 - Implement the whole modernization, preserving the creator's documented vision and auditing every feature/implementation/math. Sources include `VISION.md`, `FEATURES.md`, `docs/TEMM1E_VISION.md`, feature docs and `tems_lab`.
 - Preserve the selected model, messaging-first product, Tem palette/personality and accepted compact transcript TUI with expandable tools/optional panels. Do not silently disable growth or replace personal-host privilege/default stopping semantics.
-- Main merge and6.0.0 release are authorized only after broader A/B shows no material regression, real-user readiness and release checks pass. Superiority is not required. Version remains5.8.1; no main merge, tag or release has occurred.
+- Main merge and6.0.0 release are authorized only after broader A/B shows no material regression, real-user readiness and release checks pass. Superiority is not required. Version metadata is6.0.0 candidate; no main merge, tag or release has occurred.
 - No messages to others or external bug reports. Only Z.ai coding-plan `glm-5.3-flash` is live-authorized. Other discovered credentials are not permission to use those accounts.
 - Secrets remain outside Git. Use `TEMM1E_ZAI_KEY_FILE` pointing to the existing private local file. Never print or commit its contents. Subscription quota is not zero-dollar API usage.
 - D01 personal/shared-host semantics and D02 delivery vs automatic durable pursuit remain open in `DECISIONS.md`. Preserve existing defaults while adding safe foundations. D04 growth-specific trust/effect evidence remains a separate boundary; generic verified prose must not confer unrelated capability.
@@ -16,11 +16,11 @@ Updated September 9, 2026. The creator is asleep and explicitly authorized auton
 
 ## Current release-goal execution
 
-Checkpoint69: final18 cozy Den illustrations saved in repo and local/outputs; exact prompts and hashes preserved. RBAC board corrected to actual Admin/User roles. TUI monitor is conceptual, not a screenshot. No production change since15734b7.
+Checkpoint70: A/B report and evidence archive complete; version metadata6.0.0 candidate. Next refresh lockfile, commit/push, verify candidate CI and --version, then resolve review gate. Original strict gate false; clarified engineering assessment supports candidate, not a benchmark win. Final18 cozy Den illustrations saved in repo and local/outputs; exact prompts and hashes preserved. RBAC board corrected to actual Admin/User roles. TUI monitor is conceptual, not a screenshot. No production change since15734b7.
 
 Original closeout A/B finished60/60: baseline30/30, modern29/30; only loss pagination_cursor (undefined selected element type). Zero runtime/process failures, request errors/cancellations/pending, or protected corruption. Frozen clarification pair also finished: bothpass. Keep original strict gate FALSE; clarification is separate, not a replaced score. Raw evidence in ../closeout-ab-01 and ../closeout-clarification-01; summary and full claim-review generated. Finish claim/workspace review and publish truthful report before release verdict. No paid calls active.
 
-CI source15734b7 all8green; final actual acceptance complete as described in CLOSEOUT-VALIDATION.md. No Cargo active,4GiB guarded build outputs cleaned. Version still5.8.1. Next: finalize benchmark report/release notes, version6.0candidate, final checks, review/merge/tag/assets/update smoke. No release yet.
+CI source15734b7 all8green; final actual acceptance complete as described in CLOSEOUT-VALIDATION.md. No Cargo active,4GiB guarded build outputs cleaned. Version metadata6.0.0 candidate. Next: final checks, review/merge/tag/assets/update smoke. No release yet.
 
 Protection requires1approval, reviews empty. Auth nagisanzenin and collaborator walter-temm1e bothadmin; sole-maintainer exception not established. No external messages or review requests authorized/sent. Resolve review barrier once concrete candidate ready; do not bypass silently.
 

@@ -599,3 +599,7 @@ Original A/B remains in progress. Pagination B returned integer IDs and failed t
 ## Checkpoint69 — final cozy Den artwork
 
 All18 feature illustrations now use the creator-approved hair, faces, slim bodies and16-expression atlas in inhabited cozy Den environments. Exact prompts and SHA256 manifests are in assets/modernization; canonical design documents specify reference priority. Copies saved locally as requested. The RBAC board uses actual Admin/User roles. All drawings are conceptual; the TUI illustration is not an actual screenshot. No production code changed and no paid benchmark was repeated for art. Original60-run A/B and the frozen clarification pair are complete; evaluation remains separate from artwork and release approval.
+
+## Checkpoint70 —6.0 candidate and complete A/B evidence
+
+All60 original runs and the separately frozen clarification pair are preserved in the public evidence archive. CLOSEOUT-RESULTS.md retains the original strict gate failure, contract ambiguity,29unambiguous ties, clarified tie, timing/cache limits and workspace deviations. No production runtime edits follow measured15734b7. Workspace version is6.0.0 for candidate verification; README and release notes explicitly say not published. Final candidate CI/version smoke and review/merge/tag/assets/update remain pending.
