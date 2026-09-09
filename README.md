@@ -22,7 +22,7 @@ Temm1e is built around an ambition: **give episodic intelligence a continuing ex
 
 Computer use and native browser sessions let Tem inhabit a digital environment. Perpetuum explores around-the-clock availability and scheduled return. Persistence and recovery aim to preserve continuity when a call or process stops. This is an **AGI-oriented architectural direction**, not a claim that Tem has achieved AGI, consciousness or uninterrupted autonomous operation.
 
-[Read the illustrated essay: **An entity, one API call at a time**](https://temm1e-labs.github.io/temm1e/)
+[Read the illustrated essay: **Building a place for intelligence to persist**](https://temm1e-labs.github.io/temm1e/)
 
 ## The mathematics inside Tem
 

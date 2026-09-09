@@ -119,3 +119,10 @@ Branch `codex/entity-essay-and-web-images` documents the creator's entity/AGI-or
 All 38 archival PNGs are preserved. WebP derivatives and byte/hash manifest are in `assets/web`; embedded documentation images use the smaller copies. Regeneration script is `scripts/optimize_web_images.py` (Pillow/WebP). No Rust behavior, version or prior benchmark observations changed. See `docs/modernization/ENTITY-ESSAY-DELIVERY.md` for validation and publication status.
 
 Essay flow revised after creator feedback: one overnight investigation motivates each mechanism; mathematics is integrated into the relevant step. Latest static export replaces the initial feature-catalogue draft.
+
+## Mission essay revision
+Creator rejected task-centered narrative and requested mission, larger harness context, and entity-first endeavours. Canonical essay is now directly maintained in docs/index.html + docs/essay.css. Do not regenerate from the old private Sites checkout. Seven math mechanisms and truthful evidence remain; no em/en dashes. GitHub Pages publication follows PR merge. See ENTITY-ESSAY-DELIVERY.md for editorial/source details.
+
+Publication CI encountered repeated Google Chrome apt index hash mismatches during runner setup. CI/release now use scripts/ci_apt_update.sh to omit only Chrome apt lines on disposable Actions runners, retaining the installed browser and apt integrity checks. Windows command_check_echo also failed once before retry; logs retained in work/mission-all-failures.log. No Rust changes.
+
+Runner source correction: handle Deb822 .sources as well as legacy .list via ci_apt_sources.py. Fixtures cover both formats, continuation URIs and preservation of unrelated/mixed stanzas.
