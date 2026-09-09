@@ -14,7 +14,7 @@ Choose your model, connect your tools, and keep the same companion across conver
 
 [Get started](#get-started) · [Features](docs/FEATURE_GUIDE.md) · [Commands](docs/CLI_REFERENCE.md) · [Vision](VISION.md) · [Upgrade guide](docs/modernization/UPGRADING.md) · [Release history](docs/RELEASE_HISTORY.md)
 
-> **6.0 release candidate:** publication is pending. The installer below installs the latest published release. See the [A/B results](docs/modernization/CLOSEOUT-RESULTS.md), [acceptance evidence](docs/modernization/CLOSEOUT-VALIDATION.md) and [remaining boundaries](docs/modernization/IMPLEMENTATION-STATUS.md).
+> **6.0 modernization:** the installer below uses the latest published GitHub release. For the evidence behind this source revision, see the [A/B results](docs/modernization/CLOSEOUT-RESULTS.md), [acceptance evidence](docs/modernization/CLOSEOUT-VALIDATION.md) and [remaining boundaries](docs/modernization/IMPLEMENTATION-STATUS.md).
 
 ## Get started
 

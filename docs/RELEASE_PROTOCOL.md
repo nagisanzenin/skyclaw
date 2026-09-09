@@ -2,7 +2,7 @@
 
 ## Local disk budget (modernization requirement)
 
-On storage-constrained development machines, run build/test/check/clippy through `python3 scripts/cargo_guard.py -- <cargo command and arguments>`. It reserves 8 GiB of free space, caps total repository `target/` size at 8 GiB, and uses a disposable `target/guarded` directory. It stops a running command when a sampled limit is crossed (exit 75, **not a passing validation**) and removes guarded outputs afterward. Sampling is once per second; this is a practical guard, not a filesystem quota. Unmanaged Cargo invocations are outside its process lock and must not run alongside it.
+On storage-constrained development machines, run build/test/check/clippy through `python3 scripts/cargo_guard.py -- <build|check|test|clippy> [arguments]`. It reserves 8 GiB of free space, caps total repository `target/` size at 8 GiB, and uses a disposable `target/guarded` directory. It stops a running command when a sampled limit is crossed (exit 75, **not a passing validation**) and removes guarded outputs afterward. Sampling is once per second; this is a practical guard, not a filesystem quota. Unmanaged Cargo invocations are outside its process lock and must not run alongside it.
 
 Use package/feature batches rather than retaining many build variants. Keep test logs and benchmark evidence outside `target/`. The dev/test profiles disable debug symbols and incremental caching by default; opt into debugging only when needed and clean that build afterward.
 

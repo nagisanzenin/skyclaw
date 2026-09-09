@@ -16,6 +16,8 @@ Updated September 9, 2026. The creator is asleep and explicitly authorized auton
 
 ## Current release-goal execution
 
+Checkpoint71: candidate50e1e4c pushed, PR ready/release body updated. Native guarded build active session67627, log ../release-6.0-build-native.log (uses --keep-cache; copy binary/verify6.0.0 then clean target/guarded). Original guard syntax rejection retained in ../release-6.0-build.log. No paid calls or imagegen active. Original A/B and clarification both fully complete. Final art149c163 pushed. Current CI must finish; main review barrier unresolved.
+
 Checkpoint70: A/B report and evidence archive complete; version metadata6.0.0 candidate. Next refresh lockfile, commit/push, verify candidate CI and --version, then resolve review gate. Original strict gate false; clarified engineering assessment supports candidate, not a benchmark win. Final18 cozy Den illustrations saved in repo and local/outputs; exact prompts and hashes preserved. RBAC board corrected to actual Admin/User roles. TUI monitor is conceptual, not a screenshot. No production change since15734b7.
 
 Original closeout A/B finished60/60: baseline30/30, modern29/30; only loss pagination_cursor (undefined selected element type). Zero runtime/process failures, request errors/cancellations/pending, or protected corruption. Frozen clarification pair also finished: bothpass. Keep original strict gate FALSE; clarification is separate, not a replaced score. Raw evidence in ../closeout-ab-01 and ../closeout-clarification-01; summary and full claim-review generated. Finish claim/workspace review and publish truthful report before release verdict. No paid calls active.

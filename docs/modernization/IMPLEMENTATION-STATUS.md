@@ -603,3 +603,7 @@ All18 feature illustrations now use the creator-approved hair, faces, slim bodie
 ## Checkpoint70 —6.0 candidate and complete A/B evidence
 
 All60 original runs and the separately frozen clarification pair are preserved in the public evidence archive. CLOSEOUT-RESULTS.md retains the original strict gate failure, contract ambiguity,29unambiguous ties, clarified tie, timing/cache limits and workspace deviations. No production runtime edits follow measured15734b7. Workspace version is6.0.0 for candidate verification; README and release notes explicitly say not published. Final candidate CI/version smoke and review/merge/tag/assets/update remain pending.
+
+## Checkpoint71 — release verification in progress
+
+Candidate50e1e4c pushed and PR74 marked ready for review, with complete benchmark evidence and explicit raw-gate limitation. Cargo lock contains26Temm1e package entries at6.0.0, external entries unchanged. Offline all-target metadata lacked an Android-only cached crate; incorrect guard syntax was rejected before build. Corrected native locked build runs with disk limits; CI checks candidate. README points to actual published GitHub releases and evidence without prematurely asserting publication. Review still required; no merge/tag/release.

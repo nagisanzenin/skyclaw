@@ -12,7 +12,7 @@ While working on `codex/modernize-temm1e-research`, read `AGENT-HANDOFF.md` befo
 
 ## Build commands
 
-On storage-constrained local machines, use `python3 scripts/cargo_guard.py -- <cargo command and arguments>` for build/check/test/clippy. It reserves 8 GiB free space, caps target output at 8 GiB, and cleans its disposable cache afterward. Keep logs/evidence outside `target/`. Split package/feature validation if the budget is exceeded; exit 75 is an unfinished check, never a pass. Use `--keep-cache` only to extract a required binary, then clean `target/guarded`. Do not run unmanaged Cargo builds concurrently. See `docs/RELEASE_PROTOCOL.md` for the local disk policy.
+On storage-constrained local machines, use `python3 scripts/cargo_guard.py -- <build|check|test|clippy> [arguments]` for build/check/test/clippy. It reserves 8 GiB free space, caps target output at 8 GiB, and cleans its disposable cache afterward. Keep logs/evidence outside `target/`. Split package/feature validation if the budget is exceeded; exit 75 is an unfinished check, never a pass. Use `--keep-cache` only to extract a required binary, then clean `target/guarded`. Do not run unmanaged Cargo builds concurrently. See `docs/RELEASE_PROTOCOL.md` for the local disk policy.
 
 ```bash
 # Quick compilation check (fastest feedback loop)
