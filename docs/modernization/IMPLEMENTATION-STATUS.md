@@ -615,3 +615,7 @@ Native6.0.0 candidate build passed, reports50e1e4c, and actual CLI quit/EOF/serv
 ## Checkpoint73 — creator-requested full illustrated README
 
 The creator replaced the concise-README preference with a full feature/explanation tour like the original. README now has358lines/about3500words, all18new illustrations, Tem’s Mind/context/cache, each named subsystem, channels/tools, recovery, architecture, connection/subscription setup and commands. All local links exist and image paths are18unique valid assets; CLI command names checked against the6.0candidate. Claims retain experimental boundaries and raw A/B results. Release Protocol updated to preserve this requested breadth. No runtime changes or paid reruns. Creator confirmed primary-maintainer/direct-main rights; use standing merge authorization via documented admin PR merge after checks, not an invented independent approval.
+
+## Checkpoint74 — compatible security dependency patches
+
+Final f9d30e7 CI all8jobs green, but security job was intentionally non-blocking and reported26vulnerability entries/22warnings. No merge performed. Compatible dependency patches applied; plist/wayland-scanner now use patched XML. DEPENDENCY-CLOSEOUT.md records remaining old TLS/XML/RSA branches needing actual feature/reachability review. Source APIs unchanged; updated-lockfile CI/MSRV/audit and bounded live acceptance required. Original A/B remains pre-patch15734b7 evidence, not relabeled.
