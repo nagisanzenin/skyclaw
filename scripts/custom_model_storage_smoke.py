@@ -102,6 +102,15 @@ base_url = "http://127.0.0.1:{server.server_port}/foreign"
             assert 'fixture' in listing and ('← saved' if args.offline else '← current') in listing, listing
             if args.offline:
                 assert '← current' not in listing, listing
+            if not args.offline:
+                saved_before_choice = credentials.read_bytes() if credentials.exists() else None
+                registry_before_choice = models.read_bytes()
+                choice = run('/model kept-model\n/model')
+                assert 'Model selected: kept-model on openai' in choice, choice
+                assert 'Current: kept-model on openai' in choice, choice
+                assert (credentials.read_bytes() if credentials.exists() else None) == saved_before_choice
+                assert models.read_bytes() == registry_before_choice
+                assert 'Current: fixture on openai' in run('/model'), 'session choice silently persisted'
             before = models.read_bytes()
             with (profile / 'custom_models.lock').open('r+') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

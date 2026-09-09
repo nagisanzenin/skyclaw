@@ -236,6 +236,7 @@ pub struct AgentRuntime {
     system_prompt: Option<String>,
     max_turns: usize,
     max_context_tokens: usize,
+    configured_context_tokens: usize,
     max_tool_rounds: usize,
     max_task_duration: Duration,
     circuit_breaker: CircuitBreaker,
@@ -360,6 +361,7 @@ impl AgentRuntime {
             system_prompt,
             max_turns: 200,
             max_context_tokens: 30_000,
+            configured_context_tokens: 30_000,
             // v5.3.6: max_tool_rounds = 0 means unlimited (matches
             // max_task_duration_secs convention). Stagnation detection +
             // budget + duration are the real safety nets; iteration count
@@ -402,6 +404,42 @@ impl AgentRuntime {
             tool_filter: None,
             self_audit_enabled: false,
         }
+    }
+
+    /// Select another model on the same provider route without rebuilding
+    /// runtime state, tools, observers, budget or owned background work.
+    pub fn select_model(&mut self, model: &str) -> Result<(), Temm1eError> {
+        if model.is_empty()
+            || model.len() > 256
+            || model.chars().any(char::is_whitespace)
+            || model.chars().any(char::is_control)
+        {
+            return Err(Temm1eError::Config(
+                "Model must be a nonempty identifier of at most256bytes".into(),
+            ));
+        }
+        if model == self.model {
+            return Ok(());
+        }
+        if self.eigen_tune_local_routing {
+            return Err(Temm1eError::Config("Model selection requires Eigen-Tune local routing to be disabled; its current qualification belongs to the existing reference configuration".into()));
+        }
+        let (window, output) =
+            model_registry::model_limits_with_custom(self.provider.name(), model);
+        if window < 2 || output == 0 {
+            return Err(Temm1eError::Config(
+                "Model has no usable context/output allowance".into(),
+            ));
+        }
+        let input = window.saturating_sub(output.min(window / 2));
+        let effective = self
+            .configured_context_tokens
+            .min(input.saturating_sub(input / 10));
+        self.model_pricing = budget::get_pricing_with_custom(self.provider.name(), model);
+        self.image_input = model_registry::image_input_for(self.provider.name(), model);
+        self.max_context_tokens = effective;
+        self.model = model.to_owned();
+        Ok(())
     }
 
     /// Attach a Witness verification layer to this runtime.
@@ -554,6 +592,7 @@ impl AgentRuntime {
             system_prompt,
             max_turns,
             max_context_tokens: effective_context,
+            configured_context_tokens: max_context_tokens,
             max_tool_rounds,
             max_task_duration: Duration::from_secs(max_task_duration_secs),
             circuit_breaker: CircuitBreaker::default(),
@@ -1911,6 +1950,27 @@ impl AgentRuntime {
                 .await
             };
             request.messages.splice(0..0, context_pins);
+            // Raw history stays intact; opaque state from another model cannot
+            // be replayed as native state after an explicit model selection.
+            request.messages.retain_mut(|message| {
+                if let MessageContent::Parts(parts) = &mut message.content {
+                    let foreign = parts.iter().any(|part| matches!(part, ContentPart::ProviderState { model, .. } if model != &self.model));
+                    if foreign {
+                        parts.retain(|part| !matches!(part, ContentPart::ProviderState { model, .. } if model != &self.model));
+                        for part in parts.iter_mut() {
+                            if let ContentPart::ToolUse {
+                                thought_signature, ..
+                            } = part
+                            {
+                                *thought_signature = None;
+                            }
+                        }
+                        return !parts.is_empty();
+                    }
+                }
+                true
+            });
+            request.prepend_system_volatile(&format!("CURRENT RUNTIME: provider={}, model={}. Stored defaults may differ from this active selection.", self.provider.name(), self.model));
             if let Some(injection) = context_injection {
                 request.prepend_system_volatile(&injection);
             }

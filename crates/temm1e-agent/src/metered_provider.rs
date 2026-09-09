@@ -12,13 +12,40 @@ use temm1e_core::{
 pub struct MeteredProvider {
     inner: Arc<dyn Provider>,
     budget: Arc<BudgetTracker>,
+    pricing: Option<(String, ModelPricing)>,
 }
 impl MeteredProvider {
     pub fn new(inner: Arc<dyn Provider>, budget: Arc<BudgetTracker>) -> Self {
-        Self { inner, budget }
+        Self {
+            inner,
+            budget,
+            pricing: None,
+        }
+    }
+    /// Bind an existing immutable model/pricing snapshot instead of re-reading
+    /// the registry. A request for another model must obtain another binding.
+    pub fn with_pricing(
+        inner: Arc<dyn Provider>,
+        budget: Arc<BudgetTracker>,
+        model: String,
+        pricing: ModelPricing,
+    ) -> Self {
+        Self {
+            inner,
+            budget,
+            pricing: Some((model, pricing)),
+        }
     }
     fn begin(&self, model: &str) -> Result<Attempt, Temm1eError> {
-        let pricing = get_pricing_with_custom(self.inner.name(), model);
+        let pricing = match &self.pricing {
+            Some((bound, pricing)) if bound == model => *pricing,
+            Some(_) => {
+                return Err(Temm1eError::Provider(
+                    "Metered request model differs from pricing binding".into(),
+                ))
+            }
+            None => get_pricing_with_custom(self.inner.name(), model),
+        };
         self.budget
             .check_model_budget(&pricing)
             .map_err(Temm1eError::Provider)?;
@@ -133,6 +160,23 @@ impl Provider for MeteredProvider {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn fixed_pricing_binding_rejects_another_model_without_a_call() {
+        let raw = std::sync::Arc::new(temm1e_test_utils::MockProvider::with_text("unused"));
+        let owner = std::sync::Arc::new(crate::budget::BudgetTracker::new(0.0));
+        let metered = super::MeteredProvider::with_pricing(
+            raw.clone(),
+            owner.clone(),
+            "fixed-model".into(),
+            crate::budget::ModelPricing::custom(1.0, 2.0),
+        );
+        assert!(temm1e_core::Provider::complete(&metered, request())
+            .await
+            .is_err());
+        assert_eq!(raw.calls().await, 0);
+        assert_eq!(owner.snapshot().recorded_calls, 0);
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Fixture {

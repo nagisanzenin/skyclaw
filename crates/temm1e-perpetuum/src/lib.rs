@@ -41,6 +41,7 @@ pub struct Perpetuum {
     pub cortex: Arc<Cortex>,
     pub conscience: Arc<Conscience>,
     pub store: Arc<Store>,
+    provider_caller: Arc<ProviderCaller>,
     cancel: CancellationToken,
     pulse_notifier: Arc<tokio::sync::Notify>,
 }
@@ -183,7 +184,8 @@ impl Perpetuum {
             store.clone(),
         ));
 
-        let caller: Arc<dyn LlmCaller> = Arc::new(ProviderCaller::new(provider, model));
+        let provider_caller = Arc::new(ProviderCaller::new(provider, model));
+        let caller: Arc<dyn LlmCaller> = provider_caller.clone();
 
         let volition_config = if config.volition.enabled {
             Some((config.volition.max_actions_per_cycle,))
@@ -213,7 +215,14 @@ impl Perpetuum {
             store,
             cancel,
             pulse_notifier,
+            provider_caller,
         })
+    }
+
+    /// Future calls capture the new binding; in-flight calls keep their own
+    /// immutable provider/model snapshot. Existing concerns and schedules survive.
+    pub fn rebind_provider(&self, provider: Arc<dyn temm1e_core::Provider>, model: String) {
+        self.provider_caller.rebind(provider, model);
     }
 
     /// Start the Perpetuum runtime: spawns Pulse timer + concern dispatch loop.

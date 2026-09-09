@@ -15,21 +15,33 @@ pub trait LlmCaller: Send + Sync {
 
 /// Production implementation using temm1e Provider trait.
 pub struct ProviderCaller {
-    provider: Arc<dyn temm1e_core::traits::Provider>,
-    model: String,
+    binding: std::sync::RwLock<(Arc<dyn temm1e_core::traits::Provider>, String)>,
 }
 
 impl ProviderCaller {
     pub fn new(provider: Arc<dyn temm1e_core::traits::Provider>, model: String) -> Self {
-        Self { provider, model }
+        Self {
+            binding: std::sync::RwLock::new((provider, model)),
+        }
+    }
+    pub fn rebind(&self, provider: Arc<dyn temm1e_core::traits::Provider>, model: String) {
+        *self
+            .binding
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = (provider, model);
     }
 }
 
 #[async_trait]
 impl LlmCaller for ProviderCaller {
     async fn call(&self, system: Option<&str>, prompt: &str) -> Result<String, Temm1eError> {
+        let (provider, model) = self
+            .binding
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         let request = CompletionRequest {
-            model: self.model.clone(),
+            model,
             messages: vec![ChatMessage {
                 role: Role::User,
                 content: MessageContent::Text(prompt.to_string()),
@@ -46,7 +58,7 @@ impl LlmCaller for ProviderCaller {
         // mid-reasoning, producing incomplete/broken output.
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(300),
-            self.provider.complete(request),
+            provider.complete(request),
         )
         .await
         .map_err(|_| Temm1eError::Provider("Perpetuum LLM call timed out (300s)".to_string()))??;
@@ -279,6 +291,98 @@ fn truncate(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    struct PausedProvider {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        inner: temm1e_test_utils::MockProvider,
+    }
+    #[async_trait::async_trait]
+    impl temm1e_core::Provider for PausedProvider {
+        fn name(&self) -> &str {
+            "fixture"
+        }
+        async fn complete(
+            &self,
+            request: temm1e_core::types::message::CompletionRequest,
+        ) -> Result<
+            temm1e_core::types::message::CompletionResponse,
+            temm1e_core::types::error::Temm1eError,
+        > {
+            self.started.notify_one();
+            self.release.notified().await;
+            temm1e_core::Provider::complete(&self.inner, request).await
+        }
+        async fn stream(
+            &self,
+            _: temm1e_core::types::message::CompletionRequest,
+        ) -> Result<
+            futures::stream::BoxStream<
+                '_,
+                Result<
+                    temm1e_core::types::message::StreamChunk,
+                    temm1e_core::types::error::Temm1eError,
+                >,
+            >,
+            temm1e_core::types::error::Temm1eError,
+        > {
+            Err(temm1e_core::types::error::Temm1eError::Provider(
+                "unused".into(),
+            ))
+        }
+        async fn health_check(&self) -> Result<bool, temm1e_core::types::error::Temm1eError> {
+            Ok(true)
+        }
+        async fn list_models(&self) -> Result<Vec<String>, temm1e_core::types::error::Temm1eError> {
+            Ok(vec![])
+        }
+    }
+    #[tokio::test]
+    async fn in_flight_call_retains_old_binding_while_next_call_uses_new_one() {
+        use super::LlmCaller;
+        let old = std::sync::Arc::new(PausedProvider {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            inner: temm1e_test_utils::MockProvider::with_text("old result"),
+        });
+        let new = std::sync::Arc::new(temm1e_test_utils::MockProvider::with_text("new result"));
+        let caller = super::ProviderCaller::new(old.clone(), "old-model".into());
+        let mut pending = Box::pin(caller.call(None, "old task"));
+        tokio::select! { _ = old.started.notified() => {}, result = &mut pending => panic!("must wait: {result:?}") }
+        caller.rebind(new.clone(), "new-model".into());
+        assert_eq!(caller.call(None, "new task").await.unwrap(), "new result");
+        old.release.notify_one();
+        assert_eq!(pending.await.unwrap(), "old result");
+        assert_eq!(
+            old.inner.captured_requests.lock().await[0].model,
+            "old-model"
+        );
+        assert_eq!(new.captured_requests.lock().await[0].model, "new-model");
+    }
+
+    #[tokio::test]
+    async fn provider_binding_changes_future_calls_without_recreating_cognitive_state() {
+        use temm1e_test_utils::MockProvider;
+        let first = std::sync::Arc::new(MockProvider::with_text("first"));
+        let second = std::sync::Arc::new(MockProvider::with_text("second"));
+        let caller = super::ProviderCaller::new(first.clone(), "first-model".into());
+        assert_eq!(
+            super::LlmCaller::call(&caller, None, "one").await.unwrap(),
+            "first"
+        );
+        caller.rebind(second.clone(), "second-model".into());
+        assert_eq!(
+            super::LlmCaller::call(&caller, None, "two").await.unwrap(),
+            "second"
+        );
+        assert_eq!(first.calls().await, 1);
+        assert_eq!(second.calls().await, 1);
+        assert_eq!(first.captured_requests.lock().await[0].model, "first-model");
+        assert_eq!(
+            second.captured_requests.lock().await[0].model,
+            "second-model"
+        );
+    }
+
     use super::*;
 
     #[test]

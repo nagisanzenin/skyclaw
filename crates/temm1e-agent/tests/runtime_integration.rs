@@ -634,3 +634,98 @@ async fn unsupported_memory_backend_does_not_schedule_paid_curator_work() {
     assert_eq!(provider.calls().await, 1);
     assert_eq!(runtime.budget_snapshot().recorded_calls, 1);
 }
+
+#[tokio::test]
+async fn model_selection_preserves_runtime_owner_and_raw_history_without_native_replay() {
+    use temm1e_test_utils::QueuedMockProvider;
+    let mut first = QueuedMockProvider::text_response("first answer");
+    first.content.push(ContentPart::ProviderState {
+        provider: "fixture-owner".into(),
+        model: "old-model".into(),
+        response_id: "old-response".into(),
+        context_fingerprint: None,
+        output: vec![serde_json::json!({"opaque":"must stay raw"})],
+    });
+    let provider = Arc::new(QueuedMockProvider::with_responses(vec![
+        first,
+        QueuedMockProvider::text_response("second answer"),
+    ]));
+    let owner = Arc::new(temm1e_agent::BudgetTracker::new(0.0));
+    let memory = Arc::new(MockMemory::new());
+    let mut runtime = AgentRuntime::new(
+        provider.clone(),
+        memory.clone(),
+        vec![],
+        "old-model".into(),
+        None,
+    )
+    .with_budget(owner.clone())
+    .with_v2_optimizations(false)
+    .with_self_audit_enabled(false);
+    let directory = tempfile::tempdir().unwrap();
+    let mut session = make_session();
+    session.workspace_path = directory.path().into();
+    session.history.push(ChatMessage {
+        role: Role::User,
+        content: MessageContent::Text("prior turn".into()),
+    });
+    session.history.push(ChatMessage {
+        role: Role::Assistant,
+        content: MessageContent::Parts(vec![ContentPart::ProviderState {
+            provider: "fixture-owner".into(),
+            model: "old-model".into(),
+            response_id: "opaque-only".into(),
+            context_fingerprint: None,
+            output: vec![],
+        }]),
+    });
+    runtime
+        .process_message(
+            &make_inbound_msg("hello"),
+            &mut session,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let before = serde_json::to_string(&session.history).unwrap();
+    assert!(before.contains("must stay raw"));
+    assert!(runtime.select_model("bad model").is_err());
+    assert_eq!(runtime.model(), "old-model");
+    runtime.select_model("new-model").unwrap();
+    assert!(Arc::ptr_eq(&runtime.budget(), &owner));
+    assert_eq!(
+        provider.calls().await,
+        1,
+        "model selection performed a provider call"
+    );
+    assert_eq!(serde_json::to_string(&session.history).unwrap(), before);
+    runtime
+        .process_message(
+            &make_inbound_msg("continue"),
+            &mut session,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let requests = provider.captured_requests.lock().await;
+    assert_eq!(requests[0].model, "old-model");
+    assert_eq!(requests[1].model, "new-model");
+    assert!(requests[1].messages.iter().all(
+        |message| !matches!(&message.content, MessageContent::Parts(parts) if parts.is_empty())
+    ));
+    assert!(!serde_json::to_string(&requests[1])
+        .unwrap()
+        .contains("must stay raw"));
+    assert!(serde_json::to_string(&session.history)
+        .unwrap()
+        .contains("must stay raw"));
+    assert_eq!(owner.snapshot().recorded_calls, 2);
+}

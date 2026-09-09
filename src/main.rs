@@ -523,62 +523,7 @@ fn build_system_prompt(personality: &temm1e_anima::personality::PersonalityConfi
     let identity = personality.generate_identity_section();
     let mut prompt = format!("{identity}\n\n{SYSTEM_PROMPT_BODY}");
 
-    // ── Provider/model context ────────────────────────────────
-    prompt.push_str("\n\nSUPPORTED PROVIDERS & DEFAULT MODELS:\n");
-    prompt.push_str("- anthropic: claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-6\n");
-    prompt.push_str("- openai: gpt-5.2, gpt-4.1, gpt-4.1-mini, o4-mini\n");
-    prompt.push_str("- gemini: gemini-3-flash-preview, gemini-3.1-pro-preview, gemini-2.5-flash, gemini-2.5-pro\n");
-    prompt.push_str("- grok (xai): grok-4-1-fast-non-reasoning, grok-3\n");
-    prompt.push_str(
-        "- openrouter: any model via anthropic/claude-sonnet-4-6, openai/gpt-5.2, etc.\n",
-    );
-    prompt.push_str("- zai (zhipu): glm-4.7-flash, glm-4.7, glm-5, glm-5-code, glm-4.6v\n");
-    prompt.push_str("- minimax: MiniMax-M2.5\n");
-    prompt.push_str("- stepfun: step-3.5-flash, step-3\n");
-    prompt.push_str("- lmstudio: local models via http://localhost:1234/v1 — register your downloaded model with /addmodel (e.g. qwen3.5-7b-instruct, llama-3.3-70b-instruct)\n");
-    prompt.push_str("- openai-codex: gpt-5.4 (recommended), gpt-5.3-codex, gpt-5.2-codex (OAuth subscription)\n");
-
-    // ── Vision capability ──────────────────────────────────────
-    prompt.push_str(
-        "\nVISION (IMAGE) SUPPORT:\n\
-         Models that can see images: all claude-*, all gpt-4o/gpt-4.1/gpt-5.*, all gemini-*, \
-         grok-3/grok-4, glm-*v* (V-suffix only, e.g. glm-4.6v-flash), step-3.\n\
-         Text-only (NO vision): gpt-3.5-turbo, glm-4.7-flash, glm-4.7, glm-5, glm-5-code, \
-         glm-4.5-flash, all MiniMax models, step-3.5-flash.\n\
-         If the user sends an image on a text-only model, images are auto-stripped and \
-         the user is notified. Suggest switching to a vision model.\n",
-    );
-
-    // ── Current configuration ─────────────────────────────────
-    if let Some(creds) = load_credentials_file() {
-        prompt.push_str("\nCURRENT CONFIGURATION:\n");
-        prompt.push_str(&format!("Active provider: {}\n", creds.active));
-        for p in &creds.providers {
-            // Proxy providers (custom base_url) use lenient placeholder check
-            // so short LM Studio / Ollama keys are counted correctly.
-            let has_custom = p.base_url.is_some();
-            let key_count = p
-                .keys
-                .iter()
-                .filter(|k| {
-                    if has_custom {
-                        !is_placeholder_key_lenient(k)
-                    } else {
-                        !is_placeholder_key(k)
-                    }
-                })
-                .count();
-            let base_note = if let Some(ref url) = p.base_url {
-                format!(" (via {})", url)
-            } else {
-                String::new()
-            };
-            prompt.push_str(&format!(
-                "- {}: model={}, {} key(s){}\n",
-                p.name, p.model, key_count, base_note
-            ));
-        }
-    }
+    prompt.push_str("\nMODEL CONFIGURATION:\nThe active provider/model is supplied in CURRENT RUNTIME. Saved defaults may differ. Use /model or /listmodels for current suggestions; a catalog entry does not prove account entitlement. Image capability comes from the current provider/model registry or explicit custom declaration, and may be unknown.\n");
 
     // ── Self-configuration rules ──────────────────────────────
     prompt.push_str(
@@ -844,185 +789,19 @@ fn list_configured_providers() -> String {
     lines.join("\n")
 }
 
-/// Handle the /model command.
-///
-/// - `/model` (no args) → show current model + all available models per provider
-/// - `/model <exact-name>` → switch to that model on the active provider
-fn handle_model_command(args: &str) -> String {
-    // Check Codex OAuth first — if active and no args, show Codex model info
-    #[cfg(feature = "codex-oauth")]
-    {
-        let has_creds = load_credentials_file()
-            .map(|c| !c.providers.is_empty())
-            .unwrap_or(false);
-        if !has_creds && temm1e_codex_oauth::TokenStore::exists() {
-            if args.is_empty() {
-                let codex_models = [
-                    "gpt-5.4",
-                    "gpt-5.3-codex",
-                    "gpt-5.3-codex-spark",
-                    "gpt-5.2",
-                    "gpt-5.2-codex",
-                    "gpt-5.1-codex",
-                    "gpt-5.1-codex-mini",
-                    "gpt-5",
-                    "gpt-5-codex",
-                    "gpt-5-codex-mini",
-                    "gpt-5-mini",
-                    "gpt-4.1",
-                    "gpt-4.1-mini",
-                    "gpt-4.1-nano",
-                    "o4-mini",
-                ];
-                let mut lines = vec![
-                    "Current: gpt-5.4 on openai-codex provider (OAuth)".to_string(),
-                    String::new(),
-                    "Available Codex models:".to_string(),
-                ];
-                for m in &codex_models {
-                    let current = if *m == "gpt-5.4" { " ← current" } else { "" };
-                    lines.push(format!("    {}{}", m, current));
-                }
-                lines.push(String::new());
-                lines.push("Switch model: /model <exact-model-name>".to_string());
-                lines.push("Example: /model gpt-5.2-codex".to_string());
-                return lines.join("\n");
-            } else {
-                let target = args.trim();
-                // Return "Model switched:" so the caller rebuilds the agent
-                return format!("Model switched: codex-oauth → {}\nCodex OAuth", target);
-            }
-        }
-    }
+/// Show the effective runtime, not a potentially unrelated saved account.
+fn runtime_model_status(agent: &temm1e_agent::AgentRuntime) -> String {
+    let provider = agent.provider().name();
+    let suggestions = available_models_for_provider(provider).join(", ");
+    format!("Current: {} on {}\nSuggested models (account access may vary): {}\nUse /model <exact-name> to select a model on this route for this running Tem instance.", agent.model(), provider, suggestions)
+}
 
-    let creds = match load_credentials_file() {
-        Some(c) => c,
-        None => return "No providers configured. Use /addkey to add one.".to_string(),
-    };
-
-    if creds.providers.is_empty() {
-        return "No providers configured. Use /addkey to add one.".to_string();
-    }
-
-    // ── No args: show current + available models ──────────────
-    if args.is_empty() {
-        let mut lines = Vec::new();
-
-        // Current model
-        if let Some(active) = creds.providers.iter().find(|p| p.name == creds.active) {
-            lines.push(format!(
-                "Current: {} on {} provider",
-                active.model, active.name
-            ));
-        }
-
-        lines.push(String::new());
-        lines.push("Suggested models per provider (account access may vary):".to_string());
-        for p in &creds.providers {
-            let models = available_models_for_provider(&p.name);
-            let active_marker = if p.name == creds.active {
-                " (active)"
-            } else {
-                ""
-            };
-            let is_proxy = p.base_url.is_some() || p.name == "openrouter";
-            lines.push(format!("  {}{}:", p.name, active_marker));
-            if is_proxy {
-                let current_vision = image_input_badge(&p.name, &p.model);
-                lines.push(format!("    {} ← current{}", p.model, current_vision));
-                lines.push("    (proxy — any model name accepted)".to_string());
-            } else {
-                for m in &models {
-                    let vision = image_input_badge(&p.name, m);
-                    let current = if *m == p.model { " ← current" } else { "" };
-                    lines.push(format!("    {}{}{}", m, vision, current));
-                }
-            }
-        }
-
-        lines.push(String::new());
-        lines.push("Switch model: /model <exact-model-name>".to_string());
-        lines.push("Example: /model claude-sonnet-4-6".to_string());
-        return lines.join("\n");
-    }
-
-    // ── Switch to specific model ──────────────────────────────
-    let target = args.trim();
-
-    // Find active provider
-    let active_provider = match creds.providers.iter().find(|p| p.name == creds.active) {
-        Some(p) => p.clone(),
-        None => return "Active provider not found in credentials.".to_string(),
-    };
-
-    if active_provider.model == target {
-        return format!("Already using {}.", target);
-    }
-
-    // Validate model against known list for the active provider.
-    // Skip validation for proxy/OpenRouter providers (custom base_url) — they accept any model.
-    let is_proxy = active_provider.base_url.is_some() || active_provider.name == "openrouter";
-    let known = available_models_for_provider(&active_provider.name);
-    // Accept either hardcoded models OR user-registered custom models
-    // (via /addmodel). Custom names extend the valid-target set for the
-    // active provider — they never shadow hardcoded first-party names
-    // unless the user explicitly opts in.
-    let custom_names: Vec<String> =
-        temm1e_core::config::custom_models::custom_models_for_provider(&active_provider.name)
-            .into_iter()
-            .map(|m| m.name)
-            .collect();
-    let in_custom = custom_names.iter().any(|n| n == target);
-    if !is_proxy && !known.is_empty() && !known.contains(&target) && !in_custom {
-        let list = known
-            .iter()
-            .map(|m| {
-                let v = image_input_badge(&active_provider.name, m);
-                format!("  {}{}", m, v)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let custom_note = if custom_names.is_empty() {
-            "\n\nTip: register custom models with /addmodel".to_string()
-        } else {
-            format!(
-                "\n\nCustom models for {}:\n  {}",
-                active_provider.name,
-                custom_names.join("\n  ")
-            )
-        };
-        return format!(
-            "Unknown model '{}' for provider '{}'.\n\nAvailable models:\n{}\n\nUse exact name: /model <model-name>{}",
-            target, active_provider.name, list, custom_note
-        );
-    }
-
-    // Update the model in credentials.toml
-    let mut updated = creds.clone();
-    for p in &mut updated.providers {
-        if p.name == creds.active {
-            p.model = target.to_string();
-        }
-    }
-
-    let path = credentials_path();
-    match toml::to_string_pretty(&updated) {
-        Ok(content) => {
-            if let Err(e) = std::fs::write(&path, &content) {
-                return format!("Failed to write credentials: {}", e);
-            }
-            tracing::info!(
-                old_model = %active_provider.model,
-                new_model = %target,
-                "Model switched via /model command"
-            );
-            format!(
-                "Model switched: {} → {}\nHot-reload will apply after this response.",
-                active_provider.model, target
-            )
-        }
-        Err(e) => format!("Failed to serialize credentials: {}", e),
-    }
+fn select_runtime_model(
+    agent: &mut temm1e_agent::AgentRuntime,
+    model: &str,
+) -> Result<String, temm1e_core::types::error::Temm1eError> {
+    agent.select_model(model)?;
+    Ok(format!("Model selected: {} on {}. Active for this running Tem instance; saved defaults unchanged. Access is checked on your next request.", agent.model(), agent.provider().name()))
 }
 
 /// Remove a provider from credentials.
@@ -3642,6 +3421,7 @@ async fn main() -> Result<()> {
                             let current_task_clone = current_task.clone();
 
                             let agent_state = agent_state_clone.clone();
+                            let model_perpetuum = perpetuum.clone();
                             let runtime_budget = runtime_budget.clone();
                             let runtime_policy = runtime_policy.clone();
                             let memory = memory_clone.clone();
@@ -4024,137 +3804,25 @@ async fn main() -> Result<()> {
                                         } else {
                                             msg_text_cmd.trim()["/model".len()..].trim()
                                         };
-                                        let result = handle_model_command(args);
-                                        let is_switch = result.starts_with("Model switched:");
-
-                                        // If model was switched, reload agent immediately
-                                        // (don't wait for file watcher)
-                                        let final_text = if is_switch {
-                                            // Check if this is a Codex OAuth model switch
-                                            #[cfg(feature = "codex-oauth")]
-                                            let codex_switch = result.contains("Codex OAuth");
-                                            #[cfg(not(feature = "codex-oauth"))]
-                                            let codex_switch = false;
-
-                                            if codex_switch {
-                                                #[cfg(feature = "codex-oauth")]
-                                                {
-                                                    // Extract target model from "Model switched: codex-oauth → <model>"
-                                                    let new_model = result
-                                                        .lines()
-                                                        .next()
-                                                        .and_then(|l| l.split("→ ").nth(1))
-                                                        .unwrap_or("gpt-5.4")
-                                                        .trim()
-                                                        .to_string();
-                                                    match temm1e_codex_oauth::TokenStore::load() {
-                                                        Ok(store) => {
-                                                            let token_store = std::sync::Arc::new(store);
-                                                            let provider: Arc<dyn temm1e_core::Provider> =
-                                                                Arc::new(temm1e_codex_oauth::CodexResponsesProvider::new(
-                                                                    new_model.clone(),
-                                                                    token_store,
-                                                                ));
-                                                            let new_agent = Arc::new(temm1e_agent::AgentRuntime::with_limits(
-                                                                provider,
-                                                                memory.clone(),
-                                                                tools_template.clone(),
-                                                                new_model.clone(),
-                                                                Some(build_system_prompt(&personality)),
-                                                                max_turns,
-                                                                max_ctx,
-                                                                max_rounds,
-                                                                max_task_duration,
-                                                                max_spend,
-                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
-                                                            *agent_state.write().await = Some(new_agent);
-                                                            tracing::info!(
-                                                                provider = "openai-codex",
-                                                                model = %new_model,
-                                                                "Agent reloaded via /model command (Codex OAuth)"
-                                                            );
-                                                            format!("Model switched → {}\nActive now.", new_model)
-                                                        }
-                                                        Err(e) => {
-                                                            format!("Model switch failed: {}", e)
-                                                        }
-                                                    }
-                                                }
-                                                #[cfg(not(feature = "codex-oauth"))]
-                                                { result }
-                                            } else if let Some(creds) = load_credentials_file() {
-                                                if let Some(prov) = creds.providers.iter().find(|p| p.name == creds.active) {
-                                                    // Proxy providers use lenient placeholder check so short
-                                                    // LM Studio / Ollama keys survive /model reload.
-                                                    let has_custom = prov.base_url.is_some();
-                                                    let valid_keys: Vec<String> = prov.keys.iter()
-                                                        .filter(|k| {
-                                                            if has_custom {
-                                                                !is_placeholder_key_lenient(k)
-                                                            } else {
-                                                                !is_placeholder_key(k)
-                                                            }
-                                                        })
-                                                        .cloned()
-                                                        .collect();
-                                                    let effective_base_url = prov.base_url.clone().or_else(|| base_url.clone());
-                                                    let reload_config = temm1e_core::types::config::ProviderConfig {
-                                                        name: Some(creds.active.clone()),
-                                                        api_key: valid_keys.first().cloned(),
-                                                        keys: valid_keys,
-                                                        model: Some(prov.model.clone()),
-                                                        base_url: effective_base_url,
-                                                        extra_headers: std::collections::HashMap::new(),
-                                                    };
-                                                    match validate_provider_key(&reload_config).await {
-                                                        Ok(validated_provider) => {
-                                                            let new_agent = Arc::new(temm1e_agent::AgentRuntime::with_limits(
-                                                                validated_provider,
-                                                                memory.clone(),
-                                                                tools_template.clone(),
-                                                                prov.model.clone(),
-                                                                Some(build_system_prompt(&personality)),
-                                                                max_turns,
-                                                                max_ctx,
-                                                                max_rounds,
-                                                                max_task_duration,
-                                                                max_spend,
-                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
-                                                            *agent_state.write().await = Some(new_agent);
-                                                            tracing::info!(
-                                                                provider = %creds.active,
-                                                                model = %prov.model,
-                                                                "Agent reloaded via /model command"
-                                                            );
-                                                            format!("{}\nActive now.", result)
-                                                        }
-                                                        Err(err) => {
-                                                            tracing::warn!(error = %err, "Model switch failed validation");
-                                                            // Revert credentials
-                                                            if let Some(old_agent) = agent_state.read().await.as_ref() {
-                                                                let old_model = old_agent.model().to_string();
-                                                                let mut rev = creds.clone();
-                                                                for p in &mut rev.providers {
-                                                                    if p.name == creds.active {
-                                                                        p.model = old_model.clone();
-                                                                    }
-                                                                }
-                                                                if let Ok(content) = toml::to_string_pretty(&rev) {
-                                                                    let _ = std::fs::write(credentials_path(), &content);
-                                                                }
-                                                            }
-                                                            format!("Model switch failed: {}\nReverted to previous model.", err)
-                                                        }
-                                                    }
-                                                } else {
-                                                    result
-                                                }
-                                            } else {
-                                                result
+                                        let (final_text, binding) = {
+                                            let mut state = agent_state.write().await;
+                                            match state.as_mut() {
+                                                None => ("No active provider. Configure a connection first.".into(), None),
+                                                Some(agent) if args.is_empty() => (runtime_model_status(agent), None),
+                                                Some(agent) => match Arc::get_mut(agent) {
+                                                    None => ("A turn is still using this runtime. Retry /model when it finishes.".into(), None),
+                                                    Some(agent) => match select_runtime_model(agent, args) {
+                                                        Err(error) => (format!("Model selection failed: {error}"), None),
+                                                        Ok(text) => (text, Some((agent.provider_arc(), agent.model().to_owned(), agent.budget()))),
+                                                    },
+                                                },
                                             }
-                                        } else {
-                                            result
                                         };
+                                        if let Some((provider, model, budget)) = binding {
+                                            if let Some(perp) = model_perpetuum.read().await.as_ref() {
+                                                perp.rebind_provider(Arc::new(temm1e_agent::metered_provider::MeteredProvider::new(provider, budget)), model);
+                                            }
+                                        }
 
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
@@ -7156,6 +6824,28 @@ Just type a message to chat with the AI agent.",
                             model_command_context(agent_opt.as_ref(), &config.provider).as_ref()
                         )
                     );
+                    eprint!("temm1e> ");
+                    continue;
+                }
+
+                if cmd_lower == "/model" || cmd_lower.starts_with("/model ") {
+                    let args = msg_text.trim()["/model".len()..].trim();
+                    let text = match agent_opt.as_mut() {
+                        None => "No active provider. Configure a connection first.".into(),
+                        Some(agent) if args.is_empty() => runtime_model_status(agent),
+                        Some(agent) => {
+                            match select_runtime_model(agent, args) {
+                                Err(error) => format!("Model selection failed: {error}"),
+                                Ok(text) => {
+                                    if let Some(perp) = cli_perp_instance.read().await.as_ref() {
+                                        perp.rebind_provider(Arc::new(temm1e_agent::metered_provider::MeteredProvider::new(agent.provider_arc(), agent.budget())), agent.model().to_owned());
+                                    }
+                                    text
+                                }
+                            }
+                        }
+                    };
+                    println!("\n{text}\n");
                     eprint!("temm1e> ");
                     continue;
                 }

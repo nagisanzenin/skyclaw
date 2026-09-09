@@ -21,7 +21,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
             return
         request = json.loads(self.rfile.read(size))
         assert self.headers.get('Authorization') == 'Bearer local-consciousness-fixture'
-        assert request['model'] == 'consciousness-fixture'
+        assert request['model'] in ('consciousness-fixture', 'consciousness-fixture-two')
         systems = '\n'.join(str(m.get('content', '')) for m in request['messages'] if m['role'] == 'system')
         kind = 'pre' if systems.startswith('You are the consciousness layer') and 'You observe' in systems else 'post' if systems.startswith('You are the consciousness layer') else 'foreground'
         if kind in ("pre", "post"):
@@ -36,7 +36,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def run(binary, enabled, limited, output_limit=4096, new_conversation=False):
+def run(binary, enabled, limited, output_limit=4096, new_conversation=False, switch_model=False):
     with tempfile.TemporaryDirectory(prefix='temm1e-consciousness-') as temporary:
         root = Path(temporary)
         profile = root / 'profile'
@@ -79,15 +79,22 @@ input_price_per_1m = 1.0
 output_price_per_1m = 1.0
 pricing_verified = true
 ''')
+            if switch_model:
+                with (profile / 'custom_models.toml').open('a') as models:
+                    models.write(f'\n[[models]]\nprovider = "openai"\nname = "consciousness-fixture-two"\ncontext_window = 32768\nmax_output_tokens = {output_limit}\ninput_price_per_1m = 1.0\noutput_price_per_1m = 1.0\npricing_verified = true\n')
             env = {k: v for k, v in os.environ.items() if not k.endswith(('_API_KEY', '_TOKEN')) and not k.startswith('TEMM1E_')}
             env['TEMM1E_DATA_DIR'] = str(profile)
             objective = 'In the workspace, write `demo.rs` with pub fn greet(name: &str) -> String.'
             commands = ([objective, '/session-new', objective] if new_conversation else [objective] * (1 if limited else 2)) + ['/quit', '']
+            if switch_model:
+                commands = [objective, '/model consciousness-fixture-two', objective, '/quit', '']
             result = subprocess.run([str(binary), 'chat'], input='\n'.join(commands), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=root, env=env, timeout=45)
             assert result.returncode == 0, result.stdout[-4000:]
             kinds = [kind for kind, _ in server.requests]
             expected = ['pre'] if limited else ['pre', 'foreground', 'post'] * 2 if enabled else ['foreground'] * 2
             assert kinds == expected, (kinds, result.stdout[-4000:])
+            if switch_model:
+                assert [request['model'] for _, request in server.requests] == ['consciousness-fixture'] * 3 + ['consciousness-fixture-two'] * 3
             if limited:
                 assert 'Budget exceeded' in result.stdout, result.stdout[-4000:]
                 assert 'CONSCIOUS_FOREGROUND_RETURNED' not in result.stdout
@@ -95,7 +102,7 @@ pricing_verified = true
                 second_pre = json.dumps(server.requests[3][1])
                 assert ('POST_INSIGHT_SENTINEL' in second_pre) == (not new_conversation), second_pre
                 assert ('Consciousness-T1' in second_pre) == (not new_conversation), second_pre
-            print(f'PASS enabled={enabled} limited={limited} output_limit={output_limit} new_conversation={new_conversation} actual HTTP calls={kinds}')
+            print(f'PASS enabled={enabled} limited={limited} output_limit={output_limit} new_conversation={new_conversation} switch_model={switch_model} actual HTTP calls={kinds}')
         finally:
             server.shutdown()
             server.server_close()
@@ -111,3 +118,5 @@ if __name__ == '__main__':
     run(args.binary.resolve(), True, False, output_limit=256)
 
     run(args.binary.resolve(), True, False, new_conversation=True)
+
+    run(args.binary.resolve(), True, False, switch_model=True)

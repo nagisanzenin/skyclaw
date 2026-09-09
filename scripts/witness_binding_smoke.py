@@ -125,7 +125,8 @@ pricing_verified = true
         objectives = OBJECTIVES[:1] if limited else OBJECTIVES
         server.profile = profile
         before, planners_before = len(server.requests), server.planners
-        commands = [objectives[0], f'proxy openai http://127.0.0.1:{server.server_port}/v1 local-witness-fixture model:witness-fixture-two', objectives[1]] if server.switch_model and not limited else objectives
+        model_command = '/model witness-fixture-two' if server.slash_model else f'proxy openai http://127.0.0.1:{server.server_port}/v1 local-witness-fixture model:witness-fixture-two'
+        commands = [objectives[0], model_command, objectives[1]] if server.switch_model and not limited else objectives
         result = subprocess.run([str(binary), 'chat'], input='\n'.join(commands + ['/quit', '']), text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=root, env=env, timeout=45)
         assert result.returncode == 0, result.stdout[-3000:]
@@ -208,6 +209,7 @@ def main():
     parser.add_argument('--evidence-ref', action='store_true')
     parser.add_argument('--model-calls', type=int)
     parser.add_argument('--switch-model', action='store_true')
+    parser.add_argument('--slash-model', action='store_true')
     parser.add_argument('--small-output-limits', action='store_true')
     args = parser.parse_args()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
@@ -216,7 +218,8 @@ def main():
     server.failing_check = args.failing_check
     server.evidence_ref = args.evidence_ref
     server.model_calls = args.model_calls
-    server.switch_model = args.switch_model
+    server.switch_model = args.switch_model or args.slash_model
+    server.slash_model = args.slash_model
     server.small_output_limits = args.small_output_limits
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
