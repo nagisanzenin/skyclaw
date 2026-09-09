@@ -50,7 +50,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 content = json.dumps(draft)
         elif reviewer:
             assert request['model'] in ('witness-fixture', 'witness-fixture-two')
-            assert request.get('max_tokens') == 4096, request
+            expected_output = (512 if request['model'] == 'witness-fixture-two' else 1024) if self.server.small_output_limits else 4096
+            assert request.get('max_tokens') == expected_output, request
             assert 'token token' in json.dumps(request)
             content = json.dumps({'verdict': 'pass', 'reason': 'reviewed fixture bytes'})
         else:
@@ -114,6 +115,11 @@ pricing_verified = true
         if server.switch_model:
             with (profile / 'custom_models.toml').open('a') as models:
                 models.write('\n[[models]]\nprovider = "openai"\nname = "witness-fixture-two"\ncontext_window = 32768\nmax_output_tokens = 4096\ninput_price_per_1m = 1.0\noutput_price_per_1m = 1.0\npricing_verified = true\n')
+        if server.small_output_limits:
+            models = profile / 'custom_models.toml'
+            content = models.read_text().replace('max_output_tokens = 4096', 'max_output_tokens = 1024', 1)
+            content = content.replace('max_output_tokens = 4096', 'max_output_tokens = 512')
+            models.write_text(content)
         env = {k: v for k, v in os.environ.items() if not k.endswith(('_API_KEY', '_TOKEN')) and not k.startswith('TEMM1E_')}
         env['TEMM1E_DATA_DIR'] = str(profile)
         objectives = OBJECTIVES[:1] if limited else OBJECTIVES
@@ -202,6 +208,7 @@ def main():
     parser.add_argument('--evidence-ref', action='store_true')
     parser.add_argument('--model-calls', type=int)
     parser.add_argument('--switch-model', action='store_true')
+    parser.add_argument('--small-output-limits', action='store_true')
     args = parser.parse_args()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
     server.requests, server.planners = [], 0
@@ -210,6 +217,7 @@ def main():
     server.evidence_ref = args.evidence_ref
     server.model_calls = args.model_calls
     server.switch_model = args.switch_model
+    server.small_output_limits = args.small_output_limits
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

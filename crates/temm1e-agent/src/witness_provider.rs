@@ -14,6 +14,8 @@ pub(crate) struct WitnessProvider {
     inner: Arc<dyn Provider>,
     model: String,
     input_limit: usize,
+    model_window: usize,
+    model_output: usize,
     remaining: AtomicU32,
 }
 impl WitnessProvider {
@@ -23,10 +25,14 @@ impl WitnessProvider {
         input_limit: usize,
         calls: u32,
     ) -> Self {
+        let (model_window, model_output) =
+            temm1e_core::types::model_registry::model_limits_with_custom(inner.name(), &model);
         Self {
             inner,
             model,
             input_limit,
+            model_window,
+            model_output,
             remaining: AtomicU32::new(calls.min(8)),
         }
     }
@@ -38,7 +44,7 @@ impl Provider for WitnessProvider {
     }
     async fn complete(
         &self,
-        request: CompletionRequest,
+        mut request: CompletionRequest,
     ) -> Result<CompletionResponse, Temm1eError> {
         if request.model != self.model
             || !request.tools.is_empty()
@@ -50,11 +56,18 @@ impl Provider for WitnessProvider {
                 "invalid Witness provider request".into(),
             ));
         }
-        let (window, _) = temm1e_core::types::model_registry::model_limits_with_custom(
-            self.inner.name(),
-            &self.model,
-        );
-        crate::context::check_context_fit(&request, self.input_limit, window)?;
+        // Capture limits once per turn, and reserve room for evidence even if
+        // a model advertises output equal to its whole context window.
+        let output = (request.max_tokens.unwrap_or(0) as usize)
+            .min(self.model_output)
+            .min(self.model_window / 2);
+        if output == 0 {
+            return Err(Temm1eError::Provider(
+                "Witness model has no usable output allowance".into(),
+            ));
+        }
+        request.max_tokens = Some(output as u32); // Already bounded above by4096.
+        crate::context::check_context_fit(&request, self.input_limit, self.model_window)?;
         self.remaining
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
                 left.checked_sub(1)
@@ -208,5 +221,47 @@ mod tests {
             assert!(provider.complete(request()).await.is_err());
             assert_eq!(budget.snapshot().recorded_calls, 1);
         }
+    }
+    #[tokio::test]
+    async fn custom_limits_are_captured_and_output_respects_selected_model() {
+        const CHILD: &str = "TEMM1E_WITNESS_LIMITS_FIXTURE";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "witness_provider::tests::custom_limits_are_captured_and_output_respects_selected_model", "--nocapture"])
+                .env(CHILD, "1").env("TEMM1E_DATA_DIR", directory.path()).output().unwrap();
+            assert!(
+                child.status.success(),
+                "isolated limits fixture failed: {} {}",
+                String::from_utf8_lossy(&child.stdout),
+                String::from_utf8_lossy(&child.stderr)
+            );
+            return;
+        }
+        let path = temm1e_core::config::data_dir().join("custom_models.toml");
+        let configure = |window, output| {
+            std::fs::write(&path, format!("[[models]]\nprovider = \"queued-mock\"\nname = \"fixture\"\ncontext_window = {window}\nmax_output_tokens = {output}\n")).unwrap()
+        };
+        configure(8192, 1024);
+        let raw = Arc::new(QueuedMockProvider::with_responses(
+            vec![QueuedMockProvider::text_response("response"); 3],
+        ));
+        let old = WitnessProvider::new(raw.clone(), "fixture".into(), 8192, 2);
+        old.complete(request()).await.unwrap();
+        assert_eq!(raw.captured_requests.lock().await[0].max_tokens, Some(1024));
+        configure(256, 128);
+        old.complete(request()).await.unwrap();
+        let next = WitnessProvider::new(raw.clone(), "fixture".into(), 8192, 1);
+        next.complete(request()).await.unwrap();
+        let captured = raw.captured_requests.lock().await;
+        assert_eq!(
+            captured.iter().map(|r| r.max_tokens).collect::<Vec<_>>(),
+            vec![Some(1024), Some(1024), Some(128)]
+        );
+        drop(captured);
+        configure(0, 0);
+        let invalid = WitnessProvider::new(raw.clone(), "fixture".into(), 8192, 1);
+        assert!(invalid.complete(request()).await.is_err());
+        assert_eq!(*raw.call_count.lock().await, 3);
     }
 }
