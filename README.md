@@ -299,6 +299,8 @@ Configuration normally lives in `~/.temm1e/config.toml`. `TEMM1E_DATA_DIR` selec
 
 Tem can execute tools with substantial access to its host. Private credentials, role checks, scoped state and bounded processes improve specific boundaries; they do not provide an OS sandbox. Use external isolation when serving untrusted users or constraining host access. Self-growth, local training and external reporting deserve explicit configuration appropriate to their scope.
 
+Known dependency advisories and their scope are documented in the [dependency review](docs/modernization/DEPENDENCY-CLOSEOUT.md). A green advisory CI job does not mean a vulnerability-free dependency tree.
+
 ## Commands
 
 ```text

@@ -623,3 +623,7 @@ Final f9d30e7 CI all8jobs green, but security job was intentionally non-blocking
 ## Checkpoint75 — remove redundant legacy S3 TLS and preserve patch evidence
 
 Compatible patch audit26→11vulnerability entries,22→12warnings; declared MSRV passes. Two live GLM acceptance cases and native CLI lifecycle pass, recorded separately from original A/B. S3 defaults now retain modern HTTPS/sigv4a/tokio and omit redundant legacy rustls connector, removing old rustls0.21/webpki0.101/h20.3. No default runtime API changes. Final audit/full-feature CI and residual Discord/XML/RSA risk disposition remain required. User also requests a Discord launch image and English bullet post only after successful release; prepare then, do not post externally.
+
+## Checkpoint76 — precise residual dependency review
+
+0af6a2b audit7vulnerability entries12warnings, down from26/22. Remaining package versions were present in baseline. DEPENDENCY-CLOSEOUT.md separates Discord’s inherited certificate-constraint issues, unused-by-inspected-config CRL paths, Linux xcb generator XML and RSA unselected in inspectedmacOS tree. Primary RustSec sources linked; no exploitability-free claim. Maintainer must choose disclosed residual release vs a larger Discord transport migration; no merge/tag yet. README links the known issues.
