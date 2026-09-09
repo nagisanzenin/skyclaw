@@ -523,3 +523,9 @@ Explicit `witness.model_verification_max_calls` now selects bounded-call model v
 Combined792agentunit77integration/281coreunit1ignored/95Witnessunit48integrationPASS; addedfailure/dropcase bringsdefinedagentunitto793 andall3wrappertestsPASS. ActualCLIenabledproxy-modelswitch6requests(2planner2fore2review)/exactbytes+restart0;zero/None4/2;finiteownercontrols1planner0fore/review. Firstfixturecompileerrors,missinganti-stubOathfixturefailure andunsupported/modelCLIfixturefailure are retained and explained. Build1m31;fullworkspaceallfeaturealltargetclippyPASS1m44s/clean6.0GiB;existingdependencyfuturecompatnotice remains.
 
 53CI34295232801FULLGREEN.54CI34295726293FAILED inMarkdownappendvisibility assertion, unrelatedWitnessparsercode: queuedTokioFileappend mayfinish afterstore returns. Originalfailurelogretained; productionflushreviewnext56. No55CIpass/releaseclaim.
+
+## Fifty-sixth implementation checkpoint
+
+Markdown `store` now flushes queued Tokio file writes before acknowledging success. The actual independent-read regression reproduced checkpoint54 CI's visibility failure at the second stored entry, then passed with the repair. Entry layout and both daily/long-term paths are preserved; this does not promise fsync or concurrent/crash-atomic storage. The Engram preservation assertion remains unchanged. See [Markdown write visibility](MARKDOWN-WRITE-VISIBILITY.md).
+
+Memory75unit+7integration pass (one existing ignored); the exact failed Engram test with browser feature passes. Scoped all-feature/all-target memory/tools clippy passed33.04s and cleaned1.4GiB; formatting and diff checks pass.55 `c47581d` pushed, CI34296965921 pending;54's real failure is retained and addressed here, not reclassified as a historical pass.

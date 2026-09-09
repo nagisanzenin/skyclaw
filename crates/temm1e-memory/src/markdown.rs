@@ -67,6 +67,10 @@ impl MarkdownMemory {
         // leading newline that the entry parser (split on "<!-- entry:") skips.
         file.write_all(b"\n").await?;
         file.write_all(text.as_bytes()).await?;
+        // Tokio writes can still be queued after write_all resolves. Finish
+        // them (and surface write errors) before acknowledging a visible store.
+        // This is not fsync or a crash-atomic multi-writer append contract.
+        file.flush().await?;
         Ok(())
     }
 
@@ -334,6 +338,34 @@ mod tests {
             timestamp: Utc::now(),
             session_id: Some("test-session".to_string()),
             entry_type: et,
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_store_is_fully_visible_to_immediate_independent_reader() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory = MarkdownMemory::new(tmp.path()).await.unwrap();
+        for kind in [MemoryEntryType::LongTerm, MemoryEntryType::Conversation] {
+            for sequence in 0..32 {
+                let id = format!("visible-{kind:?}-{sequence}");
+                let entry = make_entry(
+                    &id,
+                    &format!("{id} {} END-{id}", "payload 🌱 ".repeat(1024)),
+                    kind.clone(),
+                );
+                let file = match kind {
+                    MemoryEntryType::LongTerm => memory.long_term_file(),
+                    _ => memory.daily_file(&entry.timestamp.format("%Y-%m-%d").to_string()),
+                };
+                let expected = MarkdownMemory::entry_to_markdown(&entry);
+                memory.store(entry).await.unwrap();
+                // No Tokio read or yield that could incidentally finish a pending write.
+                let visible = std::fs::read_to_string(file).unwrap();
+                assert!(
+                    visible.ends_with(&expected),
+                    "store returned before complete append was visible: {id}"
+                );
+            }
         }
     }
 
