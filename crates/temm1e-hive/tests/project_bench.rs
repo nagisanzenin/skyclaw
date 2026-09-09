@@ -670,12 +670,9 @@ async fn run_swarm(provider: Arc<dyn Provider>) -> ProjectMetrics {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live Gemini benchmark: requires GEMINI_API_KEY and network; run explicitly with --ignored"]
 async fn project_benchmark() {
-    let key = std::env::var("GEMINI_API_KEY");
-    if key.is_err() {
-        println!("GEMINI_API_KEY not set — skipping project benchmark");
-        return;
-    }
+    std::env::var("GEMINI_API_KEY").expect("explicit live benchmark requires GEMINI_API_KEY");
 
     let provider = make_provider().expect("Failed to create Gemini provider");
 
@@ -701,10 +698,7 @@ async fn project_benchmark() {
     };
     match provider.complete(request).await {
         Ok(_) => println!("\nAPI connected.\n"),
-        Err(e) => {
-            println!("API FAILED: {e} — aborting");
-            return;
-        }
+        Err(e) => panic!("Live benchmark connectivity failed: {e}"),
     }
 
     // Run both modes

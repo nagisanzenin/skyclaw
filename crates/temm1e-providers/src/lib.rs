@@ -13,10 +13,17 @@
 
 #![allow(dead_code)]
 
-pub mod anthropic;
+mod anthropic;
+mod anthropic_native;
+mod anthropic_stream;
+pub mod chat_stream;
 pub mod gemini;
+mod gemini_native;
+mod gemini_stream;
 pub mod openai_compat;
 pub mod rate_limit;
+pub mod responses;
+mod sse_transport;
 
 pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;
@@ -34,7 +41,7 @@ use temm1e_core::Provider;
 /// - `"grok"` | `"xai"` -> `OpenAICompatProvider` with `https://api.x.ai/v1`
 /// - `"openrouter"` -> `OpenAICompatProvider` with `https://openrouter.ai/api/v1`
 /// - `"minimax"` -> `OpenAICompatProvider` with `https://api.minimax.io/v1`
-/// - anything else -> `OpenAICompatProvider` (defaults to OpenAI)
+/// - unknown names -> compatible adapter only with an explicit HTTP(S) base URL
 ///
 /// `api_key` must be set. `base_url` is optional (overrides the preset default).
 pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Temm1eError> {
@@ -57,7 +64,10 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
         }
         "gemini" => {
             // Native Gemini API — properly handles systemInstruction.
-            let provider = GeminiProvider::new(api_key);
+            let mut provider = GeminiProvider::new(api_key);
+            if let Some(ref base_url) = config.base_url {
+                provider = provider.with_base_url(base_url.clone());
+            }
             Ok(Box::new(provider))
         }
         "grok" | "xai" => {
@@ -68,7 +78,8 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         "openrouter" => {
@@ -79,7 +90,8 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         "minimax" => {
@@ -90,7 +102,8 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         "stepfun" => {
@@ -101,8 +114,34 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
+        }
+        "zai-coding-plan" => {
+            // Subscription traffic must never silently fall back to metered API.
+            // Custom/proxy endpoints belong to a separately selected connection.
+            const ENDPOINT: &str = "https://api.z.ai/api/coding/paas/v4";
+            if config
+                .base_url
+                .as_deref()
+                .is_some_and(|url| url.trim_end_matches('/') != ENDPOINT)
+            {
+                return Err(Temm1eError::Config(
+                    "zai-coding-plan requires its coding endpoint; select a separate API/proxy connection to change billing routes".into(),
+                ));
+            }
+            if all_keys.len() > 1 {
+                return Err(Temm1eError::Config(
+                    "zai-coding-plan uses one account key per connection".into(),
+                ));
+            }
+            Ok(Box::new(
+                OpenAICompatProvider::new(api_key)
+                    .with_name("zai-coding-plan")
+                    .with_base_url(ENDPOINT.into())
+                    .with_extra_headers(config.extra_headers.clone()),
+            ))
         }
         "zai" | "zhipu" => {
             let base_url = config
@@ -112,7 +151,8 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         "ollama" => {
@@ -123,7 +163,8 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         "lmstudio" | "lm-studio" => {
@@ -141,13 +182,25 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Tem
             let provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
                 .with_base_url(base_url)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             Ok(Box::new(provider))
         }
         _ => {
+            if !matches!(name, "openai" | "openai-compatible") {
+                let destination = config
+                    .base_url
+                    .as_deref()
+                    .and_then(|base| reqwest::Url::parse(base).ok())
+                    .filter(|url| matches!(url.scheme(), "https" | "http") && url.has_host());
+                if destination.is_none() {
+                    return Err(Temm1eError::Config("Unknown provider requires an explicit HTTP(S) base_url; refusing to send its credential to the default OpenAI endpoint".into()));
+                }
+            }
             let mut provider = OpenAICompatProvider::new(api_key)
                 .with_keys(all_keys)
-                .with_extra_headers(config.extra_headers.clone());
+                .with_extra_headers(config.extra_headers.clone())
+                .with_name(name);
             if let Some(ref base_url) = config.base_url {
                 provider = provider.with_base_url(base_url.clone());
             }
@@ -181,67 +234,89 @@ mod tests {
     #[test]
     fn create_openai_provider() {
         let provider = create_provider(&config_with_name("openai")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "openai");
     }
 
     #[test]
     fn create_grok_provider() {
         let provider = create_provider(&config_with_name("grok")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "grok");
     }
 
     #[test]
     fn create_xai_provider() {
         let provider = create_provider(&config_with_name("xai")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "xai");
     }
 
     #[test]
     fn create_openrouter_provider() {
         let provider = create_provider(&config_with_name("openrouter")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "openrouter");
     }
 
     #[test]
     fn create_minimax_provider() {
         let provider = create_provider(&config_with_name("minimax")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "minimax");
+    }
+
+    #[test]
+    fn coding_plan_preserves_identity_and_rejects_metered_route() {
+        let config = config_with_name("zai-coding-plan");
+        assert_eq!(create_provider(&config).unwrap().name(), "zai-coding-plan");
+        let mut metered = config.clone();
+        metered.base_url = Some("https://api.z.ai/api/paas/v4".into());
+        assert!(create_provider(&metered).is_err());
     }
 
     #[test]
     fn create_zai_provider() {
         let provider = create_provider(&config_with_name("zai")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "zai");
     }
 
     #[test]
     fn create_zhipu_provider() {
         let provider = create_provider(&config_with_name("zhipu")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "zhipu");
     }
 
     #[test]
     fn create_stepfun_provider() {
         let provider = create_provider(&config_with_name("stepfun")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "stepfun");
     }
 
     #[test]
     fn create_ollama_provider() {
         let provider = create_provider(&config_with_name("ollama")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "ollama");
     }
 
     #[test]
     fn create_lmstudio_provider() {
         let provider = create_provider(&config_with_name("lmstudio")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "lmstudio");
     }
 
     #[test]
     fn create_lmstudio_provider_dashed_alias() {
         let provider = create_provider(&config_with_name("lm-studio")).unwrap();
-        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.name(), "lm-studio");
+    }
+
+    #[test]
+    fn unknown_provider_needs_an_explicit_destination() {
+        let mut config = config_with_name("antrhopic");
+        assert!(create_provider(&config).is_err());
+        for invalid in ["", "not a URL", "file:///tmp/provider"] {
+            config.base_url = Some(invalid.into());
+            assert!(create_provider(&config).is_err());
+        }
+        config.name = Some("private-vllm".into());
+        config.base_url = Some("http://localhost:8000/v1".into());
+        assert_eq!(create_provider(&config).unwrap().name(), "private-vllm");
     }
 
     #[test]

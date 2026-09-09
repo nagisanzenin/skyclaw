@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, watch, Mutex, RwLock};
+use futures::FutureExt;
+use tokio::sync::{mpsc, watch, RwLock};
 
 use temm1e_agent::agent_task_status::AgentTaskStatus;
 use temm1e_agent::AgentRuntime;
@@ -49,8 +50,8 @@ fn read_hive_enabled() -> bool {
     fn hive_default_enabled_tui() -> bool {
         true
     }
-    dirs::home_dir()
-        .and_then(|h| std::fs::read_to_string(h.join(".temm1e/config.toml")).ok())
+    std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+        .ok()
         .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
         .and_then(|c| toml::from_str::<HC>(&c).ok())
         .map(|c| c.hive.enabled)
@@ -63,8 +64,8 @@ fn read_hive_config() -> temm1e_hive::HiveConfig {
         #[serde(default)]
         hive: temm1e_hive::HiveConfig,
     }
-    dirs::home_dir()
-        .and_then(|h| std::fs::read_to_string(h.join(".temm1e/config.toml")).ok())
+    std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+        .ok()
         .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
         .and_then(|c| toml::from_str::<HW>(&c).ok())
         .map(|w| w.hive)
@@ -82,17 +83,67 @@ pub struct AgentHandle {
     /// (`runtime.rs:927`) and emits `AgentTaskPhase::Interrupted`.
     /// Reset to false at the start of each new message.
     pub interrupt_flag: Arc<AtomicBool>,
+    task: tokio::task::JoinHandle<bool>,
+    pub(crate) setup: AgentSetup,
+    pub(crate) budget: Arc<temm1e_agent::budget::BudgetTracker>,
+}
+
+#[derive(Debug)]
+pub struct ShutdownReport {
+    pub loop_joined: bool,
+    pub background_drained: bool,
+}
+
+impl AgentHandle {
+    /// Close input, interrupt active work, and wait for final persistence and
+    /// owned runtime hooks. A timeout aborts this loop but preserves uncertainty.
+    pub async fn shutdown(self, deadline: std::time::Duration) -> ShutdownReport {
+        self.interrupt_flag.store(true, Ordering::Relaxed);
+        drop(self.inbound_tx);
+        let mut task = self.task;
+        match tokio::time::timeout(deadline, &mut task).await {
+            Ok(Ok(drained)) => ShutdownReport {
+                loop_joined: true,
+                background_drained: drained,
+            },
+            Ok(Err(_)) => ShutdownReport {
+                loop_joined: false,
+                background_drained: false,
+            },
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                ShutdownReport {
+                    loop_joined: false,
+                    background_drained: false,
+                }
+            }
+        }
+    }
 }
 
 /// Configuration for agent setup.
+#[derive(Clone)]
 pub struct AgentSetup {
     pub provider_name: String,
     pub api_key: String,
+    /// Captured keys for this exact provider/endpoint.
+    pub keys: Vec<String>,
     pub model: String,
     pub base_url: Option<String>,
     pub config: Temm1eConfig,
     /// Selected personality mode (auto/play/work/pro).
     pub mode: Option<String>,
+}
+
+impl AgentSetup {
+    /// Resolve a single immutable connection snapshot; this method performs no I/O.
+    pub fn resolve(
+        config: &Temm1eConfig,
+        saved: Option<&credentials::CredentialsFile>,
+    ) -> Option<Self> {
+        crate::connection::resolve(config, saved)
+    }
 }
 
 /// Create the agent runtime from credentials and spawn the processing loop.
@@ -102,36 +153,20 @@ pub async fn spawn_agent(
     setup: AgentSetup,
     event_tx: mpsc::UnboundedSender<Event>,
 ) -> Result<AgentHandle, Temm1eError> {
-    // 1. Create provider
-    let (all_keys, saved_base_url) = credentials::load_active_provider_keys()
-        .map(|(_, keys, _, burl)| {
-            // Proxy providers use lenient placeholder check so short LM Studio /
-            // Ollama keys survive TUI agent spawn.
-            let has_custom = burl.is_some();
-            let valid: Vec<String> = keys
-                .into_iter()
-                .filter(|k| {
-                    if has_custom {
-                        !credentials::is_placeholder_key_lenient(k)
-                    } else {
-                        !credentials::is_placeholder_key(k)
-                    }
-                })
-                .collect();
-            (valid, burl)
-        })
-        .unwrap_or_else(|| (vec![setup.api_key.clone()], None));
+    let budget = Arc::new(temm1e_agent::budget::BudgetTracker::new(
+        setup.config.agent.max_spend_usd,
+    ));
+    spawn_agent_with_budget(setup, event_tx, budget).await
+}
 
-    let effective_base_url = saved_base_url.or(setup.config.provider.base_url.clone());
-
-    let provider_config = temm1e_core::types::config::ProviderConfig {
-        name: Some(setup.provider_name.clone()),
-        api_key: Some(setup.api_key.clone()),
-        keys: all_keys,
-        model: Some(setup.model.clone()),
-        base_url: effective_base_url,
-        extra_headers: setup.config.provider.extra_headers.clone(),
-    };
+pub(crate) async fn spawn_agent_with_budget(
+    setup: AgentSetup,
+    event_tx: mpsc::UnboundedSender<Event>,
+    budget: Arc<temm1e_agent::budget::BudgetTracker>,
+) -> Result<AgentHandle, Temm1eError> {
+    // 1. Construct only from the captured connection. Never reread a possibly
+    // unrelated active provider or redirect to a saved endpoint here.
+    let provider_config = crate::connection::provider_config(&setup);
 
     let provider: Arc<dyn temm1e_core::Provider> = {
         #[cfg(feature = "codex-oauth")]
@@ -163,22 +198,27 @@ pub async fn spawn_agent(
     };
 
     // 2. Create memory backend
-    let memory_url = setup.config.memory.path.clone().unwrap_or_else(|| {
-        let data_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".temm1e");
-        std::fs::create_dir_all(&data_dir).ok();
-        format!("sqlite:{}/memory.db?mode=rwc", data_dir.display())
-    });
+    let data_dir = temm1e_core::config::data_dir();
+    std::fs::create_dir_all(&data_dir)?;
+    let memory_connections = temm1e_memory::MemoryConnections::resolve(
+        &setup.config.memory,
+        &data_dir,
+        &std::env::current_dir().unwrap_or_else(|_| data_dir.clone()),
+    );
+    if memory_connections.retained_legacy_markdown {
+        tracing::warn!("Retaining legacy Markdown memory location; configure memory.path before changing working directories");
+    }
+
     let memory: Arc<dyn temm1e_core::Memory> = Arc::from(
-        temm1e_memory::create_memory_backend(&setup.config.memory.backend, &memory_url).await?,
+        temm1e_memory::create_memory_backend(
+            &setup.config.memory.backend,
+            &memory_connections.primary,
+        )
+        .await?,
     );
 
     // 3. Create workspace
-    let workspace = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".temm1e")
-        .join("workspace");
+    let workspace = temm1e_core::config::data_dir().join("workspace");
     std::fs::create_dir_all(&workspace).ok();
 
     // 4. Determine personality mode
@@ -265,9 +305,7 @@ pub async fn spawn_agent(
     // ── TemDOS core registry (specialist sub-agents) ──
     let tui_core_registry = {
         let mut registry = temm1e_cores::CoreRegistry::new();
-        let ws_path = dirs::home_dir()
-            .map(|h| h.join(".temm1e"))
-            .unwrap_or_default();
+        let ws_path = temm1e_core::config::data_dir();
         registry
             .load(Some(ws_path.as_path()))
             .await
@@ -288,9 +326,7 @@ pub async fn spawn_agent(
             tui_core_registry.clone(),
             provider.clone(),
             tools.clone(),
-            Arc::new(temm1e_agent::budget::BudgetTracker::new(
-                setup.config.agent.max_spend_usd,
-            )),
+            budget.clone(),
             model_pricing,
             setup.model.clone(),
             setup.config.agent.max_context_tokens,
@@ -304,9 +340,7 @@ pub async fn spawn_agent(
     let tui_perp_temporal: Arc<RwLock<String>> = Arc::new(RwLock::new(String::new()));
     let tui_perpetuum: Option<Arc<temm1e_perpetuum::Perpetuum>> = if setup.config.perpetuum.enabled
     {
-        let perp_db = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".temm1e/perpetuum.db");
+        let perp_db = temm1e_core::config::data_dir().join("perpetuum.db");
         let db_url = format!("sqlite:{}?mode=rwc", perp_db.display());
         let perp_config = temm1e_perpetuum::PerpetualConfig {
             enabled: true,
@@ -341,7 +375,10 @@ pub async fn spawn_agent(
             Arc::new(HashMap::new());
         match temm1e_perpetuum::Perpetuum::new(
             perp_config,
-            provider.clone(),
+            Arc::new(temm1e_agent::metered_provider::MeteredProvider::new(
+                provider.clone(),
+                budget.clone(),
+            )),
             setup.model.clone(),
             channel_map,
             &db_url,
@@ -376,8 +413,8 @@ pub async fn spawn_agent(
             #[serde(default)]
             eigentune: temm1e_distill::config::EigenTuneConfig,
         }
-        dirs::home_dir()
-            .and_then(|h| std::fs::read_to_string(h.join(".temm1e/config.toml")).ok())
+        std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+            .ok()
             .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
             .and_then(|c| toml::from_str::<ETWrapper>(&c).ok())
             .map(|w| w.eigentune)
@@ -385,9 +422,7 @@ pub async fn spawn_agent(
     };
     let tui_eigen_tune_engine: Option<Arc<temm1e_distill::EigenTuneEngine>> =
         if tui_eigentune_cfg.enabled {
-            let et_db = dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".temm1e/eigentune.db");
+            let et_db = temm1e_core::config::data_dir().join("eigentune.db");
             let et_url = format!("sqlite:{}?mode=rwc", et_db.display());
             match temm1e_distill::EigenTuneEngine::new(&tui_eigentune_cfg, &et_url).await {
                 Ok(engine) => {
@@ -405,9 +440,7 @@ pub async fn spawn_agent(
 
     // ── Load personality for TUI (matches server/CLI pattern) ──
     let tui_personality = Arc::new(temm1e_anima::personality::PersonalityConfig::load(
-        &dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".temm1e"),
+        &temm1e_core::config::data_dir(),
     ));
 
     // ── Social intelligence: user profile storage ──
@@ -416,10 +449,7 @@ pub async fn spawn_agent(
     {
         let social_db_url = format!(
             "sqlite:{}/social.db?mode=rwc",
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".temm1e")
-                .display()
+            temm1e_core::config::data_dir().display()
         );
         match temm1e_anima::SocialStorage::new(&social_db_url).await {
             Ok(s) => {
@@ -462,9 +492,7 @@ pub async fn spawn_agent(
     // ── Hive pack initialization for TUI ──
     let tui_hive_instance: Option<Arc<temm1e_hive::Hive>> = if tui_hive_enabled {
         let hive_config = read_hive_config();
-        let hive_db = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".temm1e/hive.db");
+        let hive_db = temm1e_core::config::data_dir().join("hive.db");
         let hive_url = format!("sqlite:{}?mode=rwc", hive_db.display());
         match temm1e_hive::Hive::new(&hive_config, &hive_url).await {
             Ok(h) => {
@@ -500,9 +528,11 @@ pub async fn spawn_agent(
         setup.config.agent.max_task_duration_secs,
         setup.config.agent.max_spend_usd,
     )
-    .with_v2_optimizations(setup.config.agent.v2_optimizations)
-    .with_self_audit_enabled(setup.config.agent.self_audit_enabled)
-    .with_parallel_phases(setup.config.agent.parallel_phases)
+    .with_budget(budget.clone())
+    .with_policy(&temm1e_agent::runtime_policy::RuntimePolicy::from_config(
+        &setup.config,
+    ))
+    .with_durable_execution()
     .with_hive_enabled(tui_hive_enabled)
     .with_shared_mode(shared_mode.clone())
     .with_shared_memory_strategy(shared_memory_strategy.clone())
@@ -574,9 +604,8 @@ pub async fn spawn_agent(
             memory: memory.clone(),
             tools_template: tui_swarm_snapshot.clone(),
             model: agent.model().to_string(),
-            parent_budget: Arc::new(temm1e_agent::budget::BudgetTracker::new(
-                setup.config.agent.max_spend_usd,
-            )),
+            parent_budget: agent.budget(),
+            policy: agent.runtime_policy(),
             cancel: tokio_util::sync::CancellationToken::new(),
             workspace_path: std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -586,7 +615,18 @@ pub async fn spawn_agent(
         tracing::info!("JIT spawn_swarm context wired (TUI)");
     }
 
-    let agent = agent; // freeze mutability
+    let agent = if setup.config.agent.streaming_enabled {
+        let text_event_tx = event_tx.clone();
+        agent.with_text_observer(Arc::new(move |event| {
+            let _ = text_event_tx.send(Event::TextLifecycle(event));
+        }))
+    } else {
+        agent
+    };
+    let tool_event_tx = event_tx.clone();
+    let agent = agent.with_tool_observer(Arc::new(move |event| {
+        let _ = tool_event_tx.send(Event::ToolLifecycle(event));
+    }));
 
     // 7. Set up channels
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundMessage>(64);
@@ -594,37 +634,203 @@ pub async fn spawn_agent(
     let interrupt_flag = Arc::new(AtomicBool::new(false));
     let interrupt_for_task = interrupt_flag.clone();
 
-    // 8. Load conversation history
-    let cli_history_key = "chat_history:tui".to_string();
-    let history: Vec<temm1e_core::types::message::ChatMessage> =
-        match memory.get(&cli_history_key).await {
-            Ok(Some(entry)) => serde_json::from_str(&entry.content).unwrap_or_default(),
-            _ => Vec::new(),
-        };
-    let history = Arc::new(Mutex::new(history));
+    // Canonical storage is loaded under the turn lock, including after restart.
+    let conversations =
+        Arc::new(temm1e_agent::execution_journal::ExecutionJournal::open_profile().await?);
+    let conversation_scope = temm1e_agent::conversation::ConversationScope::new(
+        &workspace,
+        "tui",
+        "tui",
+        "local-owner",
+    )?;
+    tracing::info!(workspace = %workspace.display(), "TUI conversation workspace");
+    let mut history_cursor = match conversations
+        .conversation_page(&conversation_scope, None)
+        .await
+    {
+        Ok(page) => {
+            let cursor = page.older.clone();
+            let _ = event_tx.send(Event::HistoryPage {
+                page,
+                reset: true,
+                completes_command: false,
+            });
+            cursor
+        }
+        Err(error) => {
+            let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
+                kind: crate::event::ResponseKind::Notice,
+                message: OutboundMessage {
+                    chat_id: "tui".into(),
+                    text: format!("Saved transcript could not be loaded: {error}"),
+                    reply_to: None,
+                    parse_mode: None,
+                },
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: 0.0,
+            }));
+            None
+        }
+    };
 
-    // 9. Spawn processing loop
-    let history_clone = history.clone();
-    let memory_clone = memory.clone();
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         while let Some(msg) = inbound_rx.recv().await {
             // CRITICAL: reset the interrupt flag before each turn.
             // If a previous turn was cancelled and we didn't reset,
             // the new turn would cancel immediately. (Tier C.)
             interrupt_for_task.store(false, Ordering::Relaxed);
 
-            let current_history = history_clone.lock().await.clone();
+            let fail = |text: String| {
+                let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
+                    kind: crate::event::ResponseKind::Failed,
+                    message: OutboundMessage {
+                        chat_id: "tui".into(),
+                        text,
+                        reply_to: None,
+                        parse_mode: None,
+                    },
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_usd: 0.0,
+                }));
+            };
+            let text = msg.text.as_deref().unwrap_or("").trim();
+            if matches!(
+                text.split_whitespace().next(),
+                Some("/history" | "/history-more")
+            ) {
+                if text.split_whitespace().count() != 1 {
+                    fail("Usage: /history or /history-more (no arguments).".into());
+                    continue;
+                }
+                let reset = text == "/history";
+                if !reset && history_cursor.is_none() {
+                    fail(
+                        "No older saved messages. Use /history to refresh the latest page.".into(),
+                    );
+                    continue;
+                }
+                match conversations
+                    .conversation_page(
+                        &conversation_scope,
+                        if reset { None } else { history_cursor.as_ref() },
+                    )
+                    .await
+                {
+                    Ok(page) => {
+                        history_cursor = page.older.clone();
+                        let _ = event_tx.send(Event::HistoryPage {
+                            page,
+                            reset,
+                            completes_command: true,
+                        });
+                    }
+                    Err(error) => fail(error.to_string()),
+                }
+                continue;
+            }
+            match temm1e_agent::delivery::prepare_resume_command(
+                &conversations,
+                &conversation_scope,
+                msg.text.as_deref().unwrap_or(""),
+            )
+            .await
+            {
+                Ok(Some(ticket)) => {
+                    if let Err(e) = ticket
+                        .deliver(|message| async {
+                            event_tx
+                                .send(Event::AgentResponse(AgentResponseEvent {
+                                    kind: crate::event::ResponseKind::Final,
+                                    message,
+                                    input_tokens: 0,
+                                    output_tokens: 0,
+                                    cost_usd: 0.0,
+                                }))
+                                .map_err(|_| Temm1eError::Channel("TUI event queue closed".into()))
+                        })
+                        .await
+                    {
+                        fail(e.to_string());
+                    }
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    fail(e.to_string());
+                    continue;
+                }
+            }
+            match temm1e_agent::conversation::handle_owner_command(
+                &conversations,
+                &conversation_scope,
+                memory.as_ref(),
+                "chat_history:tui",
+                msg.text.as_deref().unwrap_or(""),
+            )
+            .await
+            {
+                Ok(Some(text)) => {
+                    let command = msg.text.as_deref().unwrap_or("").trim();
+                    if command == "/session-new"
+                        || command.starts_with("/history-import confirm ")
+                        || command.starts_with("/session-recover confirm ")
+                    {
+                        match conversations
+                            .conversation_page(&conversation_scope, None)
+                            .await
+                        {
+                            Ok(page) => {
+                                history_cursor = page.older.clone();
+                                let _ = event_tx.send(Event::HistoryPage {
+                                    page,
+                                    reset: true,
+                                    completes_command: true,
+                                });
+                            }
+                            Err(error) => fail(format!("Transcript refresh failed: {error}")),
+                        }
+                    }
+                    let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
+                        kind: crate::event::ResponseKind::Final,
+                        message: OutboundMessage {
+                            chat_id: "tui".into(),
+                            text,
+                            reply_to: None,
+                            parse_mode: None,
+                        },
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cost_usd: 0.0,
+                    }));
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    fail(e.to_string());
+                    continue;
+                }
+            }
+            let turn = match conversations
+                .acquire_conversation(&conversation_scope)
+                .await
+            {
+                Ok(turn) => turn,
+                Err(e) => {
+                    fail(e.to_string());
+                    continue;
+                }
+            };
             let mut session = SessionContext {
-                session_id: "tui-tui".to_string(),
+                session_id: turn.epoch().to_string(),
                 user_id: msg.user_id.clone(),
                 channel: msg.channel.clone(),
                 chat_id: msg.chat_id.clone(),
                 role: temm1e_core::types::rbac::Role::Admin,
-                history: current_history.clone(),
+                history: turn.history().to_vec(),
                 workspace_path: workspace.clone(),
-                read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
-                    std::collections::HashSet::new(),
-                )),
+                read_tracker: Arc::new(RwLock::new(std::collections::HashSet::new())),
             };
 
             // Create early reply channel for classifier acknowledgments
@@ -633,6 +839,7 @@ pub async fn spawn_agent(
             tokio::spawn(async move {
                 while let Some(early_msg) = early_rx.recv().await {
                     let _ = event_tx_early.send(Event::AgentResponse(AgentResponseEvent {
+                        kind: crate::event::ResponseKind::Interim,
                         message: early_msg,
                         input_tokens: 0,
                         output_tokens: 0,
@@ -641,48 +848,48 @@ pub async fn spawn_agent(
                 }
             });
 
-            let result = agent
-                .process_message(
-                    &msg,
-                    &mut session,
-                    Some(interrupt_for_task.clone()), // Tier C: real interrupt flag
-                    None,                             // pending
-                    Some(early_tx),                   // reply_tx (early replies)
-                    Some(status_tx.clone()),          // status_tx (real-time phase updates)
-                    None,                             // cancel (reserved for v4.9.0)
-                )
-                .await;
+            let result = std::panic::AssertUnwindSafe(agent.process_message(
+                &msg,
+                &mut session,
+                Some(interrupt_for_task.clone()), // Tier C: real interrupt flag
+                None,                             // pending
+                Some(early_tx),                   // reply_tx (early replies)
+                Some(status_tx.clone()),          // status_tx (real-time phase updates)
+                None,                             // legacy interrupt is also observed in flight
+            ))
+            .catch_unwind()
+            .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(_) => {
+                    fail("The turn stopped after an internal error. Use /session-recover to inspect the saved evidence before continuing.".into());
+                    continue;
+                }
+            };
 
             match result {
                 Ok((reply, usage)) => {
-                    // Send response to TUI
-                    let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
-                        message: reply,
-                        input_tokens: usage.input_tokens,
-                        output_tokens: usage.output_tokens,
-                        cost_usd: usage.total_cost_usd,
-                    }));
-
-                    // Update history
-                    let mut hist = history_clone.lock().await;
-                    *hist = session.history;
-
-                    // Persist conversation history
-                    if let Ok(json) = serde_json::to_string(&*hist) {
-                        let entry = temm1e_core::MemoryEntry {
-                            id: cli_history_key.clone(),
-                            content: json,
-                            metadata: serde_json::json!({"chat_id": "tui"}),
-                            timestamp: chrono::Utc::now(),
-                            session_id: Some("tui".to_string()),
-                            entry_type: temm1e_core::MemoryEntryType::Conversation,
-                        };
-                        let _ = memory_clone.store(entry).await;
+                    match turn.commit_with_reply(&session.history, &reply).await {
+                        Ok(ticket) => {
+                            if let Err(e) = ticket.deliver(|message| async {
+                                event_tx.send(Event::AgentResponse(AgentResponseEvent {
+                                    kind: crate::event::ResponseKind::Final, message,
+                                    input_tokens: usage.input_tokens, output_tokens: usage.output_tokens,
+                                    cost_usd: usage.total_cost_usd,
+                                })).map_err(|_| Temm1eError::Channel("TUI event queue closed".into()))
+                            }).await { fail(e.to_string()); }
+                        }
+                        Err(e) => fail(format!("Could not save the final reply: {e}. Inspect /session-recover before retrying uncertain effects.")),
                     }
                 }
                 Err(e) => {
+                    if let Err(save_error) = turn.commit(&session.history).await {
+                        fail(format!("Could not save this failed turn: {save_error}. Inspect /session-recover."));
+                        continue;
+                    }
                     // Send error to TUI as a system message
                     let _ = event_tx.send(Event::AgentResponse(AgentResponseEvent {
+                        kind: crate::event::ResponseKind::Failed,
                         message: OutboundMessage {
                             chat_id: "tui".to_string(),
                             text: format!("[Error: {}]", e),
@@ -696,12 +903,18 @@ pub async fn spawn_agent(
                 }
             }
         }
+        agent
+            .shutdown_background(std::time::Duration::from_secs(5))
+            .await
     });
 
     Ok(AgentHandle {
         inbound_tx,
         status_rx,
         interrupt_flag,
+        task,
+        setup,
+        budget,
     })
 }
 
@@ -728,7 +941,6 @@ pub async fn validate_provider_key(
     // See src/main.rs::validate_provider_key for full rationale.
     if base_url.is_some() {
         tracing::debug!(
-            base_url = ?base_url,
             model = %model,
             "Skipping TUI validate_provider_key test call — custom base_url set"
         );
@@ -769,7 +981,7 @@ pub async fn validate_provider_key(
             {
                 Err(err_str)
             } else {
-                // Non-auth errors mean the key IS valid
+                // Preserve configuration after other errors; authentication remains unverified.
                 Ok(())
             }
         }
@@ -802,4 +1014,82 @@ fn build_tui_system_prompt() -> String {
      - When executing multi-step tasks, call send_message to provide real-time progress updates.\n\
      - After finishing browser work, call browser with action 'close' to shut it down."
         .to_string()
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::time::Duration;
+    fn test_setup() -> AgentSetup {
+        AgentSetup {
+            provider_name: "test".into(),
+            api_key: String::new(),
+            keys: vec![],
+            model: "test".into(),
+            base_url: None,
+            config: Temm1eConfig::default(),
+            mode: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_finalization_after_input_closes() {
+        let (inbound_tx, mut inbound_rx) = mpsc::channel(1);
+        let (_status_tx, status_rx) = watch::channel(AgentTaskStatus::default());
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let observed = interrupt_flag.clone();
+        let (entered, notified) = tokio::sync::oneshot::channel();
+        let (finish, finish_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            assert!(inbound_rx.recv().await.is_none());
+            assert!(observed.load(Ordering::Relaxed));
+            entered.send(()).unwrap();
+            finish_rx.await.unwrap();
+            true
+        });
+        let handle = AgentHandle {
+            inbound_tx,
+            status_rx,
+            interrupt_flag,
+            task,
+            setup: test_setup(),
+            budget: Arc::new(temm1e_agent::budget::BudgetTracker::new(0.0)),
+        };
+        let shutdown = tokio::spawn(handle.shutdown(Duration::from_secs(1)));
+        notified.await.unwrap();
+        assert!(!shutdown.is_finished());
+        finish.send(()).unwrap();
+        let report = shutdown.await.unwrap();
+        assert!(report.loop_joined && report.background_drained);
+    }
+    #[tokio::test]
+    async fn shutdown_timeout_aborts_the_owned_processing_task() {
+        struct Guard(Arc<AtomicBool>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = Guard(dropped.clone());
+        let (inbound_tx, _inbound_rx) = mpsc::channel(1);
+        let (_status_tx, status_rx) = watch::channel(AgentTaskStatus::default());
+        let (entered, notified) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            entered.send(()).unwrap();
+            std::future::pending::<bool>().await
+        });
+        notified.await.unwrap();
+        let handle = AgentHandle {
+            inbound_tx,
+            status_rx,
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
+            task,
+            setup: test_setup(),
+            budget: Arc::new(temm1e_agent::budget::BudgetTracker::new(0.0)),
+        };
+        assert!(!handle.shutdown(Duration::from_millis(1)).await.loop_joined);
+        assert!(dropped.load(Ordering::SeqCst));
+    }
 }

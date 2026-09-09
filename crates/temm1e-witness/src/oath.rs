@@ -53,8 +53,9 @@ pub async fn seal_oath(ledger: &Arc<Ledger>, mut oath: Oath) -> Result<(Oath, i6
 /// - At least one postcondition.
 /// - At least one Tier 0 postcondition (deterministic).
 /// - For code-producing tasks (heuristic: goal mentions code/file/symbol
-///   terms), require at least one wiring check and one stub/placeholder
-///   anti-pattern check.
+///   terms), accept an executable success check, or the legacy wiring plus
+///   anti-stub pattern pair. This structural check cannot prove that a command
+///   tests the user's intended behavior; that requires evidence review.
 pub fn review_oath_schema(oath: &Oath) -> Result<(), WitnessError> {
     if oath.postconditions.is_empty() {
         return Err(WitnessError::LenientOath(
@@ -67,7 +68,14 @@ pub fn review_oath_schema(oath: &Oath) -> Result<(), WitnessError> {
         ));
     }
 
-    if mentions_code(&oath.goal) {
+    let has_behavior_check = oath.postconditions.iter().any(|predicate| {
+        matches!(predicate,
+        crate::types::Predicate::CommandExits { cmd, expected_code: 0, .. } if !cmd.trim().is_empty())
+    });
+    // A behavior check can verify an exported function without requiring a
+    // second occurrence of its name in the implementation file. Keep legacy
+    // source-pattern schemas readable, but prefer executable assertions.
+    if mentions_code(&oath.goal) && !has_behavior_check {
         let has_wiring = oath.postconditions.iter().any(|p| p.is_wiring_check());
         let has_stub_check = oath.postconditions.iter().any(|p| p.is_stub_check());
         if !has_wiring {
@@ -147,6 +155,21 @@ mod tests {
 
     fn draft_goal(goal: &str) -> Oath {
         Oath::draft("st-1", "root-1", "sess-1", goal)
+    }
+
+    #[test]
+    fn behavioral_check_does_not_require_duplicate_symbol_in_source() {
+        let oath = draft_goal("implement add(a, b)").with_postcondition(Predicate::CommandExits {
+            cmd: "python3".into(),
+            args: vec![
+                "-c".into(),
+                "from calc import add; assert add(20,22)==42".into(),
+            ],
+            expected_code: 0,
+            cwd: None,
+            timeout_ms: 1000,
+        });
+        assert!(review_oath_schema(&oath).is_ok());
     }
 
     #[test]

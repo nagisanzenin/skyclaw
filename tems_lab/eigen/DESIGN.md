@@ -1081,7 +1081,7 @@ These omissions are safe because:
 Eigen-Tune was validated with a complete end-to-end proof-of-pipeline on Apple M2 hardware.
 
 **Fine-tuning:** SmolLM2-135M-Instruct via LoRA (MLX), 100 iterations, loss 2.450→1.242.
-**Key result:** Base model answered "72°F = 150°C" (wrong). Fine-tuned on 10 conversations answered "21.2°C" (close to correct 22.2°C).
+**Key result:** Base model answered "72°F = 150°C" (wrong). Fine-tuned on 10 conversations answered "21.2°C" (incorrect; exact 22.222…°C).
 **Statistical pipeline:** 119 tests verifying SPRT, CUSUM, Wilson, Beta-Binomial, Shannon entropy all operate correctly.
 **Memory:** 0.509 GB training, 0.303 GB inference — runs on any modern laptop.
 

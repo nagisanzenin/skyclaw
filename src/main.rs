@@ -4,8 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 mod command;
+mod mission_control;
 mod search_install;
 mod update_assets;
+mod updater;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -14,10 +16,10 @@ use clap::{Parser, Subcommand};
 use futures::FutureExt;
 use temm1e_core::config::credentials::{
     credentials_path, detect_api_key, is_placeholder_key, is_placeholder_key_lenient,
-    load_active_provider_keys, load_credentials_file, load_saved_credentials, save_credentials,
+    load_active_provider_keys, load_credentials_file, save_credentials,
 };
 use temm1e_core::types::model_registry::{
-    available_models_for_provider, default_model, is_vision_model,
+    available_models_for_provider, default_model, image_input_badge,
 };
 use temm1e_core::Channel;
 use tokio::sync::Mutex;
@@ -54,6 +56,21 @@ impl Channel for SecretCensorChannel {
     fn is_allowed(&self, user_id: &str) -> bool {
         self.inner.is_allowed(user_id)
     }
+    fn get_role(&self, user_id: &str) -> Option<temm1e_core::types::rbac::Role> {
+        self.inner.get_role(user_id)
+    }
+    fn promote_to_admin(
+        &self,
+        user_id: &str,
+    ) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+        self.inner.promote_to_admin(user_id)
+    }
+    fn demote_from_admin(
+        &self,
+        user_id: &str,
+    ) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+        self.inner.demote_from_admin(user_id)
+    }
     async fn delete_message(
         &self,
         chat_id: &str,
@@ -84,6 +101,9 @@ struct Cli {
 enum Commands {
     /// Start the TEMM1E gateway daemon
     Start {
+        /// Override the gateway bind address (for example 0.0.0.0 inside a container)
+        #[arg(long)]
+        host: Option<std::net::IpAddr>,
         /// Run as a background daemon (requires prior setup via `temm1e start` first)
         #[arg(short, long)]
         daemon: bool,
@@ -219,7 +239,6 @@ async fn validate_provider_key(
     // below matches 404 as an auth failure).
     if config.base_url.is_some() {
         tracing::debug!(
-            base_url = ?config.base_url,
             model = ?config.model,
             "Skipping validate_provider_key test call — custom base_url set"
         );
@@ -259,10 +278,10 @@ async fn validate_provider_key(
             {
                 Err(err_str)
             } else {
-                // Non-auth errors (400 max_tokens, 429 rate limit, etc.) mean
-                // the key IS valid — the API accepted the auth, just rejected
-                // the request params. This is fine for validation.
-                tracing::debug!(error = %err_str, "Key validation got non-auth error — key is valid");
+                // A transient/parameter failure does not verify authentication.
+                // Preserve configuration, and let the first real turn report
+                // availability; callers must not describe this as verified.
+                tracing::debug!("Connection configured without a successful authentication probe");
                 Ok(provider_arc)
             }
         }
@@ -301,26 +320,11 @@ fn format_capture_age(captured_at: &str) -> String {
     }
 }
 
-/// Get the user's role from the role file for a specific channel.
-/// Returns Admin if no file, user not found, or on error (safe default).
-fn get_user_role(channel: &str, user_id: &str) -> temm1e_core::types::rbac::Role {
-    temm1e_core::types::rbac::load_role_file(channel)
-        .and_then(|rf| rf.role_of(user_id))
-        .unwrap_or(temm1e_core::types::rbac::Role::Admin)
-}
-
-/// Check if a slash command is allowed for the user's role.
-/// Returns true if allowed, false if blocked.
-fn is_command_allowed_for_user(channel: &str, user_id: &str, command: &str) -> bool {
-    let role = get_user_role(channel, user_id);
-    role.is_command_allowed(command)
-}
-
 // ── Daemon helpers ───────────────────────────────────────────────────────
 
 /// Get the path to the PID file: `~/.temm1e/temm1e.pid`
 fn pid_file_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".temm1e").join("temm1e.pid"))
+    Some(temm1e_core::config::data_dir().join("temm1e.pid"))
 }
 
 /// Write the current process PID to the PID file.
@@ -519,62 +523,7 @@ fn build_system_prompt(personality: &temm1e_anima::personality::PersonalityConfi
     let identity = personality.generate_identity_section();
     let mut prompt = format!("{identity}\n\n{SYSTEM_PROMPT_BODY}");
 
-    // ── Provider/model context ────────────────────────────────
-    prompt.push_str("\n\nSUPPORTED PROVIDERS & DEFAULT MODELS:\n");
-    prompt.push_str("- anthropic: claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-6\n");
-    prompt.push_str("- openai: gpt-5.2, gpt-4.1, gpt-4.1-mini, o4-mini\n");
-    prompt.push_str("- gemini: gemini-3-flash-preview, gemini-3.1-pro-preview, gemini-2.5-flash, gemini-2.5-pro\n");
-    prompt.push_str("- grok (xai): grok-4-1-fast-non-reasoning, grok-3\n");
-    prompt.push_str(
-        "- openrouter: any model via anthropic/claude-sonnet-4-6, openai/gpt-5.2, etc.\n",
-    );
-    prompt.push_str("- zai (zhipu): glm-4.7-flash, glm-4.7, glm-5, glm-5-code, glm-4.6v\n");
-    prompt.push_str("- minimax: MiniMax-M2.5\n");
-    prompt.push_str("- stepfun: step-3.5-flash, step-3\n");
-    prompt.push_str("- lmstudio: local models via http://localhost:1234/v1 — register your downloaded model with /addmodel (e.g. qwen3.5-7b-instruct, llama-3.3-70b-instruct)\n");
-    prompt.push_str("- openai-codex: gpt-5.4 (recommended), gpt-5.3-codex, gpt-5.2-codex (OAuth subscription)\n");
-
-    // ── Vision capability ──────────────────────────────────────
-    prompt.push_str(
-        "\nVISION (IMAGE) SUPPORT:\n\
-         Models that can see images: all claude-*, all gpt-4o/gpt-4.1/gpt-5.*, all gemini-*, \
-         grok-3/grok-4, glm-*v* (V-suffix only, e.g. glm-4.6v-flash), step-3.\n\
-         Text-only (NO vision): gpt-3.5-turbo, glm-4.7-flash, glm-4.7, glm-5, glm-5-code, \
-         glm-4.5-flash, all MiniMax models, step-3.5-flash.\n\
-         If the user sends an image on a text-only model, images are auto-stripped and \
-         the user is notified. Suggest switching to a vision model.\n",
-    );
-
-    // ── Current configuration ─────────────────────────────────
-    if let Some(creds) = load_credentials_file() {
-        prompt.push_str("\nCURRENT CONFIGURATION:\n");
-        prompt.push_str(&format!("Active provider: {}\n", creds.active));
-        for p in &creds.providers {
-            // Proxy providers (custom base_url) use lenient placeholder check
-            // so short LM Studio / Ollama keys are counted correctly.
-            let has_custom = p.base_url.is_some();
-            let key_count = p
-                .keys
-                .iter()
-                .filter(|k| {
-                    if has_custom {
-                        !is_placeholder_key_lenient(k)
-                    } else {
-                        !is_placeholder_key(k)
-                    }
-                })
-                .count();
-            let base_note = if let Some(ref url) = p.base_url {
-                format!(" (via {})", url)
-            } else {
-                String::new()
-            };
-            prompt.push_str(&format!(
-                "- {}: model={}, {} key(s){}\n",
-                p.name, p.model, key_count, base_note
-            ));
-        }
-    }
+    prompt.push_str("\nMODEL CONFIGURATION:\nThe active provider/model is supplied in CURRENT RUNTIME. Saved defaults may differ. Use /model or /listmodels for current suggestions; a catalog entry does not prove account entitlement. Image capability comes from the current provider/model registry or explicit custom declaration, and may be unknown.\n");
 
     // ── Self-configuration rules ──────────────────────────────
     prompt.push_str(
@@ -840,189 +789,19 @@ fn list_configured_providers() -> String {
     lines.join("\n")
 }
 
-/// Handle the /model command.
-///
-/// - `/model` (no args) → show current model + all available models per provider
-/// - `/model <exact-name>` → switch to that model on the active provider
-fn handle_model_command(args: &str) -> String {
-    // Check Codex OAuth first — if active and no args, show Codex model info
-    #[cfg(feature = "codex-oauth")]
-    {
-        let has_creds = load_credentials_file()
-            .map(|c| !c.providers.is_empty())
-            .unwrap_or(false);
-        if !has_creds && temm1e_codex_oauth::TokenStore::exists() {
-            if args.is_empty() {
-                let codex_models = [
-                    "gpt-5.4",
-                    "gpt-5.3-codex",
-                    "gpt-5.3-codex-spark",
-                    "gpt-5.2",
-                    "gpt-5.2-codex",
-                    "gpt-5.1-codex",
-                    "gpt-5.1-codex-mini",
-                    "gpt-5",
-                    "gpt-5-codex",
-                    "gpt-5-codex-mini",
-                    "gpt-5-mini",
-                    "gpt-4.1",
-                    "gpt-4.1-mini",
-                    "gpt-4.1-nano",
-                    "o4-mini",
-                ];
-                let mut lines = vec![
-                    "Current: gpt-5.4 on openai-codex provider (OAuth)".to_string(),
-                    String::new(),
-                    "Available Codex models:".to_string(),
-                ];
-                for m in &codex_models {
-                    let current = if *m == "gpt-5.4" { " ← current" } else { "" };
-                    lines.push(format!("    {}{}", m, current));
-                }
-                lines.push(String::new());
-                lines.push("Switch model: /model <exact-model-name>".to_string());
-                lines.push("Example: /model gpt-5.2-codex".to_string());
-                return lines.join("\n");
-            } else {
-                let target = args.trim();
-                // Return "Model switched:" so the caller rebuilds the agent
-                return format!("Model switched: codex-oauth → {}\nCodex OAuth", target);
-            }
-        }
-    }
+/// Show the effective runtime, not a potentially unrelated saved account.
+fn runtime_model_status(agent: &temm1e_agent::AgentRuntime) -> String {
+    let provider = agent.provider().name();
+    let suggestions = available_models_for_provider(provider).join(", ");
+    format!("Current: {} on {}\nSuggested models (account access may vary): {}\nUse /model <exact-name> to select a model on this route for this running Tem instance.", agent.model(), provider, suggestions)
+}
 
-    let creds = match load_credentials_file() {
-        Some(c) => c,
-        None => return "No providers configured. Use /addkey to add one.".to_string(),
-    };
-
-    if creds.providers.is_empty() {
-        return "No providers configured. Use /addkey to add one.".to_string();
-    }
-
-    // ── No args: show current + available models ──────────────
-    if args.is_empty() {
-        let mut lines = Vec::new();
-
-        // Current model
-        if let Some(active) = creds.providers.iter().find(|p| p.name == creds.active) {
-            lines.push(format!(
-                "Current: {} on {} provider",
-                active.model, active.name
-            ));
-        }
-
-        lines.push(String::new());
-        lines.push("Available models per provider:".to_string());
-        for p in &creds.providers {
-            let models = available_models_for_provider(&p.name);
-            let active_marker = if p.name == creds.active {
-                " (active)"
-            } else {
-                ""
-            };
-            let is_proxy = p.base_url.is_some() || p.name == "openrouter";
-            lines.push(format!("  {}{}:", p.name, active_marker));
-            if is_proxy {
-                let current_vision = if is_vision_model(&p.model) {
-                    " [vision]"
-                } else {
-                    ""
-                };
-                lines.push(format!("    {} ← current{}", p.model, current_vision));
-                lines.push("    (proxy — any model name accepted)".to_string());
-            } else {
-                for m in &models {
-                    let vision = if is_vision_model(m) { " [vision]" } else { "" };
-                    let current = if *m == p.model { " ← current" } else { "" };
-                    lines.push(format!("    {}{}{}", m, vision, current));
-                }
-            }
-        }
-
-        lines.push(String::new());
-        lines.push("Switch model: /model <exact-model-name>".to_string());
-        lines.push("Example: /model claude-sonnet-4-6".to_string());
-        return lines.join("\n");
-    }
-
-    // ── Switch to specific model ──────────────────────────────
-    let target = args.trim();
-
-    // Find active provider
-    let active_provider = match creds.providers.iter().find(|p| p.name == creds.active) {
-        Some(p) => p.clone(),
-        None => return "Active provider not found in credentials.".to_string(),
-    };
-
-    if active_provider.model == target {
-        return format!("Already using {}.", target);
-    }
-
-    // Validate model against known list for the active provider.
-    // Skip validation for proxy/OpenRouter providers (custom base_url) — they accept any model.
-    let is_proxy = active_provider.base_url.is_some() || active_provider.name == "openrouter";
-    let known = available_models_for_provider(&active_provider.name);
-    // Accept either hardcoded models OR user-registered custom models
-    // (via /addmodel). Custom names extend the valid-target set for the
-    // active provider — they never shadow hardcoded first-party names
-    // unless the user explicitly opts in.
-    let custom_names: Vec<String> =
-        temm1e_core::config::custom_models::custom_models_for_provider(&active_provider.name)
-            .into_iter()
-            .map(|m| m.name)
-            .collect();
-    let in_custom = custom_names.iter().any(|n| n == target);
-    if !is_proxy && !known.is_empty() && !known.contains(&target) && !in_custom {
-        let list = known
-            .iter()
-            .map(|m| {
-                let v = if is_vision_model(m) { " [vision]" } else { "" };
-                format!("  {}{}", m, v)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let custom_note = if custom_names.is_empty() {
-            "\n\nTip: register custom models with /addmodel".to_string()
-        } else {
-            format!(
-                "\n\nCustom models for {}:\n  {}",
-                active_provider.name,
-                custom_names.join("\n  ")
-            )
-        };
-        return format!(
-            "Unknown model '{}' for provider '{}'.\n\nAvailable models:\n{}\n\nUse exact name: /model <model-name>{}",
-            target, active_provider.name, list, custom_note
-        );
-    }
-
-    // Update the model in credentials.toml
-    let mut updated = creds.clone();
-    for p in &mut updated.providers {
-        if p.name == creds.active {
-            p.model = target.to_string();
-        }
-    }
-
-    let path = credentials_path();
-    match toml::to_string_pretty(&updated) {
-        Ok(content) => {
-            if let Err(e) = std::fs::write(&path, &content) {
-                return format!("Failed to write credentials: {}", e);
-            }
-            tracing::info!(
-                old_model = %active_provider.model,
-                new_model = %target,
-                "Model switched via /model command"
-            );
-            format!(
-                "Model switched: {} → {}\nHot-reload will apply after this response.",
-                active_provider.model, target
-            )
-        }
-        Err(e) => format!("Failed to serialize credentials: {}", e),
-    }
+fn select_runtime_model(
+    agent: &mut temm1e_agent::AgentRuntime,
+    model: &str,
+) -> Result<String, temm1e_core::types::error::Temm1eError> {
+    agent.select_model(model)?;
+    Ok(format!("Model selected: {} on {}. Active for this running Tem instance; saved defaults unchanged. Access is checked on your next request.", agent.model(), agent.provider().name()))
 }
 
 /// Remove a provider from credentials.
@@ -1084,27 +863,53 @@ fn remove_provider(provider_name: &str) -> String {
 // local models via these commands. Storage lives in a separate file
 // (`~/.temm1e/custom_models.toml`) so credentials.toml format is untouched.
 
-/// Handle `/addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>]`.
-fn handle_addmodel_command(args: &str) -> String {
+/// Handle `/addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] [vision:true|false|unknown]`.
+#[derive(Clone)]
+struct ModelCommandContext {
+    provider: String,
+    model: String,
+    running: bool,
+}
+
+fn model_command_context(
+    agent: Option<&temm1e_agent::AgentRuntime>,
+    config: &temm1e_core::types::config::ProviderConfig,
+) -> Option<ModelCommandContext> {
+    if let Some(agent) = agent {
+        return Some(ModelCommandContext {
+            provider: agent.provider().name().to_string(),
+            model: agent.model().to_string(),
+            running: true,
+        });
+    }
+    // Offline editing still uses the same coherent selection as startup. An
+    // unrelated saved active account cannot override an explicit config route.
+    let saved = load_credentials_file();
+    let connection = temm1e_core::config::connection::resolve(config, saved.as_ref())?;
+    Some(ModelCommandContext {
+        provider: connection.name?,
+        model: connection.model?,
+        running: false,
+    })
+}
+
+fn handle_addmodel_command(args: &str, context: Option<&ModelCommandContext>) -> String {
     use temm1e_core::config::custom_models::{upsert_custom_model, CustomModel};
 
     let trimmed = args.trim();
     if trimmed.is_empty() {
         return "Usage: /addmodel <name> context:<int> output:<int> \
-                [input_price:<float>] [output_price:<float>]\n\n\
+                [input_price:<float>] [output_price:<float>] [vision:true|false|unknown]\n\n\
                 Example: /addmodel qwen3-coder-30b-a3b context:262144 output:65536\n\
                 Example: /addmodel glm-4.7 context:200000 output:131072 \
                 input_price:0.5 output_price:2.0"
             .to_string();
     }
 
-    // Require an active provider so we know which provider to scope the model to.
-    let active_provider = match load_credentials_file() {
-        Some(c) if !c.providers.is_empty() => c.active.clone(),
-        _ => {
-            return "No active provider. Configure one first with /addkey or `proxy …`, \
-                    then /addmodel to register a custom model."
-                .to_string();
+    let active_provider = match context {
+        Some(context) => context.provider.clone(),
+        None => {
+            return "No active provider. Configure one first, then register a custom model.".into()
         }
     };
 
@@ -1121,20 +926,31 @@ fn handle_addmodel_command(args: &str) -> String {
         }
     };
 
+    let mut image_input =
+        temm1e_core::config::custom_models::lookup_custom_model(&active_provider, &name)
+            .and_then(|model| model.image_input);
     let mut context_window: Option<usize> = None;
     let mut max_output_tokens: Option<usize> = None;
     let mut input_price_per_1m: f64 = 0.0;
     let mut output_price_per_1m: f64 = 0.0;
+    let mut input_price_set = false;
+    let mut output_price_set = false;
 
     for token in tokens {
         let Some((k, v)) = token.split_once(':') else {
             return format!(
                 "Unexpected token `{}`. All arguments after the model name \
-                 must be k:v pairs (context:, output:, input_price:, output_price:).",
+                 must be k:v pairs (context:, output:, input_price:, output_price:, vision:).",
                 token
             );
         };
         match k.to_lowercase().as_str() {
+            "vision" | "image_input" => match v {
+                "true" => image_input = Some(true),
+                "false" => image_input = Some(false),
+                "unknown" => image_input = None,
+                _ => return "vision: must be true, false or unknown.".into(),
+            },
             "context" | "context_window" | "ctx" => match v.parse::<usize>() {
                 Ok(n) => context_window = Some(n),
                 Err(_) => return format!("Invalid context value `{}` — expected integer.", v),
@@ -1144,7 +960,10 @@ fn handle_addmodel_command(args: &str) -> String {
                 Err(_) => return format!("Invalid output value `{}` — expected integer.", v),
             },
             "input_price" | "input_price_per_1m" | "in_price" => match v.parse::<f64>() {
-                Ok(p) if p >= 0.0 => input_price_per_1m = p,
+                Ok(p) if p.is_finite() && p >= 0.0 => {
+                    input_price_per_1m = p;
+                    input_price_set = true;
+                }
                 _ => {
                     return format!(
                         "Invalid input_price value `{}` — expected non-negative float.",
@@ -1153,7 +972,10 @@ fn handle_addmodel_command(args: &str) -> String {
                 }
             },
             "output_price" | "output_price_per_1m" | "out_price" => match v.parse::<f64>() {
-                Ok(p) if p >= 0.0 => output_price_per_1m = p,
+                Ok(p) if p.is_finite() && p >= 0.0 => {
+                    output_price_per_1m = p;
+                    output_price_set = true;
+                }
                 _ => {
                     return format!(
                         "Invalid output_price value `{}` — expected non-negative float.",
@@ -1164,7 +986,7 @@ fn handle_addmodel_command(args: &str) -> String {
             other => {
                 return format!(
                     "Unknown key `{}`. Accepted keys: context:, output:, \
-                     input_price:, output_price:",
+                     input_price:, output_price:, vision:",
                     other
                 );
             }
@@ -1186,19 +1008,25 @@ fn handle_addmodel_command(args: &str) -> String {
         }
     };
 
+    if input_price_set != output_price_set {
+        return "Specify both input_price: and output_price: so an omitted price is not treated as zero.".into();
+    }
+    let pricing_verified = input_price_set && output_price_set;
     let model = CustomModel {
+        image_input,
         provider: active_provider.clone(),
         name: name.clone(),
         context_window,
         max_output_tokens,
         input_price_per_1m,
         output_price_per_1m,
+        pricing_verified,
     };
 
     match upsert_custom_model(model) {
         Ok(()) => {
-            let price_note = if input_price_per_1m == 0.0 && output_price_per_1m == 0.0 {
-                " (free / local inference)".to_string()
+            let price_note = if !pricing_verified {
+                " (custom pricing not specified; published tariff or unknown)".to_string()
             } else {
                 format!(
                     " (pricing: ${:.2}/1M in · ${:.2}/1M out)",
@@ -1215,33 +1043,61 @@ fn handle_addmodel_command(args: &str) -> String {
 }
 
 /// Handle `/listmodels` — show hardcoded + custom models grouped by provider.
-fn handle_listmodels_command() -> String {
+fn handle_listmodels_command(context: Option<&ModelCommandContext>) -> String {
     use temm1e_core::config::custom_models::custom_models_for_provider;
 
-    let creds = match load_credentials_file() {
-        Some(c) => c,
-        None => return "No providers configured. Use /addkey or `proxy …` first.".to_string(),
-    };
-    if creds.providers.is_empty() {
-        return "No providers configured. Use /addkey or `proxy …` first.".to_string();
+    // Saved accounts remain useful for browsing, but are not the active runtime.
+    let mut providers: Vec<(String, String)> = load_credentials_file()
+        .map(|credentials| {
+            credentials
+                .providers
+                .into_iter()
+                .map(|p| (p.name, p.model))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(context) = context {
+        if let Some((_, model)) = providers
+            .iter_mut()
+            .find(|(name, _)| name == &context.provider)
+        {
+            *model = context.model.clone();
+        } else {
+            providers.push((context.provider.clone(), context.model.clone()));
+        }
     }
-
+    if providers.is_empty() {
+        return "No providers configured. Configure a provider first.".into();
+    }
     let mut lines = Vec::new();
-    for p in &creds.providers {
-        let active_marker = if p.name == creds.active {
-            " (active)"
+    for (provider, model) in &providers {
+        let is_active = context.is_some_and(|context| context.provider == *provider);
+        let active_marker = if is_active {
+            if context.is_some_and(|context| context.running) {
+                " (active)"
+            } else {
+                " (configured)"
+            }
         } else {
             ""
         };
-        lines.push(format!("Provider: {}{}", p.name, active_marker));
+        lines.push(format!("Provider: {}{}", provider, active_marker));
 
         // Hardcoded models from the static registry
-        let hardcoded = available_models_for_provider(&p.name);
+        let hardcoded = available_models_for_provider(provider);
         if !hardcoded.is_empty() {
-            lines.push("  Hardcoded:".to_string());
+            lines.push("  Built-in:".to_string());
             for m in &hardcoded {
                 let (ctx, out) = temm1e_core::types::model_registry::model_limits(m);
-                let current = if *m == p.model { " ← current" } else { "" };
+                let current = if *m == model {
+                    if is_active && context.is_some_and(|context| context.running) {
+                        " ← current"
+                    } else {
+                        " ← saved"
+                    }
+                } else {
+                    ""
+                };
                 lines.push(format!(
                     "    {} — {}K ctx · {}K out{}",
                     m,
@@ -1253,19 +1109,29 @@ fn handle_listmodels_command() -> String {
         }
 
         // Custom models for this provider
-        let custom = custom_models_for_provider(&p.name);
+        let custom = custom_models_for_provider(provider);
         if custom.is_empty() {
             lines.push("  Custom: (none)".to_string());
         } else {
             lines.push("  Custom:".to_string());
             for m in &custom {
-                let current = if m.name == p.model {
-                    " ← current"
+                let current = if m.name == *model {
+                    if is_active && context.is_some_and(|context| context.running) {
+                        " ← current"
+                    } else {
+                        " ← saved"
+                    }
                 } else {
                     ""
                 };
-                let price = if m.input_price_per_1m == 0.0 && m.output_price_per_1m == 0.0 {
-                    " · free".to_string()
+                let price = if matches!(provider.as_str(), "openai-codex" | "zai-coding-plan") {
+                    " · subscription (quota unknown)".to_string()
+                } else if m.input_price_per_1m == 0.0 && m.output_price_per_1m == 0.0 {
+                    if m.pricing_verified {
+                        " · verified zero token rate".to_string()
+                    } else {
+                        " · pricing unknown".to_string()
+                    }
                 } else {
                     format!(
                         " · ${:.2}/1M in · ${:.2}/1M out",
@@ -1273,8 +1139,9 @@ fn handle_listmodels_command() -> String {
                     )
                 };
                 lines.push(format!(
-                    "    {} — {}K ctx · {}K out{}{}",
+                    "    {}{} — {}K ctx · {}K out{}{}",
                     m.name,
+                    image_input_badge(provider, &m.name),
                     m.context_window / 1000,
                     m.max_output_tokens / 1000,
                     price,
@@ -1287,7 +1154,7 @@ fn handle_listmodels_command() -> String {
 
     lines.push(
         "Add a custom model: /addmodel <name> context:<int> output:<int> \
-         [input_price:<float>] [output_price:<float>]"
+         [input_price:<float>] [output_price:<float>] [vision:true|false|unknown]"
             .to_string(),
     );
     lines.push("Remove a custom model: /removemodel <name>".to_string());
@@ -1295,7 +1162,7 @@ fn handle_listmodels_command() -> String {
 }
 
 /// Handle `/removemodel <name>` — remove a custom model from the active provider.
-fn handle_removemodel_command(args: &str) -> String {
+fn handle_removemodel_command(args: &str, context: Option<&ModelCommandContext>) -> String {
     use temm1e_core::config::custom_models::remove_custom_model;
 
     let name = args.trim();
@@ -1305,11 +1172,9 @@ fn handle_removemodel_command(args: &str) -> String {
             .to_string();
     }
 
-    let active_provider = match load_credentials_file() {
-        Some(c) if !c.providers.is_empty() => c.active.clone(),
-        _ => {
-            return "No active provider. Nothing to remove.".to_string();
-        }
+    let active_provider = match context {
+        Some(context) => context.provider.clone(),
+        None => return "No active provider. Nothing to remove.".into(),
     };
 
     match remove_custom_model(name, Some(&active_provider)) {
@@ -1407,6 +1272,80 @@ async fn send_with_retry(
     }
 }
 
+/// Persist before delivery. Failure leaves a durable interrupted marker and
+/// suppresses the uncommitted final response; this is not an outbox protocol.
+async fn commit_channel_conversation(
+    turn: &mut Option<temm1e_agent::conversation::ConversationTurn>,
+    history: &[temm1e_core::types::message::ChatMessage],
+    sender: &dyn temm1e_core::Channel,
+    msg: &temm1e_core::types::message::InboundMessage,
+) -> bool {
+    let Some(turn) = turn.take() else {
+        return true;
+    };
+    if let Err(e) = turn.commit(history).await {
+        tracing::error!(error = %e, "Conversation commit failed before final delivery");
+        send_with_retry(sender, temm1e_core::types::message::OutboundMessage {
+            chat_id: msg.chat_id.clone(),
+            text: format!("Could not save this turn: {e}. Inspect /session-recover before retrying uncertain effects."),
+            reply_to: Some(msg.id.clone()), parse_mode: None,
+        }).await;
+        return false;
+    }
+    true
+}
+
+/// A final reply is durable before delivery. The ticket admits one logical
+/// send; partial chunk delivery is unknown and is never retried automatically.
+async fn deliver_final_reply(
+    turn: &mut Option<temm1e_agent::conversation::ConversationTurn>,
+    history: &[temm1e_core::types::message::ChatMessage],
+    sender: &dyn temm1e_core::Channel,
+    mut reply: temm1e_core::types::message::OutboundMessage,
+) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+    let turn = turn.take().ok_or_else(|| {
+        temm1e_core::types::error::Temm1eError::Internal(
+            "Missing conversation ownership for final reply".into(),
+        )
+    })?;
+    reply.text = censor_secrets(&reply.text);
+    if reply.text.trim().is_empty() {
+        return turn.commit(history).await;
+    }
+    let ticket = match turn.commit_with_reply(history, &reply).await {
+        Ok(ticket) => ticket,
+        Err(e) => {
+            let _ = sender.send_message(temm1e_core::types::message::OutboundMessage {
+                chat_id: reply.chat_id, text: "Could not save the final reply. Inspect /session-recover before retrying uncertain effects.".into(),
+                reply_to: reply.reply_to, parse_mode: None,
+            }).await;
+            return Err(e);
+        }
+    };
+    ticket
+        .deliver(|message| send_saved_reply(sender, message))
+        .await
+}
+
+async fn send_saved_reply(
+    sender: &dyn temm1e_core::Channel,
+    message: temm1e_core::types::message::OutboundMessage,
+) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+    if sender.name() == "cli" {
+        return sender.send_message(message).await;
+    }
+    let chunks = temm1e_core::message_text::split_message(&message.text, 4000)?;
+    for (index, text) in chunks.into_iter().enumerate() {
+        let mut part = message.clone();
+        part.text = text;
+        if index > 0 {
+            part.reply_to = None;
+        }
+        sender.send_message(part).await?;
+    }
+    Ok(())
+}
+
 /// Interactive setup wizard — guides first-time users through configuration.
 ///
 /// Steps:
@@ -1416,8 +1355,7 @@ async fn send_with_retry(
 async fn run_setup_wizard() -> Result<()> {
     use std::io::{self, BufRead, Write};
 
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
-    let temm1e_dir = home.join(".temm1e");
+    let temm1e_dir = temm1e_core::config::data_dir();
     std::fs::create_dir_all(&temm1e_dir)?;
 
     println!();
@@ -1711,9 +1649,7 @@ async fn main() -> Result<()> {
     // Reset must work even when config is corrupted/poisoned,
     // so we intercept it before load_config() which might fail.
     if let Commands::Reset { confirm } = &cli.command {
-        let data_dir = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".temm1e");
+        let data_dir = temm1e_core::config::data_dir();
 
         if !data_dir.exists() {
             println!("Nothing to reset — {} does not exist.", data_dir.display());
@@ -1761,9 +1697,8 @@ async fn main() -> Result<()> {
 
         // Backup before wipe
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let backup_dir = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(format!(".temm1e.bak.{}", timestamp));
+        let backup_dir =
+            temm1e_core::config::data_dir().with_extension(format!("bak.{}", timestamp));
 
         // Copy directory tree for backup
         fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -1813,6 +1748,15 @@ async fn main() -> Result<()> {
     // Load configuration
     let config_path = cli.config.as_ref().map(std::path::Path::new);
     let mut config = temm1e_core::config::load_config(config_path)?;
+    // Own accounting for this command's lifetime, including onboarding,
+    // model/tool reconstruction and delegated work. No restart persistence.
+    let runtime_budget = Arc::new(temm1e_agent::budget::BudgetTracker::new(
+        config.agent.max_spend_usd,
+    ));
+
+    let runtime_policy = Arc::new(temm1e_agent::runtime_policy::RuntimePolicy::from_config(
+        &config,
+    ));
 
     if !_is_tui {
         tracing::info!(mode = %cli.mode, "TEMM1E starting");
@@ -1873,10 +1817,14 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Start {
+            host,
             daemon,
             log,
             personality,
         } => {
+            if let Some(host) = host {
+                config.gateway.host = host.to_string();
+            }
             // ── Parse personality mode ───────────────────────────
             let temm1e_mode = match personality.to_lowercase().as_str() {
                 "work" => temm1e_core::types::config::Temm1eMode::Work,
@@ -1892,9 +1840,7 @@ async fn main() -> Result<()> {
 
             // ── Daemon mode ──────────────────────────────────────
             if daemon {
-                let temm1e_dir = dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".temm1e");
+                let temm1e_dir = temm1e_core::config::data_dir();
                 let _ = std::fs::create_dir_all(&temm1e_dir);
 
                 // Check for saved credentials — daemon requires prior setup
@@ -1998,40 +1944,36 @@ async fn main() -> Result<()> {
 
             // ── Resolve API credentials ────────────────────────
             // Priority: config file > saved credentials > onboarding
-            let credentials: Option<(String, String, String)> = {
-                if let Some(ref key) = config.provider.api_key {
-                    if !key.is_empty() && !key.starts_with("${") {
-                        let name = config
-                            .provider
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| "anthropic".to_string());
-                        let model = config
-                            .provider
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| default_model(&name).to_string());
-                        Some((name, key.clone(), model))
-                    } else {
-                        load_saved_credentials()
-                    }
-                } else {
-                    load_saved_credentials()
-                }
-            };
+            let saved_credentials = load_credentials_file();
+            let resolved_connection = temm1e_core::config::connection::resolve(
+                &config.provider,
+                saved_credentials.as_ref(),
+            );
+            let credentials = resolved_connection.as_ref().map(|connection| {
+                (
+                    connection.name.clone().unwrap_or_default(),
+                    connection.api_key.clone().unwrap_or_default(),
+                    connection.model.clone().unwrap_or_default(),
+                )
+            });
 
             // ── Memory backend ─────────────────────────────────
-            let memory_url = config.memory.path.clone().unwrap_or_else(|| {
-                let data_dir = dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".temm1e");
-                if let Err(e) = std::fs::create_dir_all(&data_dir) {
-                    tracing::warn!(error = %e, path = %data_dir.display(), "Failed to create directory");
-                }
-                format!("sqlite:{}/memory.db?mode=rwc", data_dir.display())
-            });
+            let data_dir = temm1e_core::config::data_dir();
+            std::fs::create_dir_all(&data_dir)?;
+            let memory_connections = temm1e_memory::MemoryConnections::resolve(
+                &config.memory,
+                &data_dir,
+                &std::env::current_dir().unwrap_or_else(|_| data_dir.clone()),
+            );
+            if memory_connections.retained_legacy_markdown {
+                tracing::warn!("Retaining legacy Markdown memory location; configure memory.path before changing working directories");
+            }
             let memory: Arc<dyn temm1e_core::Memory> = Arc::from(
-                temm1e_memory::create_memory_backend(&config.memory.backend, &memory_url).await?,
+                temm1e_memory::create_memory_backend(
+                    &config.memory.backend,
+                    &memory_connections.primary,
+                )
+                .await?,
             );
             tracing::info!(backend = %config.memory.backend, "Memory initialized");
 
@@ -2125,6 +2067,15 @@ async fn main() -> Result<()> {
                 }
             }
 
+            #[cfg(not(feature = "telegram"))]
+            if config
+                .channel
+                .get("telegram")
+                .is_some_and(|channel| channel.enabled)
+            {
+                anyhow::bail!("Telegram is enabled in configuration, but this binary was built without the telegram feature");
+            }
+            #[cfg(feature = "telegram")]
             if let Some(tg_config) = config.channel.get("telegram") {
                 if tg_config.enabled {
                     let mut tg = temm1e_channels::TelegramChannel::new(tg_config)?;
@@ -2264,18 +2215,24 @@ async fn main() -> Result<()> {
             let setup_tokens = temm1e_gateway::SetupTokenStore::new();
 
             // ── Pending raw key pastes (from /addkey unsafe) ────
-            let pending_raw_keys: Arc<Mutex<HashSet<String>>> =
+            let pending_raw_keys: Arc<Mutex<HashSet<temm1e_core::types::message::ChatRoute>>> =
                 Arc::new(Mutex::new(HashSet::new()));
 
             // ── Active login sessions (OTK Prowl — per-chat interactive browser sessions) ────
             #[cfg(feature = "browser")]
             let login_sessions: Arc<
-                Mutex<HashMap<String, temm1e_tools::browser_session::InteractiveBrowseSession>>,
+                Mutex<
+                    HashMap<
+                        temm1e_core::types::message::ChatRoute,
+                        temm1e_tools::browser_session::InteractiveBrowseSession,
+                    >,
+                >,
             > = Arc::new(Mutex::new(HashMap::new()));
 
             // ── Usage store (shares same SQLite DB as memory) ────
-            let usage_store: Arc<dyn temm1e_core::UsageStore> =
-                Arc::new(temm1e_memory::SqliteUsageStore::new(&memory_url).await?);
+            let usage_store: Arc<dyn temm1e_core::UsageStore> = Arc::new(
+                temm1e_memory::SqliteUsageStore::new(&memory_connections.sqlite_state).await?,
+            );
             tracing::info!("Usage store initialized");
 
             // ── Vault (encrypted credential store) ───────────────
@@ -2304,22 +2261,16 @@ async fn main() -> Result<()> {
                 temm1e_core::types::config::MemoryStrategy::Lambda,
             ));
             // ── Social intelligence: personality + storage ──────────
-            let personality =
-                std::sync::Arc::new(temm1e_anima::personality::PersonalityConfig::load(
-                    &dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".temm1e"),
-                ));
+            let personality = std::sync::Arc::new(
+                temm1e_anima::personality::PersonalityConfig::load(&temm1e_core::config::data_dir()),
+            );
             let social_storage: Option<std::sync::Arc<temm1e_anima::SocialStorage>> = if config
                 .social
                 .enabled
             {
                 let social_db_url = format!(
                     "sqlite:{}/social.db?mode=rwc",
-                    dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".temm1e")
-                        .display()
+                    temm1e_core::config::data_dir().display()
                 );
                 match temm1e_anima::SocialStorage::new(&social_db_url).await {
                     Ok(s) => {
@@ -2386,6 +2337,38 @@ async fn main() -> Result<()> {
                 vault.clone(),
                 Some(skill_registry.clone()),
             );
+            // A single shared agent can serve several transports. Bind tool
+            // sends to session.channel instead of the first configured channel.
+            let tool_channels: HashMap<String, Arc<dyn Channel>> = channel_map
+                .iter()
+                .map(|(name, channel)| {
+                    (
+                        name.clone(),
+                        Arc::new(SecretCensorChannel {
+                            inner: channel.clone(),
+                        }) as Arc<dyn Channel>,
+                    )
+                })
+                .collect();
+            if !tool_channels.is_empty() {
+                tools.retain(|tool| !matches!(tool.name(), "send_message" | "send_file"));
+                let heartbeat = primary_channel.clone().map(|channel| {
+                    Arc::new(SecretCensorChannel { inner: channel }) as Arc<dyn Channel>
+                });
+                tools.push(Arc::new(temm1e_tools::SendMessageTool::routed(
+                    tool_channels.clone(),
+                    heartbeat.clone(),
+                )));
+                if tool_channels
+                    .values()
+                    .any(|channel| channel.file_transfer().is_some())
+                {
+                    tools.push(Arc::new(temm1e_tools::SendFileTool::routed(
+                        tool_channels,
+                        heartbeat,
+                    )));
+                }
+            }
             tracing::info!(count = tools.len(), "Tools initialized");
 
             // ── Custom script tools (user/agent-authored) ──────
@@ -2422,9 +2405,7 @@ async fn main() -> Result<()> {
             // ── TemDOS: Load core registry ──────────────────
             let core_registry = {
                 let mut registry = temm1e_cores::CoreRegistry::new();
-                let ws_path = dirs::home_dir()
-                    .map(|h| h.join(".temm1e"))
-                    .unwrap_or_default();
+                let ws_path = temm1e_core::config::data_dir();
                 registry
                     .load(Some(ws_path.as_path()))
                     .await
@@ -2478,9 +2459,8 @@ async fn main() -> Result<()> {
                 config_path
                     .and_then(|p| std::fs::read_to_string(p).ok())
                     .or_else(|| {
-                        dirs::home_dir().and_then(|h| {
-                            std::fs::read_to_string(h.join(".temm1e/config.toml")).ok()
-                        })
+                        std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+                            .ok()
                     })
                     .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
                     .and_then(|content| toml::from_str::<HiveCheck>(&content).ok())
@@ -2546,11 +2526,7 @@ async fn main() -> Result<()> {
                 }
                 let raw_path = config_path
                     .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| {
-                        dirs::home_dir()
-                            .map(|h| h.join(".temm1e/config.toml"))
-                            .unwrap_or_else(|| std::path::PathBuf::from("temm1e.toml"))
-                    });
+                    .unwrap_or_else(|| temm1e_core::config::data_dir().join("config.toml"));
                 let raw = std::fs::read_to_string(&raw_path).unwrap_or_default();
                 let expanded = temm1e_core::config::expand_env_vars(&raw);
                 toml::from_str::<EigenRoot>(&expanded)
@@ -2560,9 +2536,7 @@ async fn main() -> Result<()> {
 
             let eigen_tune_engine: Option<Arc<temm1e_distill::EigenTuneEngine>> =
                 if eigentune_cfg.enabled {
-                    let db_path = dirs::home_dir()
-                        .map(|h| h.join(".temm1e").join("eigentune.db"))
-                        .unwrap_or_else(|| std::path::PathBuf::from("eigentune.db"));
+                    let db_path = temm1e_core::config::data_dir().join("eigentune.db");
                     if let Some(parent) = db_path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
@@ -2589,56 +2563,22 @@ async fn main() -> Result<()> {
                 };
 
             if let Some((ref pname, ref key, ref model)) = credentials {
-                // Filter out placeholder/invalid keys at startup. Use lenient
-                // mode for custom-endpoint providers so short LM Studio / Ollama
-                // keys pass — otherwise this check would wrongly reject keys
-                // that load_saved_credentials already approved via lenient filter.
-                let has_custom_endpoint = load_credentials_file()
-                    .and_then(|c| {
-                        c.providers
-                            .iter()
-                            .find(|p| p.name == *pname)
-                            .and_then(|p| p.base_url.clone())
-                    })
-                    .is_some();
-                let is_placeholder_start = if has_custom_endpoint {
-                    is_placeholder_key_lenient(key)
-                } else {
-                    is_placeholder_key(key)
-                };
+                let has_custom_endpoint = resolved_connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.base_url.is_some());
+                let is_placeholder_start = pname != "openai-codex"
+                    && if has_custom_endpoint {
+                        is_placeholder_key_lenient(key)
+                    } else {
+                        is_placeholder_key(key)
+                    };
                 if is_placeholder_start {
                     tracing::warn!(provider = %pname, "Primary API key is a placeholder — starting in onboarding mode");
                     // Fall through to onboarding
                 } else {
-                    // Load all keys and saved base_url for this provider.
-                    // Inside the filter closure, gate lenient vs strict on the
-                    // saved base_url so proxy providers keep their short keys.
-                    let (all_keys, saved_base_url) = load_active_provider_keys()
-                        .map(|(_, keys, _, burl)| {
-                            let has_custom = burl.is_some();
-                            let valid: Vec<String> = keys
-                                .into_iter()
-                                .filter(|k| {
-                                    if has_custom {
-                                        !is_placeholder_key_lenient(k)
-                                    } else {
-                                        !is_placeholder_key(k)
-                                    }
-                                })
-                                .collect();
-                            (valid, burl)
-                        })
-                        .unwrap_or_else(|| (vec![key.clone()], None));
-                    let effective_base_url =
-                        saved_base_url.or_else(|| config.provider.base_url.clone());
-                    let provider_config = temm1e_core::types::config::ProviderConfig {
-                        name: Some(pname.clone()),
-                        api_key: Some(key.clone()),
-                        keys: all_keys,
-                        model: Some(model.clone()),
-                        base_url: effective_base_url,
-                        extra_headers: config.provider.extra_headers.clone(),
-                    };
+                    let provider_config = resolved_connection
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("Resolved connection unavailable"))?;
                     // Create provider — route to Codex OAuth if configured
                     let provider: Arc<dyn temm1e_core::Provider> = {
                         #[cfg(feature = "codex-oauth")]
@@ -2667,19 +2607,14 @@ async fn main() -> Result<()> {
                     if !core_registry.read().await.is_empty() {
                         // Custom-model aware pricing lookup — tries the active
                         // provider's custom_models.toml first, falls back to
-                        // hardcoded substring pricing.
+                        // exact provider-scoped published rates.
                         let model_pricing =
                             temm1e_agent::budget::get_pricing_with_custom(pname, model);
                         let invoke_core = temm1e_cores::InvokeCoreTool::new(
                             core_registry.clone(),
                             provider.clone(),
                             tools.clone(), // all tools — invoke_core filters itself out
-                            // Note: this is a SEPARATE budget for core tracking.
-                            // The main agent's budget is inside AgentRuntime.
-                            // Both ultimately deduct from the user's wallet via provider calls.
-                            Arc::new(temm1e_agent::budget::BudgetTracker::new(
-                                config.agent.max_spend_usd,
-                            )),
+                            runtime_budget.clone(),
                             model_pricing,
                             model.clone(),
                             config.agent.max_context_tokens,
@@ -2701,11 +2636,9 @@ async fn main() -> Result<()> {
                         config.agent.max_task_duration_secs,
                         config.agent.max_spend_usd,
                     )
-                    .with_v2_optimizations(config.agent.v2_optimizations)
-                    .with_self_audit_enabled(config.agent.self_audit_enabled)
-                    .with_blueprint_notice(config.agent.blueprint_notice)
-                    .with_engram_config(config.memory.engram.clone())
-                    .with_parallel_phases(config.agent.parallel_phases)
+                    .with_budget(runtime_budget.clone())
+                    .with_policy(&runtime_policy)
+                    .with_durable_execution()
                     .with_hive_enabled(hive_enabled_early)
                     .with_shared_mode(shared_mode.clone())
                     .with_shared_memory_strategy(shared_memory_strategy.clone())
@@ -2746,9 +2679,7 @@ async fn main() -> Result<()> {
 
                     // ── Perpetuum lazy init (needs provider) ──────
                     if config.perpetuum.enabled && perpetuum.read().await.is_none() {
-                        let perpetuum_db = dirs::home_dir()
-                            .unwrap_or_else(|| std::path::PathBuf::from("."))
-                            .join(".temm1e/perpetuum.db");
+                        let perpetuum_db = temm1e_core::config::data_dir().join("perpetuum.db");
                         let db_url = format!("sqlite:{}?mode=rwc", perpetuum_db.display());
 
                         let perp_config = temm1e_perpetuum::PerpetualConfig {
@@ -2779,7 +2710,10 @@ async fn main() -> Result<()> {
 
                         match temm1e_perpetuum::Perpetuum::new(
                             perp_config,
-                            provider.clone(),
+                            Arc::new(temm1e_agent::metered_provider::MeteredProvider::new(
+                                provider.clone(),
+                                runtime_budget.clone(),
+                            )),
                             model.clone(),
                             channel_map.clone(),
                             &db_url,
@@ -2826,11 +2760,9 @@ async fn main() -> Result<()> {
                                         config.agent.max_task_duration_secs,
                                         config.agent.max_spend_usd,
                                     )
-                                    .with_v2_optimizations(config.agent.v2_optimizations)
-                                    .with_self_audit_enabled(config.agent.self_audit_enabled)
-                                    .with_blueprint_notice(config.agent.blueprint_notice)
-                                    .with_engram_config(config.memory.engram.clone())
-                                    .with_parallel_phases(config.agent.parallel_phases)
+                                    .with_budget(runtime_budget.clone())
+                                    .with_policy(&runtime_policy)
+                                    .with_durable_execution()
                                     .with_shared_mode(shared_mode.clone())
                                     .with_shared_memory_strategy(shared_memory_strategy.clone())
                                     .with_personality(personality.clone())
@@ -2863,6 +2795,10 @@ async fn main() -> Result<()> {
 
             // Track spawned task handles for graceful shutdown
             let mut task_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+            let shutdown_token = tokio_util::sync::CancellationToken::new();
+            let shutdown_perpetuum = perpetuum.clone();
+            let worker_handles: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+                Arc::new(std::sync::Mutex::new(Vec::new()));
 
             // Wire Telegram messages into the unified channel
             if let Some(mut tg_rx) = tg_rx {
@@ -2903,10 +2839,7 @@ async fn main() -> Result<()> {
             }
 
             // ── Workspace ──────────────────────────────────────
-            let workspace_path = dirs::home_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(".temm1e")
-                .join("workspace");
+            let workspace_path = temm1e_core::config::data_dir().join("workspace");
             if let Err(e) = std::fs::create_dir_all(&workspace_path) {
                 tracing::warn!(error = %e, path = %workspace_path.display(), "Failed to create directory");
             }
@@ -2984,8 +2917,8 @@ async fn main() -> Result<()> {
                 let hive_toml = config_path
                     .and_then(|p| std::fs::read_to_string(p).ok())
                     .or_else(|| {
-                        let home = dirs::home_dir()?;
-                        std::fs::read_to_string(home.join(".temm1e/config.toml")).ok()
+                        std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+                            .ok()
                     })
                     .or_else(|| std::fs::read_to_string("temm1e.toml").ok());
                 if let Some(ref content) = hive_toml {
@@ -3003,9 +2936,7 @@ async fn main() -> Result<()> {
             };
 
             let hive_instance: Option<Arc<temm1e_hive::Hive>> = if hive_config.enabled {
-                let hive_db = dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".temm1e/hive.db");
+                let hive_db = temm1e_core::config::data_dir().join("hive.db");
                 let hive_url = format!("sqlite:{}?mode=rwc", hive_db.display());
                 match temm1e_hive::Hive::new(&hive_config, &hive_url).await {
                     Ok(h) => {
@@ -3041,10 +2972,9 @@ async fn main() -> Result<()> {
                         memory: memory.clone(),
                         tools_template: tools.clone(),
                         model: agent.model().to_string(),
-                        parent_budget: Arc::new(temm1e_agent::budget::BudgetTracker::new(
-                            config.agent.max_spend_usd,
-                        )),
-                        cancel: tokio_util::sync::CancellationToken::new(),
+                        parent_budget: agent.budget(),
+                        policy: agent.runtime_policy(),
+                        cancel: shutdown_token.child_token(),
                         workspace_path: std::env::current_dir()
                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),
                         witness_attachments: witness_attachments.clone(),
@@ -3060,14 +2990,9 @@ async fn main() -> Result<()> {
 
             // ── Per-chat serial executor ───────────────────────
 
-            /// A user order queued for processing after the current task.
-            struct QueuedOrder {
-                original_msg: temm1e_core::types::message::InboundMessage,
-                #[allow(dead_code)]
-                queued_at: std::time::Instant,
-            }
-
-            type OrderQueue = Arc<std::sync::Mutex<std::collections::VecDeque<QueuedOrder>>>;
+            use crate::mission_control::OrderQueue;
+            let mission_tasks = tokio_util::task::TaskTracker::new();
+            let mission_slots = Arc::new(tokio::sync::Semaphore::new(32));
 
             /// Tracks the active task state for a single chat.
             #[allow(dead_code)]
@@ -3085,9 +3010,14 @@ async fn main() -> Result<()> {
             }
 
             if !channel_map.is_empty() {
+                let conversations = Arc::new(
+                    temm1e_agent::execution_journal::ExecutionJournal::open_profile().await?,
+                );
                 let channel_map_arc = channel_map.clone();
                 let primary_fallback = primary_channel.clone();
                 let agent_state_clone = agent_state.clone();
+                let runtime_budget = runtime_budget.clone();
+                let runtime_policy = runtime_policy.clone();
                 let memory_clone = memory.clone();
                 let tools_clone = tools.clone();
                 let custom_registry_clone = custom_tool_registry.clone();
@@ -3098,10 +3028,9 @@ async fn main() -> Result<()> {
                 let agent_max_tool_rounds = config.agent.max_tool_rounds;
                 let agent_max_task_duration = config.agent.max_task_duration_secs;
                 let agent_max_spend_usd = config.agent.max_spend_usd;
-                let agent_v2_opt = config.agent.v2_optimizations;
-                let agent_parallel_phases = config.agent.parallel_phases;
-                let agent_self_audit = config.agent.self_audit_enabled;
+
                 let provider_base_url = config.provider.base_url.clone();
+                let model_command_provider_config = config.provider.clone();
                 let ws_path = workspace_path.clone();
                 let pending_clone = pending_messages.clone();
                 let setup_tokens_clone = setup_tokens.clone();
@@ -3111,14 +3040,32 @@ async fn main() -> Result<()> {
                 let usage_store_clone = usage_store.clone();
                 let hive_clone = hive_instance.clone();
 
-                let chat_slots: Arc<Mutex<HashMap<String, ChatSlot>>> =
-                    Arc::new(Mutex::new(HashMap::new()));
+                let chat_slots: Arc<
+                    Mutex<HashMap<temm1e_core::types::message::ChatRoute, ChatSlot>>,
+                > = Arc::new(Mutex::new(HashMap::new()));
 
                 let msg_tx_redispatch = msg_tx.clone();
+                let dispatcher_shutdown = shutdown_token.clone();
+                let dispatcher_workers = worker_handles.clone();
+                let dispatcher_missions = mission_tasks.clone();
+                let mission_shutdown = shutdown_token.clone();
+
                 task_handles.push(tokio::spawn(async move {
-                    while let Some(mut inbound) = msg_rx.recv().await {
+                    while let Some(mut inbound) = tokio::select! {
+                        biased;
+                        _ = dispatcher_shutdown.cancelled() => None,
+                        message = msg_rx.recv() => message,
+                    } {
                         let chat_id = inbound.chat_id.clone();
                         let is_heartbeat_msg = inbound.channel == "heartbeat";
+                        // Heartbeats share the configured destination transport's slot
+                        // so a real user can preempt them. Other transports stay distinct.
+                        let route_channel = if is_heartbeat_msg {
+                            primary_fallback.as_ref().map(|channel| channel.name()).unwrap_or("heartbeat")
+                        } else {
+                            inbound.channel.as_str()
+                        };
+                        let route = temm1e_core::types::message::ChatRoute::new(route_channel, &chat_id);
 
                         // Normalize a leading slash-command: strip a Telegram-style
                         // "@botname" suffix (e.g. "/help@MyBot" -> "/help") so command
@@ -3144,7 +3091,7 @@ async fn main() -> Result<()> {
 
                         // Handle user messages while a task is active
                         if !is_heartbeat_msg {
-                            if let Some(slot) = slots.get(&chat_id) {
+                            if let Some(slot) = slots.get(&route) {
                                 if slot.is_heartbeat.load(Ordering::Relaxed) {
                                     tracing::info!(
                                         chat_id = %chat_id,
@@ -3201,7 +3148,7 @@ async fn main() -> Result<()> {
 
                                     let temporal = perpetuum_temporal.read().await;
                                     if !temporal.is_empty() {
-                                        status_text.push_str(&format!("\n\nBackground:\n{}", &*temporal));
+                                        status_text.push_str(&format!("\n\nBackground:\n{}", *temporal));
                                     }
 
                                     if oq_len > 0 {
@@ -3298,26 +3245,45 @@ async fn main() -> Result<()> {
                                         .cloned()
                                         .or_else(|| primary_fallback.clone())
                                         .expect("channel_map non-empty");
+                                    let mission_permit = match mission_slots.clone().try_acquire_owned() {
+                                        Ok(permit) => permit,
+                                        Err(_) => {
+                                            let accepted = slot.tx.try_send(inbound.clone()).is_ok();
+                                            let notice = temm1e_core::types::message::OutboundMessage {
+                                                chat_id: chat_id.clone(), reply_to: Some(inbound.id.clone()), parse_mode: None,
+                                                text: if accepted { "Mission Control is at capacity; your message is queued as a normal follow-up." } else { "The request queue is full; your message was not queued. Please retry." }.into(),
+                                            };
+                                            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), icpt_sender.send_message(notice)).await;
+                                            continue;
+                                        }
+                                    };
                                     let icpt_chat_id = chat_id.clone();
+                                    let icpt_route = route.clone();
                                     let icpt_msg_id = inbound.id.clone();
                                     let icpt_msg_text = inbound.text.clone().unwrap_or_default();
                                     let icpt_inbound = inbound.clone();
-                                    let icpt_interrupt = slot.interrupt.clone();
-                                    let icpt_active_cancel = slot.active_cancel.clone();
-                                    let icpt_task = slot.current_task.clone();
-                                    let icpt_status_tx = slot.status_tx.clone();
+                                    // Capture this task's token now; a late classifier must
+                                    // never cancel whichever newer task owns the slot later.
+                                    let icpt_task_cancel = slot.active_cancel.lock()
+                                        .unwrap_or_else(|e| e.into_inner()).clone();
+                                    let task_desc = slot.current_task.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                                    let icpt_busy = slot.is_busy.clone();
+                                    let icpt_worker_tx = slot.tx.clone();
+                                    let status_snap = slot.status_tx.borrow().clone();
                                     let icpt_order_queue = slot.order_queue.clone();
                                     let icpt_pending = pending_clone.clone();
                                     let icpt_perpetuum_temporal = perpetuum_temporal.clone();
                                     let icpt_agent_state = agent_state_clone.clone();
                                     let icpt_personality = personality.clone();
-                                    tokio::spawn(async move {
-                                        let task_desc = icpt_task.lock()
-                                            .map(|t| t.clone())
-                                            .unwrap_or_default();
-
-                                        // Read real-time phase from status watch channel
-                                        let status_snap = icpt_status_tx.borrow().clone();
+                                    let mission_stop = mission_shutdown.clone();
+                                    dispatcher_missions.spawn(async move {
+                                        let _permit = mission_permit;
+                                        tokio::select! {
+                                            biased;
+                                            _ = mission_stop.cancelled() => {
+                                                tracing::warn!("Mission Control interrupted during shutdown; unconfirmed routing requires reconciliation");
+                                            }
+                                            _ = async {
                                         let elapsed = status_snap.started_at.elapsed().as_secs();
                                         let phase_str = format!("{}", status_snap.phase);
 
@@ -3338,37 +3304,26 @@ async fn main() -> Result<()> {
                                         let Some(agent) = agent_guard.as_ref() else { return; };
                                         let provider = agent.provider_arc();
                                         let model = agent.model().to_string();
+                                        let budget = agent.budget();
+                                        let pricing = *agent.model_pricing();
                                         drop(agent_guard);
 
                                         let soul = build_system_prompt(&icpt_personality);
                                         let request = temm1e_core::types::message::CompletionRequest {
                                             model,
                                             system: Some(format!(
-                                                "{soul}\n\n\
-                                                 === MISSION CONTROL ===\n\
-                                                 You are Tem's MISSION CONTROL. Your main self is busy working.\n\n\
-                                                 FOREGROUND TASK:\n\
-                                                   Request: \"{task_desc}\"\n\
-                                                   Phase: {phase_str}\n\
-                                                   Elapsed: {elapsed}s | Rounds: {} | Tools run: {} | Cost: ${:.4}\n\n\
-                                                 BACKGROUND (Perpetuum):\n\
-                                                   {perpetuum_section}\n\n\
-                                                 QUEUED ORDERS: {oq_count}\n\n\
-                                                 The user says: \"{icpt_msg_text}\"\n\n\
-                                                 Classify and respond (1-3 sentences max). End with EXACTLY ONE token:\n\
-                                                 [AMEND] — user is correcting/adding to the CURRENT task\n\
-                                                 [QUEUE] — user wants something NEW done AFTER the current task\n\
-                                                 [CANCEL] — user wants to STOP the current task\n\
-                                                 [CHAT] — user is chatting or asking about status\n\n\
-                                                 Rules:\n\
-                                                 - For status questions: describe what you're doing using the phase info, then end with [CHAT]\n\
-                                                 - For [QUEUE]: confirm the order is queued\n\
-                                                 - For [AMEND]: acknowledge the update\n\
-                                                 - NEVER use [CANCEL] unless the user clearly wants to stop\n\
-                                                 === END MISSION CONTROL ===",
-                                                status_snap.rounds_completed,
-                                                status_snap.tools_executed,
-                                                status_snap.cost_usd,
+                                                "{soul}\n\n{}\nTask metadata: {}",
+                                                crate::mission_control::DECISION_INSTRUCTIONS,
+                                                serde_json::json!({
+                                                    "foreground_request": task_desc,
+                                                    "phase": phase_str,
+                                                    "elapsed_seconds": elapsed,
+                                                    "rounds": status_snap.rounds_completed,
+                                                    "tools_run": status_snap.tools_executed,
+                                                    "recorded_cost_usd": status_snap.cost_usd,
+                                                    "background": perpetuum_section,
+                                                    "queued_orders": oq_count,
+                                                }),
                                             )),
                                             messages: vec![
                                                 temm1e_core::types::message::ChatMessage {
@@ -3377,109 +3332,48 @@ async fn main() -> Result<()> {
                                                 },
                                             ],
                                             tools: vec![],
-                                            max_tokens: None,
-                                            temperature: Some(0.7),
+                                            max_tokens: Some(1024),
+                                            temperature: None,
                                             system_volatile: None,
                                         };
 
-                                        match provider.complete(request).await {
-                                            Ok(resp) => {
-                                                let mut text = resp.content.iter()
-                                                    .filter_map(|p| match p {
-                                                        temm1e_core::types::message::ContentPart::Text { text } => Some(text.as_str()),
-                                                        _ => None,
-                                                    })
-                                                    .collect::<Vec<_>>()
-                                                    .join("");
-
-                                                // Parse classification token
-                                                let classification = if text.contains("[CANCEL]") {
-                                                    "cancel"
-                                                } else if text.contains("[QUEUE]") {
-                                                    "queue"
-                                                } else if text.contains("[AMEND]") {
-                                                    "amend"
-                                                } else {
-                                                    "chat"
+                                        match crate::mission_control::classify(&*provider, &budget, &pricing, request).await {
+                                            Ok(decision) => {
+                                                let text = decision.reply;
+                                                let outcome = crate::mission_control::RoutingContext {
+                                                    captured_task: &icpt_task_cancel, busy: &icpt_busy,
+                                                    worker: &icpt_worker_tx, orders: &icpt_order_queue,
+                                                    pending: &icpt_pending, route: &icpt_route,
+                                                }.apply(decision.action, icpt_inbound);
+                                                let acknowledgement = outcome.acknowledgement().map(str::to_string).unwrap_or(text);
+                                                let reply = temm1e_core::types::message::OutboundMessage {
+                                                    chat_id: icpt_chat_id,
+                                                    text: acknowledgement,
+                                                    reply_to: Some(icpt_msg_id),
+                                                    parse_mode: None,
                                                 };
-
-                                                // Strip all tokens from response
-                                                for token in &["[CANCEL]", "[QUEUE]", "[AMEND]", "[CHAT]"] {
-                                                    text = text.replace(token, "");
-                                                }
-                                                text = text.trim().to_string();
-
-                                                // Send response to user
-                                                if !text.is_empty() {
-                                                    let reply = temm1e_core::types::message::OutboundMessage {
-                                                        chat_id: icpt_chat_id.clone(),
-                                                        text,
-                                                        reply_to: Some(icpt_msg_id),
-                                                        parse_mode: None,
-                                                    };
-                                                    let _ = icpt_sender.send_message(reply).await;
-                                                }
-
-                                                // Route based on classification
-                                                match classification {
-                                                    "cancel" => {
-                                                        icpt_interrupt.store(true, Ordering::Relaxed);
-                                                        if let Ok(ct) = icpt_active_cancel.lock() {
-                                                            ct.cancel();
-                                                        }
-                                                        tracing::info!(
-                                                            chat_id = %icpt_chat_id,
-                                                            "Mission Control cancelled active task"
-                                                        );
-                                                    }
-                                                    "queue" => {
-                                                        if let Ok(mut oq) = icpt_order_queue.lock() {
-                                                            oq.push_back(QueuedOrder {
-                                                                original_msg: icpt_inbound,
-                                                                queued_at: std::time::Instant::now(),
-                                                            });
-                                                        }
-                                                        tracing::info!(
-                                                            chat_id = %icpt_chat_id,
-                                                            "Mission Control queued new order"
-                                                        );
-                                                    }
-                                                    "amend" => {
-                                                        if let Ok(mut pq) = icpt_pending.lock() {
-                                                            pq.entry(icpt_chat_id.clone())
-                                                                .or_default()
-                                                                .push(icpt_msg_text);
-                                                        }
-                                                        tracing::info!(
-                                                            chat_id = %icpt_chat_id,
-                                                            "Mission Control routed amendment to pending"
-                                                        );
-                                                    }
-                                                    _ => {
-                                                        // [CHAT] — message consumed by response
-                                                    }
+                                                if !matches!(tokio::time::timeout(std::time::Duration::from_secs(10), icpt_sender.send_message(reply)).await, Ok(Ok(()))) {
+                                                    tracing::warn!("Mission Control acknowledgement was not confirmed; routing is not retried");
                                                 }
                                             }
                                             Err(e) => {
                                                 tracing::warn!(
                                                     error = %e,
-                                                    "Mission Control LLM call failed — fallback to pending"
+                                                    "Mission Control classification failed — attempting normal follow-up"
                                                 );
-                                                // Conservative: treat as amendment
-                                                if let Ok(mut pq) = icpt_pending.lock() {
-                                                    pq.entry(icpt_chat_id.clone())
-                                                        .or_default()
-                                                        .push(icpt_msg_text);
-                                                }
-                                                // Send hardcoded ack
+                                                let accepted = icpt_worker_tx.try_send(icpt_inbound).is_ok();
+                                                // Classification failed: preserve the original as a normal
+                                                // follow-up instead of silently treating it as a correction.
                                                 let ack = temm1e_core::types::message::OutboundMessage {
                                                     chat_id: icpt_chat_id,
-                                                    text: "Got your message \u{2014} I'll look at it when I finish what I'm working on.".to_string(),
+                                                    text: if accepted { "I could not classify this message; it is queued as a follow-up." } else { "I could not classify this message and the follow-up queue is full. Please retry." }.to_string(),
                                                     reply_to: Some(icpt_msg_id),
                                                     parse_mode: None,
                                                 };
-                                                let _ = icpt_sender.send_message(ack).await;
+                                                let _ = tokio::time::timeout(std::time::Duration::from_secs(10), icpt_sender.send_message(ack)).await;
                                             }
+                                        }
+                                            } => {}
                                         }
                                     });
                                     continue;
@@ -3489,7 +3383,7 @@ async fn main() -> Result<()> {
 
                         // Skip heartbeat if chat is busy
                         if is_heartbeat_msg {
-                            if let Some(slot) = slots.get(&chat_id) {
+                            if let Some(slot) = slots.get(&route) {
                                 if slot.tx.try_send(inbound).is_err() {
                                     tracing::debug!(
                                         chat_id = %chat_id,
@@ -3507,7 +3401,7 @@ async fn main() -> Result<()> {
                         let social_storage_for_worker = social_storage.clone();
                         let social_config_for_worker = social_config_captured.clone();
                         let witness_attachments_for_worker = witness_attachments.clone();
-                        let slot = slots.entry(chat_id.clone()).or_insert_with(|| {
+                        let slot = slots.entry(route.clone()).or_insert_with(|| {
                             let (chat_tx, mut chat_rx) =
                                 tokio::sync::mpsc::channel::<temm1e_core::types::message::InboundMessage>(32);
 
@@ -3515,7 +3409,7 @@ async fn main() -> Result<()> {
                             let is_heartbeat = Arc::new(AtomicBool::new(false));
                             let is_busy = Arc::new(AtomicBool::new(false));
                             let current_task: Arc<std::sync::Mutex<String>> = Arc::new(std::sync::Mutex::new(String::new()));
-                            let cancel_token = tokio_util::sync::CancellationToken::new();
+                            let cancel_token = dispatcher_shutdown.child_token();
                             // ── Mission Control state ──
                             let (slot_status_tx, _) = tokio::sync::watch::channel(
                                 temm1e_agent::AgentTaskStatus::default(),
@@ -3525,9 +3419,11 @@ async fn main() -> Result<()> {
                                 Arc::new(std::sync::Mutex::new(cancel_token.child_token()));
                             let is_busy_clone = is_busy.clone();
                             let current_task_clone = current_task.clone();
-                            let self_tx = chat_tx.clone();
 
                             let agent_state = agent_state_clone.clone();
+                            let model_perpetuum = perpetuum.clone();
+                            let runtime_budget = runtime_budget.clone();
+                            let runtime_policy = runtime_policy.clone();
                             let memory = memory_clone.clone();
                             let tools_template = tools_clone.clone();
                             let custom_registry = custom_registry_clone.clone();
@@ -3538,11 +3434,9 @@ async fn main() -> Result<()> {
                             let max_rounds = agent_max_tool_rounds;
                             let max_task_duration = agent_max_task_duration;
                             let max_spend = agent_max_spend_usd;
-                            let v2_opt = agent_v2_opt;
-                            let pp_opt = agent_parallel_phases;
-                            let self_audit_opt = agent_self_audit;
                             let hive_on = hive_enabled_flag;
                             let base_url = provider_base_url.clone();
+                            let model_command_provider_config = model_command_provider_config.clone();
                             let channel_map_worker = channel_map_arc.clone();
                             let primary_fallback_worker = primary_fallback.clone();
                             let workspace_path = ws_path.clone();
@@ -3569,45 +3463,25 @@ async fn main() -> Result<()> {
                             let browser_ref_worker = browser_tool_ref.clone();
                             let usage_store_worker = usage_store_clone.clone();
                             let hive_worker = hive_clone.clone();
-                            let worker_chat_id = chat_id.clone();
+                            let worker_route = route.clone();
 
-                            tokio::spawn(async move {
-                                // ── Restore conversation history from memory backend ──
-                                let history_key = format!("chat_history:{}", worker_chat_id);
-                                let mut persistent_history: Vec<temm1e_core::types::message::ChatMessage> =
-                                    match memory.get(&history_key).await {
-                                        Ok(Some(entry)) => {
-                                            match serde_json::from_str(&entry.content) {
-                                                Ok(h) => {
-                                                    tracing::info!(
-                                                        chat_id = %worker_chat_id,
-                                                        messages = %Vec::<temm1e_core::types::message::ChatMessage>::len(&h),
-                                                        "Restored conversation history from memory"
-                                                    );
-                                                    h
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!(
-                                                        chat_id = %worker_chat_id,
-                                                        error = %e,
-                                                        "Failed to deserialize saved history, starting fresh"
-                                                    );
-                                                    Vec::new()
-                                                }
+                            let conversations = conversations.clone();
+                            let worker_handle = tokio::spawn(async move {
+                                while let Some(mut msg) = {
+                                    if cancel_token_clone.is_cancelled() {
+                                        None
+                                    } else {
+                                        let queued = order_queue_worker.lock().unwrap_or_else(|e| e.into_inner())
+                                            .pop_front().map(|order| order.original_msg);
+                                        if queued.is_some() { queued } else {
+                                            tokio::select! {
+                                                biased;
+                                                _ = cancel_token_clone.cancelled() => None,
+                                                message = chat_rx.recv() => message,
                                             }
                                         }
-                                        Ok(None) => Vec::new(),
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                chat_id = %worker_chat_id,
-                                                error = %e,
-                                                "Failed to load saved history, starting fresh"
-                                            );
-                                            Vec::new()
-                                        }
-                                    };
-
-                                while let Some(mut msg) = chat_rx.recv().await {
+                                    }
+                                } {
                                     // Resolve sender per-message from channel map
                                     let sender: Arc<dyn temm1e_core::Channel> = channel_map_worker
                                         .get(&msg.channel)
@@ -3635,6 +3509,18 @@ async fn main() -> Result<()> {
                                     }
                                     let cancel = task_cancel;
 
+                                    // Resolve once for both commands and tool dispatch. Heartbeats are
+                                    // internal scheduler messages, not external channel identities.
+                                    let user_role = if is_hb && msg.user_id == "system" {
+                                        Some(temm1e_core::types::rbac::Role::Admin)
+                                    } else {
+                                        sender.get_role(&msg.user_id)
+                                    };
+                                    let Some(user_role) = user_role else {
+                                        tracing::warn!(channel = %msg.channel, "Message denied: no authorized role");
+                                        return;
+                                    };
+
                                     // ── Commands — intercepted before agent ──────
                                     let msg_text_cmd = msg.text.as_deref().unwrap_or("");
                                     let cmd_lower = msg_text_cmd.trim().to_lowercase();
@@ -3642,11 +3528,7 @@ async fn main() -> Result<()> {
                                     // ── RBAC: centralized command gate ────────────
                                     // Block admin-only slash commands for User role.
                                     if cmd_lower.starts_with('/')
-                                        && !is_command_allowed_for_user(
-                                            &msg.channel,
-                                            &msg.user_id,
-                                            &cmd_lower,
-                                        )
+                                        && !user_role.is_command_allowed(&cmd_lower)
                                     {
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
@@ -3660,6 +3542,62 @@ async fn main() -> Result<()> {
                                         }
                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
                                         return;
+                                    }
+
+                                    // Heartbeats continue the target channel's conversation.
+                                    // Group access stays shared among currently admitted users.
+                                    let conversation_scope = match temm1e_agent::conversation::ConversationScope::new(
+                                        &workspace_path, if is_hb { sender.name() } else { &msg.channel },
+                                        &msg.chat_id, "channel-admitted-members",
+                                    ) {
+                                        Ok(scope) => scope,
+                                        Err(e) => {
+                                            send_with_retry(&*sender, temm1e_core::types::message::OutboundMessage {
+                                                chat_id: msg.chat_id.clone(), text: format!("Cannot open the conversation: {e}"),
+                                                reply_to: Some(msg.id.clone()), parse_mode: None,
+                                            }).await;
+                                            return;
+                                        }
+                                    };
+                                    // The existing RBAC command gate above restricts these
+                                    // management commands to Admin. They never reach the model.
+                                    match temm1e_agent::delivery::prepare_resume_command(
+                                        &conversations, &conversation_scope, msg_text_cmd,
+                                    ).await {
+                                        Ok(Some(ticket)) => {
+                                            if let Err(e) = ticket.deliver(|reply| send_saved_reply(&*sender, reply)).await {
+                                                tracing::error!(%e, "Saved reply delivery requires reconciliation");
+                                            }
+                                            return;
+                                        }
+                                        Err(e) => {
+                                            let _ = sender.send_message(temm1e_core::types::message::OutboundMessage {
+                                                chat_id: msg.chat_id.clone(), text: e.to_string(),
+                                                reply_to: Some(msg.id.clone()), parse_mode: None,
+                                            }).await;
+                                            return;
+                                        }
+                                        Ok(None) => {}
+                                    }
+                                    match temm1e_agent::conversation::handle_owner_command(
+                                        &conversations, &conversation_scope, memory.as_ref(),
+                                        &format!("chat_history:{}", msg.chat_id), msg_text_cmd,
+                                    ).await {
+                                        Ok(Some(text)) => {
+                                            send_with_retry(&*sender, temm1e_core::types::message::OutboundMessage {
+                                                chat_id: msg.chat_id.clone(), text,
+                                                reply_to: Some(msg.id.clone()), parse_mode: None,
+                                            }).await;
+                                            return;
+                                        }
+                                        Err(e) => {
+                                            send_with_retry(&*sender, temm1e_core::types::message::OutboundMessage {
+                                                chat_id: msg.chat_id.clone(), text: e.to_string(),
+                                                reply_to: Some(msg.id.clone()), parse_mode: None,
+                                            }).await;
+                                            return;
+                                        }
+                                        Ok(None) => {}
                                     }
 
                                     // /eigentune — Eigen-Tune slash dispatch
@@ -3710,7 +3648,7 @@ async fn main() -> Result<()> {
 
                                     // /addkey github — GitHub PAT for vigil
                                     if cmd_lower == "/addkey github" {
-                                        pending_raw_keys_worker.lock().await.insert(msg.chat_id.clone());
+                                        pending_raw_keys_worker.lock().await.insert(worker_route.clone());
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
                                             text: "Paste your GitHub Personal Access Token.\n\n\
@@ -3728,7 +3666,7 @@ async fn main() -> Result<()> {
 
                                     // /addkey unsafe — raw key paste mode
                                     if cmd_lower == "/addkey unsafe" {
-                                        pending_raw_keys_worker.lock().await.insert(msg.chat_id.clone());
+                                        pending_raw_keys_worker.lock().await.insert(worker_route.clone());
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
                                             text: "Paste your API key in the next message.\n\n\
@@ -3760,7 +3698,8 @@ async fn main() -> Result<()> {
                                     // /addmodel — register a custom model for the active provider
                                     if cmd_lower.starts_with("/addmodel") {
                                         let args = msg_text_cmd.trim()["/addmodel".len()..].trim();
-                                        let info = handle_addmodel_command(args);
+                                        let context = model_command_context(agent_state.read().await.as_deref(), &model_command_provider_config);
+                                        let info = handle_addmodel_command(args, context.as_ref());
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
                                             text: info,
@@ -3774,7 +3713,8 @@ async fn main() -> Result<()> {
 
                                     // /listmodels — show all hardcoded + custom models
                                     if cmd_lower == "/listmodels" {
-                                        let info = handle_listmodels_command();
+                                        let context = model_command_context(agent_state.read().await.as_deref(), &model_command_provider_config);
+                                        let info = handle_listmodels_command(context.as_ref());
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
                                             text: info,
@@ -3789,7 +3729,8 @@ async fn main() -> Result<()> {
                                     // /removemodel — drop a custom model for the active provider
                                     if cmd_lower.starts_with("/removemodel") {
                                         let args = msg_text_cmd.trim()["/removemodel".len()..].trim();
-                                        let info = handle_removemodel_command(args);
+                                        let context = model_command_context(agent_state.read().await.as_deref(), &model_command_provider_config);
+                                        let info = handle_removemodel_command(args, context.as_ref());
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
                                             text: info,
@@ -3807,17 +3748,13 @@ async fn main() -> Result<()> {
                                         let reply_text = match subcmd {
                                             "disable" => {
                                                 // Persist to config file
-                                                let config_path = dirs::home_dir()
-                                                    .unwrap_or_default()
-                                                    .join(".temm1e")
+                                                let config_path = temm1e_core::config::data_dir()
                                                     .join("vigil.toml");
                                                 std::fs::write(&config_path, "enabled = false\nconsent_given = false\nauto_report = false\n").ok();
                                                 "Vigil disabled. Re-enable by deleting ~/.temm1e/vigil.toml.".to_string()
                                             }
                                             "auto" => {
-                                                let config_path = dirs::home_dir()
-                                                    .unwrap_or_default()
-                                                    .join(".temm1e")
+                                                let config_path = temm1e_core::config::data_dir()
                                                     .join("vigil.toml");
                                                 std::fs::write(&config_path, "enabled = true\nconsent_given = true\nauto_report = true\n").ok();
                                                 "Vigil auto-reporting enabled. I'll show a 60-second window before each report.".to_string()
@@ -3825,9 +3762,7 @@ async fn main() -> Result<()> {
                                             "status" => {
                                                 let has_github = load_credentials_file()
                                                     .is_some_and(|c| c.providers.iter().any(|p| p.name == "github"));
-                                                let consent_path = dirs::home_dir()
-                                                    .unwrap_or_default()
-                                                    .join(".temm1e")
+                                                let consent_path = temm1e_core::config::data_dir()
                                                     .join("vigil.toml");
                                                 let consent = std::fs::read_to_string(&consent_path)
                                                     .unwrap_or_default()
@@ -3869,137 +3804,25 @@ async fn main() -> Result<()> {
                                         } else {
                                             msg_text_cmd.trim()["/model".len()..].trim()
                                         };
-                                        let result = handle_model_command(args);
-                                        let is_switch = result.starts_with("Model switched:");
-
-                                        // If model was switched, reload agent immediately
-                                        // (don't wait for file watcher)
-                                        let final_text = if is_switch {
-                                            // Check if this is a Codex OAuth model switch
-                                            #[cfg(feature = "codex-oauth")]
-                                            let codex_switch = result.contains("Codex OAuth");
-                                            #[cfg(not(feature = "codex-oauth"))]
-                                            let codex_switch = false;
-
-                                            if codex_switch {
-                                                #[cfg(feature = "codex-oauth")]
-                                                {
-                                                    // Extract target model from "Model switched: codex-oauth → <model>"
-                                                    let new_model = result
-                                                        .lines()
-                                                        .next()
-                                                        .and_then(|l| l.split("→ ").nth(1))
-                                                        .unwrap_or("gpt-5.4")
-                                                        .trim()
-                                                        .to_string();
-                                                    match temm1e_codex_oauth::TokenStore::load() {
-                                                        Ok(store) => {
-                                                            let token_store = std::sync::Arc::new(store);
-                                                            let provider: Arc<dyn temm1e_core::Provider> =
-                                                                Arc::new(temm1e_codex_oauth::CodexResponsesProvider::new(
-                                                                    new_model.clone(),
-                                                                    token_store,
-                                                                ));
-                                                            let new_agent = Arc::new(temm1e_agent::AgentRuntime::with_limits(
-                                                                provider,
-                                                                memory.clone(),
-                                                                tools_template.clone(),
-                                                                new_model.clone(),
-                                                                Some(build_system_prompt(&personality)),
-                                                                max_turns,
-                                                                max_ctx,
-                                                                max_rounds,
-                                                                max_task_duration,
-                                                                max_spend,
-                                                            ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
-                                                            *agent_state.write().await = Some(new_agent);
-                                                            tracing::info!(
-                                                                provider = "openai-codex",
-                                                                model = %new_model,
-                                                                "Agent reloaded via /model command (Codex OAuth)"
-                                                            );
-                                                            format!("Model switched → {}\nActive now.", new_model)
-                                                        }
-                                                        Err(e) => {
-                                                            format!("Model switch failed: {}", e)
-                                                        }
-                                                    }
-                                                }
-                                                #[cfg(not(feature = "codex-oauth"))]
-                                                { result }
-                                            } else if let Some(creds) = load_credentials_file() {
-                                                if let Some(prov) = creds.providers.iter().find(|p| p.name == creds.active) {
-                                                    // Proxy providers use lenient placeholder check so short
-                                                    // LM Studio / Ollama keys survive /model reload.
-                                                    let has_custom = prov.base_url.is_some();
-                                                    let valid_keys: Vec<String> = prov.keys.iter()
-                                                        .filter(|k| {
-                                                            if has_custom {
-                                                                !is_placeholder_key_lenient(k)
-                                                            } else {
-                                                                !is_placeholder_key(k)
-                                                            }
-                                                        })
-                                                        .cloned()
-                                                        .collect();
-                                                    let effective_base_url = prov.base_url.clone().or_else(|| base_url.clone());
-                                                    let reload_config = temm1e_core::types::config::ProviderConfig {
-                                                        name: Some(creds.active.clone()),
-                                                        api_key: valid_keys.first().cloned(),
-                                                        keys: valid_keys,
-                                                        model: Some(prov.model.clone()),
-                                                        base_url: effective_base_url,
-                                                        extra_headers: std::collections::HashMap::new(),
-                                                    };
-                                                    match validate_provider_key(&reload_config).await {
-                                                        Ok(validated_provider) => {
-                                                            let new_agent = Arc::new(temm1e_agent::AgentRuntime::with_limits(
-                                                                validated_provider,
-                                                                memory.clone(),
-                                                                tools_template.clone(),
-                                                                prov.model.clone(),
-                                                                Some(build_system_prompt(&personality)),
-                                                                max_turns,
-                                                                max_ctx,
-                                                                max_rounds,
-                                                                max_task_duration,
-                                                                max_spend,
-                                                            ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
-                                                            *agent_state.write().await = Some(new_agent);
-                                                            tracing::info!(
-                                                                provider = %creds.active,
-                                                                model = %prov.model,
-                                                                "Agent reloaded via /model command"
-                                                            );
-                                                            format!("{}\nActive now.", result)
-                                                        }
-                                                        Err(err) => {
-                                                            tracing::warn!(error = %err, "Model switch failed validation");
-                                                            // Revert credentials
-                                                            if let Some(old_agent) = agent_state.read().await.as_ref() {
-                                                                let old_model = old_agent.model().to_string();
-                                                                let mut rev = creds.clone();
-                                                                for p in &mut rev.providers {
-                                                                    if p.name == creds.active {
-                                                                        p.model = old_model.clone();
-                                                                    }
-                                                                }
-                                                                if let Ok(content) = toml::to_string_pretty(&rev) {
-                                                                    let _ = std::fs::write(credentials_path(), &content);
-                                                                }
-                                                            }
-                                                            format!("Model switch failed: {}\nReverted to previous model.", err)
-                                                        }
-                                                    }
-                                                } else {
-                                                    result
-                                                }
-                                            } else {
-                                                result
+                                        let (final_text, binding) = {
+                                            let mut state = agent_state.write().await;
+                                            match state.as_mut() {
+                                                None => ("No active provider. Configure a connection first.".into(), None),
+                                                Some(agent) if args.is_empty() => (runtime_model_status(agent), None),
+                                                Some(agent) => match Arc::get_mut(agent) {
+                                                    None => ("A turn is still using this runtime. Retry /model when it finishes.".into(), None),
+                                                    Some(agent) => match select_runtime_model(agent, args) {
+                                                        Err(error) => (format!("Model selection failed: {error}"), None),
+                                                        Ok(text) => (text, Some((agent.provider_arc(), agent.model().to_owned(), agent.budget()))),
+                                                    },
+                                                },
                                             }
-                                        } else {
-                                            result
                                         };
+                                        if let Some((provider, model, budget)) = binding {
+                                            if let Some(perp) = model_perpetuum.read().await.as_ref() {
+                                                perp.rebind_provider(Arc::new(temm1e_agent::metered_provider::MeteredProvider::new(provider, budget)), model);
+                                            }
+                                        }
 
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
@@ -4042,7 +3865,7 @@ async fn main() -> Result<()> {
                                                     "No usage records for this chat yet.".to_string()
                                                 } else {
                                                     format!(
-                                                        "Usage Summary\nTurns: {}\nAPI Calls: {}\nInput Tokens: {}\nOutput Tokens: {}\nCombined Tokens: {}\nTools Used: {}\nTotal Cost: ${:.4}",
+                                                        "Usage Summary\nTurns: {}\nAPI Calls: {}\nInput Tokens: {}\nOutput Tokens: {}\nCombined Tokens: {}\nTools Used: {}\nRecorded API estimate: ${:.4} (excludes unpriced usage; not a subscription bill)",
                                                         summary.turn_count,
                                                         summary.total_api_calls,
                                                         summary.total_input_tokens,
@@ -4129,7 +3952,7 @@ Available commands:\n\n\
 /model — Show current model and available models\n\
 /model <name> — Switch to a different model\n\
 /removekey <provider> — Remove a provider's API key\n\
-/addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] — Register a custom model (LM Studio, Ollama, vLLM, …)\n\
+/addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] [vision:true|false|unknown] — Register a custom model (LM Studio, Ollama, vLLM, …)\n\
 /listmodels — Show hardcoded + custom models grouped by provider\n\
 /removemodel <name> — Remove a custom model from the active provider\n\
 /usage — Show token usage and cost summary\n\
@@ -4186,9 +4009,7 @@ Just type a message to chat with the AI agent.",
                                             .strip_prefix("/cambium")
                                             .unwrap_or("")
                                             .trim();
-                                        let cambium_path = dirs::home_dir()
-                                            .unwrap_or_default()
-                                            .join(".temm1e")
+                                        let cambium_path = temm1e_core::config::data_dir()
                                             .join("cambium.toml");
                                         let current_enabled = std::fs::read_to_string(&cambium_path)
                                             .ok()
@@ -4460,7 +4281,7 @@ Just type a message to chat with the AI agent.",
                                                                     agent.model().to_string(),
                                                                     Some(build_system_prompt(&personality)),
                                                                     max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                                                ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                                ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                                 *agent_state.write().await = Some(new_agent);
                                                             }
                                                             mcp_mgr.take_tools_changed();
@@ -4489,7 +4310,7 @@ Just type a message to chat with the AI agent.",
                                                             agent.model().to_string(),
                                                             Some(build_system_prompt(&personality)),
                                                             max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                                        ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                        ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                         *agent_state.write().await = Some(new_agent);
                                                     }
                                                     mcp_mgr.take_tools_changed();
@@ -4516,7 +4337,7 @@ Just type a message to chat with the AI agent.",
                                                             agent.model().to_string(),
                                                             Some(build_system_prompt(&personality)),
                                                             max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                                        ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                        ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                         *agent_state.write().await = Some(new_agent);
                                                     }
                                                     mcp_mgr.take_tools_changed();
@@ -4548,7 +4369,7 @@ Just type a message to chat with the AI agent.",
 
                                     // /reload — hot-reload config and rebuild agent (admin only)
                                     if cmd_lower == "/reload" {
-                                        if !is_command_allowed_for_user(&msg.channel, &msg.user_id, &cmd_lower) {
+                                        if !user_role.is_command_allowed(&cmd_lower) {
                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                 chat_id: msg.chat_id.clone(),
                                                 text: "You don't have permission to use this command.".to_string(),
@@ -4602,7 +4423,7 @@ Just type a message to chat with the AI agent.",
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
                                                             tracing::info!(
                                                                 provider = %prov.name,
@@ -4699,7 +4520,7 @@ Just type a message to chat with the AI agent.",
 
                                                         // Store session for this chat
                                                         login_sessions_worker.lock().await.insert(
-                                                            msg.chat_id.clone(), session
+                                                            worker_route.clone(), session
                                                         );
                                                     }
                                                     Err(e) => {
@@ -4733,11 +4554,11 @@ Just type a message to chat with the AI agent.",
                                     // instead of the agent
                                     #[cfg(feature = "browser")]
                                     {
-                                        let has_session = login_sessions_worker.lock().await.contains_key(&msg.chat_id);
+                                        let has_session = login_sessions_worker.lock().await.contains_key(&worker_route);
                                         if has_session {
                                             let input = msg_text_cmd.trim();
                                             let mut sessions = login_sessions_worker.lock().await;
-                                            if let Some(session) = sessions.get_mut(&msg.chat_id) {
+                                            if let Some(session) = sessions.get_mut(&worker_route) {
                                                 match session.handle_input(input).await {
                                                     Ok(temm1e_tools::browser_session::SessionAction::Continue) => {
                                                         // Re-capture and send updated page
@@ -4768,7 +4589,7 @@ Just type a message to chat with the AI agent.",
                                                             match session.capture_session(v.as_ref()).await {
                                                                 Ok(()) => {
                                                                     let svc = session.service().to_string();
-                                                                    sessions.remove(&msg.chat_id);
+                                                                    sessions.remove(&worker_route);
                                                                     let reply = temm1e_core::types::message::OutboundMessage {
                                                                         chat_id: msg.chat_id.clone(),
                                                                         text: format!("🔒 Session for '{}' saved securely! I can now browse {} for you.", svc, svc),
@@ -4788,7 +4609,7 @@ Just type a message to chat with the AI agent.",
                                                                 }
                                                             }
                                                         } else {
-                                                            sessions.remove(&msg.chat_id);
+                                                            sessions.remove(&worker_route);
                                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                                 chat_id: msg.chat_id.clone(),
                                                                 text: "Login complete but vault not available — session not saved.".to_string(),
@@ -4913,7 +4734,7 @@ Just type a message to chat with the AI agent.",
 
                                     // /reset — factory reset from messaging (admin only)
                                     if cmd_lower == "/reset" {
-                                        if !is_command_allowed_for_user(&msg.channel, &msg.user_id, &cmd_lower) {
+                                        if !user_role.is_command_allowed(&cmd_lower) {
                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                 chat_id: msg.chat_id.clone(),
                                                 text: "You don't have permission to use this command.".to_string(),
@@ -4927,18 +4748,14 @@ Just type a message to chat with the AI agent.",
 
                                         tracing::info!(chat_id = %msg.chat_id, "Factory reset requested via /reset command");
 
-                                        let data_dir = dirs::home_dir()
-                                            .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                            .join(".temm1e");
+                                        let data_dir = temm1e_core::config::data_dir();
 
                                         let reset_result = if !data_dir.exists() {
                                             "Nothing to reset — no local state found.".to_string()
                                         } else {
                                             // Backup before wipe
                                             let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                                            let backup_dir = dirs::home_dir()
-                                                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                                .join(format!(".temm1e.bak.{}", timestamp));
+                                            let backup_dir = temm1e_core::config::data_dir().with_extension(format!("bak.{}", timestamp));
 
                                             fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
                                                 std::fs::create_dir_all(dst)?;
@@ -4986,7 +4803,7 @@ Just type a message to chat with the AI agent.",
 
                                     // /restart — restart the TEMM1E process, server mode (admin only)
                                     if cmd_lower == "/restart" {
-                                        if !is_command_allowed_for_user(&msg.channel, &msg.user_id, &cmd_lower) {
+                                        if !user_role.is_command_allowed(&cmd_lower) {
                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                 chat_id: msg.chat_id.clone(),
                                                 text: "You don't have permission to use this command.".to_string(),
@@ -5089,7 +4906,7 @@ Just type a message to chat with the AI agent.",
                                                             }
                                                         }
                                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                                        if let Ok(mut pq) = pending_for_worker.lock() { pq.remove(&worker_chat_id); }
+                                                        if let Ok(mut pq) = pending_for_worker.lock() { pq.remove(&worker_route); }
                                                         return;
                                                     }
                                                     // Honor user-specified `model:` from proxy command;
@@ -5125,12 +4942,12 @@ Just type a message to chat with the AI agent.",
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
                                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                                 chat_id: msg.chat_id.clone(),
                                                                 text: format!(
-                                                                    "API key securely received and verified! Configured {} with model {}.\n\nTEMM1E is online.",
+                                                                    "Credentials securely received. Configured {} with model {}.\n\nTEMM1E is online.",
                                                                     cred.provider, model
                                                                 ),
                                                                 reply_to: Some(msg.id.clone()),
@@ -5176,13 +4993,13 @@ Just type a message to chat with the AI agent.",
                                         }
                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
                                         if let Ok(mut pq) = pending_for_worker.lock() {
-                                            pq.remove(&worker_chat_id);
+                                            pq.remove(&worker_route);
                                         }
                                         return;
                                     }
 
                                     // Pending raw key paste (from /addkey unsafe)
-                                    if pending_raw_keys_worker.lock().await.remove(&msg.chat_id) {
+                                    if pending_raw_keys_worker.lock().await.remove(&worker_route) {
                                         // Treat the message as a raw API key — falls through
                                         // to the normal detect_api_key path below
                                     }
@@ -5232,7 +5049,7 @@ Just type a message to chat with the AI agent.",
                                                     }
                                                 }
                                                 is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                                if let Ok(mut pq) = pending_for_worker.lock() { pq.remove(&worker_chat_id); }
+                                                if let Ok(mut pq) = pending_for_worker.lock() { pq.remove(&worker_route); }
                                                 return;
                                             }
                                             // Honor user-specified `model:` from proxy command;
@@ -5255,7 +5072,7 @@ Just type a message to chat with the AI agent.",
 
                                             match validate_provider_key(&test_config).await {
                                                 Ok(_validated_provider) => {
-                                                    // Key is valid — now save and reload with all keys
+                                                    // Setup policy permits this connection; save and reload its keys.
                                                     if let Err(e) = save_credentials(cred.provider, &cred.api_key, &model, cred.base_url.as_deref()).await {
                                                         tracing::error!(error = %e, "Failed to save new key");
                                                     } else if let Some((name, keys, mdl, saved_base_url)) = load_active_provider_keys() {
@@ -5280,13 +5097,13 @@ Just type a message to chat with the AI agent.",
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
                                                             let key_count = keys.len();
                                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                                 chat_id: msg.chat_id.clone(),
                                                                 text: format!(
-                                                                    "Key verified and added for {}! Now using {} key{} with model {}.",
+                                                                    "Connection configured for {}. Now using {} key{} with model {}.",
                                                                     name, key_count,
                                                                     if key_count > 1 { "s (rotation on error)" } else { "" },
                                                                     mdl
@@ -5304,11 +5121,11 @@ Just type a message to chat with the AI agent.",
                                                     }
                                                 }
                                                 Err(err) => {
-                                                    // Key is invalid — DO NOT save, DO NOT switch
+                                                    // Setup failed — preserve the current connection.
                                                     let reply = temm1e_core::types::message::OutboundMessage {
                                                         chat_id: msg.chat_id.clone(),
                                                         text: format!(
-                                                            "Invalid API key — {} returned an error:\n{}\n\nThe current provider is still active. Check the key and try again.",
+                                                            "Invalid API key — {} returned an error:\n{}\n\nThe current provider is still active. Check the provider, model and connection settings.",
                                                             cred.provider, err
                                                         ),
                                                         reply_to: Some(msg.id.clone()),
@@ -5327,12 +5144,23 @@ Just type a message to chat with the AI agent.",
                                             is_heartbeat_clone.store(false, Ordering::Relaxed);
                                             interrupt_clone.store(false, Ordering::Relaxed);
                                             if let Ok(mut pq) = pending_for_worker.lock() {
-                                                pq.remove(&worker_chat_id);
+                                                pq.remove(&worker_route);
                                             }
                                             return;
                                         }
 
                                         // ── Normal mode: process with agent ────
+
+                                        let acquired = match conversations.acquire_conversation(&conversation_scope).await {
+                                            Ok(turn) => turn,
+                                            Err(e) => {
+                                                send_with_retry(&*sender, temm1e_core::types::message::OutboundMessage {
+                                                    chat_id: msg.chat_id.clone(), text: e.to_string(),
+                                                    reply_to: Some(msg.id.clone()), parse_mode: None,
+                                                }).await;
+                                                return;
+                                            }
+                                        };
 
                                         // Download attachments
                                         if !msg.attachments.is_empty() {
@@ -5365,21 +5193,18 @@ Just type a message to chat with the AI agent.",
                                             }
                                         }
 
-                                        // Resolve user role from channel's role file
-                                        let user_role = temm1e_core::types::rbac::load_role_file(&msg.channel)
-                                            .and_then(|rf| rf.role_of(&msg.user_id))
-                                            .unwrap_or(temm1e_core::types::rbac::Role::Admin);
-
                                         let mut session = temm1e_core::types::session::SessionContext {
-                                            session_id: format!("{}-{}", msg.channel, msg.chat_id),
+                                            session_id: acquired.epoch().to_string(),
                                             user_id: msg.user_id.clone(),
                                             channel: msg.channel.clone(),
                                             chat_id: msg.chat_id.clone(),
                                             role: user_role,
-                                            history: persistent_history.clone(),
+                                            history: acquired.history().to_vec(),
                                             workspace_path: workspace_path.clone(),
                                             read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new())),
                                         };
+
+                                        let mut conversation_turn = Some(acquired);
 
                                         // ── Early reply channel for LLM classifier ────
                                         // When V2 classifies a message as "order", it sends
@@ -5419,11 +5244,17 @@ Just type a message to chat with the AI agent.",
                                         .catch_unwind()
                                         .await;
 
+                                        if matches!(&process_result, Ok(Err(_))) && !matches!(&process_result,
+                                            Ok(Err(temm1e_core::types::error::Temm1eError::HiveRoute(_))))
+                                            && !commit_channel_conversation(&mut conversation_turn, &session.history, &*sender, &msg).await {
+                                            return;
+                                        }
+
                                         match process_result {
                                             Ok(Ok((mut reply, turn_usage))) => {
                                                 reply.text = censor_secrets(&reply.text);
-                                                if !reply.text.trim().is_empty() {
-                                                    send_with_retry(&*sender, reply).await;
+                                                if let Err(e) = deliver_final_reply(&mut conversation_turn, &session.history, &*sender, reply).await {
+                                                    tracing::error!(%e, "Final reply requires delivery reconciliation");
                                                 }
 
                                                 // Record usage
@@ -5479,10 +5310,11 @@ Just type a message to chat with the AI agent.",
                                                         };
                                                         send_with_retry(&*sender, ack).await;
 
+                                                        let decomposition_provider: Arc<dyn temm1e_core::Provider> = Arc::new(temm1e_agent::metered_provider::MeteredProvider::new(provider.clone(), runtime_budget.clone()));
                                                         let decompose_result = hive.maybe_decompose(
                                                             &hive_msg, &chat_id,
                                                             |prompt| {
-                                                                let p = provider.clone();
+                                                                let p = decomposition_provider.clone();
                                                                 let m = model.clone();
                                                                 async move {
                                                                     let resp = p.complete(temm1e_core::types::message::CompletionRequest {
@@ -5501,7 +5333,7 @@ Just type a message to chat with the AI agent.",
                                                                         temm1e_core::types::message::ContentPart::Text { text } => Some(text.clone()),
                                                                         _ => None,
                                                                     }).collect();
-                                                                    let tokens = (resp.usage.input_tokens + resp.usage.output_tokens) as u64;
+                                                                    let tokens = u64::from(resp.usage.input_tokens) + u64::from(resp.usage.output_tokens);
                                                                     Ok((text, tokens))
                                                                 }
                                                             },
@@ -5523,13 +5355,11 @@ Just type a message to chat with the AI agent.",
                                                             let model_h = agent.model().to_string();
                                                             // Hive worker witness wiring — ACTIVE mode (v5.5.0).
                                                             // Workers now inherit the parent session's workspace_path
-                                                            // (propagated via workspace_for_hive → workspace_for_worker
-                                                            // below) so the Planner's file-path postconditions target
-                                                            // the user's real workspace, not the process cwd. This
-                                                            // closes the audit-trail gap where delegated work escaped
-                                                            // Witness oversight in passive mode.
+                                                            // Each worker receives the caller's workspace and role.
                                                             let witness_h = witness_attachments.clone();
-                                                            let workspace_for_hive = workspace_path.clone();
+                                                            let hive_parent = temm1e_core::ToolContext::from_session(&session);
+                                                            let hive_budget = runtime_budget.clone();
+                                                            let hive_policy = runtime_policy.clone();
 
                                                             let swarm_result = hive.execute_order(
                                                                 &order_id, cancel,
@@ -5539,30 +5369,24 @@ Just type a message to chat with the AI agent.",
                                                                     let m_clone = memory_h.clone();
                                                                     let mdl = model_h.clone();
                                                                     let witness_for_worker = witness_h.clone();
-                                                                    let workspace_for_worker = workspace_for_hive.clone();
+                                                                    let worker_parent = hive_parent.clone();
+                                                                    let runtime_budget = Arc::new(temm1e_agent::budget::BudgetTracker::child(hive_budget.clone()));
+                                                                    let runtime_policy = hive_policy.clone();
                                                                     async move {
                                                                         let scoped = temm1e_hive::worker::build_scoped_context(&task, &deps);
                                                                         let mini = temm1e_agent::AgentRuntime::with_limits(
                                                                             p, m_clone, t, mdl, None, 10, 30000, 50, 300, 0.0,
-                                                                        )
+                                                                        ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution()
                                                                         .with_witness_attachments(
                                                                             witness_for_worker.as_ref(),
                                                                         );
+                                                                        let mut s = worker_parent.delegated_session("hive", format!("hive-{}", task.id));
                                                                         let mini_msg = temm1e_core::types::message::InboundMessage {
                                                                             id: uuid::Uuid::new_v4().to_string(),
-                                                                            chat_id: "hive".into(), user_id: "hive".into(),
-                                                                            username: None, channel: "hive".into(),
+                                                                            chat_id: s.chat_id.clone(), user_id: s.user_id.clone(),
+                                                                            username: None, channel: s.channel.clone(),
                                                                             text: Some(scoped), attachments: vec![],
                                                                             reply_to: None, timestamp: chrono::Utc::now(),
-                                                                        };
-                                                                        let mut s = temm1e_core::types::session::SessionContext {
-                                                                            session_id: format!("hive-{}", task.id),
-                                                                            user_id: "hive".into(), channel: "hive".into(),
-                                                                            chat_id: "hive".into(),
-                                                                            role: temm1e_core::types::rbac::Role::Admin,
-                                                                            history: vec![],
-                                                                            workspace_path: workspace_for_worker,
-                                                                            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new())),
                                                                         };
                                                                         match mini.process_message(&mini_msg, &mut s, None, None, None, None, None).await {
                                                                             Ok((r, u)) => {
@@ -5578,14 +5402,17 @@ Just type a message to chat with the AI agent.",
                                                                                     artifacts: vec![], success: true, error: None,
                                                                                 })
                                                                             }
-                                                                            Err(e) => Ok(temm1e_hive::worker::TaskResult {
-                                                                                summary: String::new(),
-                                                                                tokens_used: 0,
-                                                                                input_tokens: 0,
-                                                                                output_tokens: 0,
-                                                                                cost_usd: 0.0,
-                                                                                artifacts: vec![], success: false, error: Some(e.to_string()),
-                                                                            }),
+                                                                            Err(e) => {
+                                                                                let snap = mini.budget_snapshot();
+                                                                                Ok(temm1e_hive::worker::TaskResult {
+                                                                                    summary: String::new(),
+                                                                                    tokens_used: u32::try_from(snap.input_tokens.saturating_add(snap.output_tokens)).unwrap_or(u32::MAX),
+                                                                                    input_tokens: snap.input_tokens,
+                                                                                    output_tokens: snap.output_tokens,
+                                                                                    cost_usd: snap.cost_usd,
+                                                                                    artifacts: vec![], success: false, error: Some(e.to_string()),
+                                                                                })
+                                                                            },
                                                                         }
                                                                     }
                                                                 },
@@ -5600,48 +5427,20 @@ Just type a message to chat with the AI agent.",
                                                                         result.total_tokens,
                                                                     ));
 
-                                                                    // Split into chunks for Telegram's 4096 char limit
-                                                                    let max_chunk = 4000; // leave margin
-                                                                    let chunks: Vec<&str> = if full_text.len() <= max_chunk {
-                                                                        vec![&full_text]
-                                                                    } else {
-                                                                        // Split on double-newlines (task boundaries) or at max_chunk
-                                                                        let mut parts = Vec::new();
-                                                                        let mut remaining = full_text.as_str();
-                                                                        while !remaining.is_empty() {
-                                                                            if remaining.len() <= max_chunk {
-                                                                                parts.push(remaining);
-                                                                                break;
-                                                                            }
-                                                                            // Find a good split point (double newline near the limit)
-                                                                            let search_end = remaining.len().min(max_chunk);
-                                                                            let split_at = remaining[..search_end]
-                                                                                .rfind("\n\n")
-                                                                                .unwrap_or_else(|| {
-                                                                                    // Find safe char boundary near max_chunk
-                                                                                    remaining.char_indices()
-                                                                                        .take_while(|(i, _)| *i <= max_chunk)
-                                                                                        .last()
-                                                                                        .map(|(i, c)| i + c.len_utf8())
-                                                                                        .unwrap_or(max_chunk)
-                                                                                });
-                                                                            parts.push(&remaining[..split_at]);
-                                                                            remaining = remaining[split_at..].trim_start();
-                                                                        }
-                                                                        parts
+                                                                    session.history.push(temm1e_core::types::message::ChatMessage {
+                                                                        role: temm1e_core::types::message::Role::Assistant,
+                                                                        content: temm1e_core::types::message::MessageContent::Text(full_text.clone()),
+                                                                    });
+                                                                    let reply = temm1e_core::types::message::OutboundMessage {
+                                                                        chat_id: msg.chat_id.clone(), text: full_text,
+                                                                        reply_to: Some(msg.id.clone()), parse_mode: None,
                                                                     };
-
-                                                                    for (i, chunk) in chunks.iter().enumerate() {
-                                                                        let reply = temm1e_core::types::message::OutboundMessage {
-                                                                            chat_id: msg.chat_id.clone(),
-                                                                            text: chunk.to_string(),
-                                                                            reply_to: if i == 0 { Some(msg.id.clone()) } else { None },
-                                                                            parse_mode: None,
-                                                                        };
-                                                                        send_with_retry(&*sender, reply).await;
+                                                                    if let Err(e) = deliver_final_reply(&mut conversation_turn, &session.history, &*sender, reply).await {
+                                                                        tracing::error!(%e, "Hive reply requires delivery reconciliation");
                                                                     }
                                                                 }
                                                                 Err(e) => {
+                                                                    if !commit_channel_conversation(&mut conversation_turn, &session.history, &*sender, &msg).await { return; }
                                                                     tracing::error!(error = %e, "Hive execution failed");
                                                                     let reply = temm1e_core::types::message::OutboundMessage {
                                                                         chat_id: msg.chat_id.clone(),
@@ -5662,13 +5461,17 @@ Just type a message to chat with the AI agent.",
                                                                 agent.model().to_string(),
                                                                 Some(build_system_prompt(&personality)),
                                                                 max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                                            ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             let fallback_cancel = cancel_token_clone.clone();
-                                                            match fallback_agent.process_message(&msg, &mut session, Some(interrupt_clone.clone()), Some(pending_for_worker.clone()), None, None, Some(fallback_cancel)).await {
+                                                            let mut fallback_msg = msg.clone();
+                                                            fallback_msg.id = format!("{}:hive-fallback", msg.id);
+                                                            let fallback_result = fallback_agent.process_message(&fallback_msg, &mut session, Some(interrupt_clone.clone()), Some(pending_for_worker.clone()), None, None, Some(fallback_cancel)).await;
+                                                            if fallback_result.is_err() && !commit_channel_conversation(&mut conversation_turn, &session.history, &*sender, &msg).await { return; }
+                                                            match fallback_result {
                                                                 Ok((mut reply, _usage)) => {
                                                                     reply.text = censor_secrets(&reply.text);
-                                                                    if !reply.text.trim().is_empty() {
-                                                                        send_with_retry(&*sender, reply).await;
+                                                                    if let Err(e) = deliver_final_reply(&mut conversation_turn, &session.history, &*sender, reply).await {
+                                                                        tracing::error!(%e, "Fallback reply requires delivery reconciliation");
                                                                     }
                                                                 }
                                                                 Err(e) => {
@@ -5713,47 +5516,17 @@ Just type a message to chat with the AI agent.",
                                                 );
                                                 let error_reply = temm1e_core::types::message::OutboundMessage {
                                                     chat_id: msg.chat_id.clone(),
-                                                    text: "An internal error occurred while processing your message. I've recovered and am ready for your next message.".to_string(),
+                                                    text: "The turn stopped after an internal error. An admin can use /session-recover to inspect its evidence before continuing.".to_string(),
                                                     reply_to: Some(msg.id.clone()),
                                                     parse_mode: None,
                                                 };
                                                 send_with_retry(&*sender, error_reply).await;
-                                                // Session history may be corrupted after a panic.
-                                                // Trim the last entry if it was partially added.
-                                                if persistent_history.len() < session.history.len() {
-                                                    // Panic happened after adding user msg but before
-                                                    // assistant reply — rollback to pre-message state.
-                                                    session.history = persistent_history.clone();
-                                                }
+                                                // Leave the busy marker and exact execution
+                                                // checkpoint for explicit recovery after a panic.
+                                                return;
                                             }
                                         }
-
-                                        // ── Persist session history for next message ────
-                                        // Cap to last 200 messages to prevent unbounded memory growth
-                                        persistent_history = session.history;
-                                        if persistent_history.len() > 200 {
-                                            let drain_count = persistent_history.len() - 200;
-                                            persistent_history.drain(..drain_count);
-                                        }
-
-                                        // ── Save conversation history to memory backend ──
-                                        if let Ok(json) = serde_json::to_string(&persistent_history) {
-                                            let entry = temm1e_core::MemoryEntry {
-                                                id: history_key.clone(),
-                                                content: json,
-                                                metadata: serde_json::json!({"chat_id": worker_chat_id}),
-                                                timestamp: chrono::Utc::now(),
-                                                session_id: Some(worker_chat_id.clone()),
-                                                entry_type: temm1e_core::MemoryEntryType::Conversation,
-                                            };
-                                            if let Err(e) = memory.store(entry).await {
-                                                tracing::warn!(
-                                                    chat_id = %worker_chat_id,
-                                                    error = %e,
-                                                    "Failed to persist conversation history"
-                                                );
-                                            }
-                                        }
+                                        if !commit_channel_conversation(&mut conversation_turn, &session.history, &*sender, &msg).await { return; }
 
                                         // ── Hot-reload: check if credentials changed ────
                                         if let Some((new_name, new_keys, new_model, saved_base_url)) = load_active_provider_keys() {
@@ -5806,7 +5579,7 @@ Just type a message to chat with the AI agent.",
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
                                                             tracing::info!(provider = %new_name, model = %new_model, "Agent hot-reloaded (key validated)");
                                                         }
@@ -5855,7 +5628,7 @@ Just type a message to chat with the AI agent.",
                                                 agent.model().to_string(),
                                                 Some(build_system_prompt(&personality)),
                                                 max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                            ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                             *agent_state.write().await = Some(new_agent);
                                             tracing::info!("Agent rebuilt with updated MCP tools");
                                         }
@@ -5886,7 +5659,7 @@ Just type a message to chat with the AI agent.",
                                                 agent.model().to_string(),
                                                 Some(build_system_prompt(&personality)),
                                                 max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                            ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                             *agent_state.write().await = Some(new_agent);
                                             tracing::info!("Agent rebuilt with updated custom tools");
                                         }
@@ -5933,7 +5706,7 @@ Just type a message to chat with the AI agent.",
                                                     // Use shared validation (handles auth vs non-auth errors)
                                                     match validate_provider_key(&provider_config).await {
                                                         Ok(validated_provider) => {
-                                                            // Key is valid — create agent and go online
+                                                            // Setup policy permits this connection; create its runtime.
                                                             let new_agent = Arc::new(temm1e_agent::AgentRuntime::with_limits(
                                                                 validated_provider,
                                                                 memory.clone(),
@@ -5945,7 +5718,7 @@ Just type a message to chat with the AI agent.",
                                                                 max_rounds,
                                                                 max_task_duration,
                                                                 max_spend,
-                                                            ).with_v2_optimizations(v2_opt).with_self_audit_enabled(self_audit_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
+                                                            ).with_budget(runtime_budget.clone()).with_policy(&runtime_policy).with_durable_execution().with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())).with_witness_attachments(witness_attachments.as_ref()));
                                                             *agent_state.write().await = Some(new_agent);
 
                                                             if let Err(e) = save_credentials(provider_name, &api_key, &model, custom_base_url.as_deref()).await {
@@ -5960,7 +5733,7 @@ Just type a message to chat with the AI agent.",
                                                             let reply = temm1e_core::types::message::OutboundMessage {
                                                                 chat_id: msg.chat_id.clone(),
                                                                 text: format!(
-                                                                    "API key verified! Configured {}{} with model {}.\n\nTEMM1E is online! You can:\n- Add more keys anytime (just paste them)\n- Use a proxy: \"proxy openai https://your-proxy/v1 your-key\"\n- Change settings in natural language\n\nHow can I help?",
+                                                                    "Configured {}{} with model {}.\n\nTEMM1E is online! You can:\n- Add more keys anytime (just paste them)\n- Use a proxy: \"proxy openai https://your-proxy/v1 your-key\"\n- Change settings in natural language\n\nHow can I help?",
                                                                     provider_name, proxy_note, model
                                                                 ),
                                                                 reply_to: Some(msg.id.clone()),
@@ -6022,58 +5795,12 @@ Just type a message to chat with the AI agent.",
                                         }
                                     }
 
-                                    // Re-queue any unconsumed pending messages as
-                                    // standalone requests, then clear active state.
-                                    if let Ok(mut pq) = pending_for_worker.lock() {
-                                        if let Some(pending_msgs) = pq.remove(&worker_chat_id) {
-                                            if !pending_msgs.is_empty() {
-                                                tracing::info!(
-                                                    count = pending_msgs.len(),
-                                                    chat_id = %worker_chat_id,
-                                                    "Re-queuing unconsumed pending messages"
-                                                );
-                                                for text in pending_msgs {
-                                                    let synthetic = temm1e_core::types::message::InboundMessage {
-                                                        id: uuid::Uuid::new_v4().to_string(),
-                                                        channel: msg.channel.clone(),
-                                                        chat_id: worker_chat_id.clone(),
-                                                        user_id: msg.user_id.clone(),
-                                                        username: None,
-                                                        text: Some(text),
-                                                        timestamp: chrono::Utc::now(),
-                                                        reply_to: None,
-                                                        attachments: vec![],
-                                                    };
-                                                    if self_tx.try_send(synthetic).is_err() {
-                                                        tracing::warn!(
-                                                            chat_id = %worker_chat_id,
-                                                            "Failed to re-queue pending message — channel full"
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // ── Mission Control: dispatch next queued order ──
-                                    if let Ok(mut oq) = order_queue_worker.lock() {
-                                        if let Some(next_order) = oq.pop_front() {
-                                            tracing::info!(
-                                                chat_id = %worker_chat_id,
-                                                remaining = oq.len(),
-                                                "Dispatching next queued order"
-                                            );
-                                            if self_tx.try_send(next_order.original_msg).is_err() {
-                                                tracing::warn!(
-                                                    chat_id = %worker_chat_id,
-                                                    "Failed to dispatch queued order — channel full"
-                                                );
-                                            }
-                                        }
-                                    }
-                                    is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                    is_busy_clone.store(false, Ordering::Relaxed);
-                                    interrupt_clone.store(false, Ordering::Relaxed);
                                     }).catch_unwind().await;
+                                    // This also runs after early returns and caught panics.
+                                    let finished_task = active_cancel_clone.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                                    crate::mission_control::finish_task(&finished_task, &is_busy_clone, &order_queue_worker, &pending_for_worker, &worker_route);
+                                    is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                    interrupt_clone.store(false, Ordering::Relaxed);
 
                                     // ── Outer panic safety net ─────────────────
                                     // If ANYTHING in the loop body panicked
@@ -6109,12 +5836,17 @@ Just type a message to chat with the AI agent.",
                                         is_busy_clone.store(false, Ordering::Relaxed);
                                         interrupt_clone.store(false, Ordering::Relaxed);
                                         if let Ok(mut pq) = pending_for_worker.lock() {
-                                            pq.remove(&worker_chat_id);
+                                            pq.remove(&worker_route);
                                         }
                                     }
                                 }
                             });
 
+                            {
+                                let mut handles = dispatcher_workers.lock().unwrap_or_else(|e| e.into_inner());
+                                handles.retain(|handle| !handle.is_finished());
+                                handles.push(worker_handle);
+                            }
                             ChatSlot { tx: chat_tx, interrupt, is_heartbeat, is_busy, current_task, cancel_token, status_tx: slot_status_tx, order_queue, active_cancel }
                         });
 
@@ -6132,7 +5864,7 @@ Just type a message to chat with the AI agent.",
                                     "Chat worker dead — removing slot and re-dispatching"
                                 );
                                 let mut slots = chat_slots.lock().await;
-                                slots.remove(&chat_id);
+                                slots.remove(&route);
                                 drop(slots); // release lock before re-dispatch
                                 // Re-send through the unified channel so the
                                 // dispatcher loop creates a fresh worker for
@@ -6154,33 +5886,30 @@ Just type a message to chat with the AI agent.",
             println!("TEMM1E gateway starting...");
             println!("  Mode: {}", cli.mode);
 
-            if let Some(agent) = agent_state.read().await.as_ref().cloned() {
-                let gate = temm1e_gateway::SkyGate::new(channels, agent, config.gateway.clone());
-                task_handles.push(tokio::spawn(async move {
-                    if let Err(e) = gate.start().await {
-                        tracing::error!(error = %e, "Gateway error");
-                    }
-                }));
-                println!("  Status: Online");
-                println!(
-                    "  Gateway: http://{}:{}",
-                    config.gateway.host, config.gateway.port
-                );
-                println!(
-                    "  Health: http://{}:{}/health",
-                    config.gateway.host, config.gateway.port
-                );
-            } else {
-                let channel_names: Vec<&str> = channel_map.keys().map(|s| s.as_str()).collect();
-                if channel_names.is_empty() {
-                    println!("  Status: No channels configured — set TELEGRAM_BOT_TOKEN or DISCORD_BOT_TOKEN");
-                } else {
-                    println!(
-                        "  Status: Onboarding — send your API key via {}",
-                        channel_names.join(" or ")
-                    );
+            let gate = temm1e_gateway::SkyGate::from_shared(
+                channels,
+                agent_state.clone(),
+                config.gateway.clone(),
+            );
+            let gateway_shutdown = shutdown_token.clone();
+            task_handles.push(tokio::spawn(async move {
+                if let Err(e) = gate.start_with_shutdown(gateway_shutdown).await {
+                    tracing::error!(error = %e, "Gateway error");
                 }
-            }
+            }));
+            println!(
+                "  Status: {}",
+                if agent_state.read().await.is_some() {
+                    "Configured"
+                } else {
+                    "Onboarding — configure a provider to enable the agent"
+                }
+            );
+            println!(
+                "  Gateway: http://{}:{}",
+                config.gateway.host, config.gateway.port
+            );
+            println!("  Health: /health (process); /ready (agent configured)");
 
             // ── SystemNotifier: fire Startup ───────────────────────
             // Spawned (fire-and-forget) so a slow channel POST does not
@@ -6197,8 +5926,12 @@ Just type a message to chat with the AI agent.",
                 }));
             }
 
-            // Block until Ctrl+C, then drain gracefully
-            tokio::signal::ctrl_c().await?;
+            // Stop admission and cancel active turns on interactive or service signals.
+            temm1e_core::process::shutdown_signal().await?;
+            shutdown_token.cancel();
+            if let Some(perpetuum) = shutdown_perpetuum.read().await.as_ref() {
+                perpetuum.shutdown();
+            }
             println!("\nTEMM1E shutting down gracefully...");
 
             // ── SystemNotifier: fire Shutdown ──────────────────────
@@ -6219,14 +5952,36 @@ Just type a message to chat with the AI agent.",
             // when its receiver sees the channel closed.
             drop(msg_tx);
 
-            // Wait for spawned tasks with a timeout
-            let drain_timeout = tokio::time::timeout(
+            // Keep task ownership through the timeout instead of detaching handles.
+            task_handles.extend(std::mem::take(
+                &mut *worker_handles.lock().unwrap_or_else(|e| e.into_inner()),
+            ));
+            let drain = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                futures::future::join_all(task_handles),
-            );
-            match drain_timeout.await {
-                Ok(_) => println!("All tasks drained cleanly."),
-                Err(_) => println!("Drain timeout — forcing exit."),
+                futures::future::join_all(task_handles.iter_mut()),
+            )
+            .await;
+            match drain {
+                Ok(_) => println!("All tracked tasks drained cleanly."),
+                Err(_) => {
+                    for handle in &task_handles {
+                        handle.abort();
+                    }
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        futures::future::join_all(task_handles),
+                    )
+                    .await;
+                    println!("Drain timeout — remaining tracked tasks aborted; unfinished effects require reconciliation.");
+                }
+            }
+
+            mission_tasks.close();
+            if tokio::time::timeout(std::time::Duration::from_secs(1), mission_tasks.wait())
+                .await
+                .is_err()
+            {
+                tracing::warn!("Mission Control tasks did not join before shutdown deadline");
             }
 
             // Clean up PID file on graceful shutdown
@@ -6262,9 +6017,8 @@ Just type a message to chat with the AI agent.",
                 config_path
                     .and_then(|p| std::fs::read_to_string(p).ok())
                     .or_else(|| {
-                        dirs::home_dir().and_then(|h| {
-                            std::fs::read_to_string(h.join(".temm1e/config.toml")).ok()
-                        })
+                        std::fs::read_to_string(temm1e_core::config::data_dir().join("config.toml"))
+                            .ok()
                     })
                     .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
                     .and_then(|c| toml::from_str::<HC>(&c).ok())
@@ -6293,47 +6047,40 @@ Just type a message to chat with the AI agent.",
                 };
 
             // ── Resolve API credentials ────────────────────────
-            let credentials: Option<(String, String, String)> = {
-                if let Some(ref key) = config.provider.api_key {
-                    if !key.is_empty() && !key.starts_with("${") {
-                        let name = config
-                            .provider
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| "anthropic".to_string());
-                        let model = config
-                            .provider
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| default_model(&name).to_string());
-                        Some((name, key.clone(), model))
-                    } else {
-                        load_saved_credentials()
-                    }
-                } else {
-                    load_saved_credentials()
-                }
-            };
+            let saved_credentials = load_credentials_file();
+            let resolved_connection = temm1e_core::config::connection::resolve(
+                &config.provider,
+                saved_credentials.as_ref(),
+            );
+            let credentials = resolved_connection.as_ref().map(|connection| {
+                (
+                    connection.name.clone().unwrap_or_default(),
+                    connection.api_key.clone().unwrap_or_default(),
+                    connection.model.clone().unwrap_or_default(),
+                )
+            });
 
             // ── Memory backend ─────────────────────────────────
-            let memory_url = config.memory.path.clone().unwrap_or_else(|| {
-                let data_dir = dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".temm1e");
-                if let Err(e) = std::fs::create_dir_all(&data_dir) {
-                    tracing::warn!(error = %e, path = %data_dir.display(), "Failed to create directory");
-                }
-                format!("sqlite:{}/memory.db?mode=rwc", data_dir.display())
-            });
+            let data_dir = temm1e_core::config::data_dir();
+            std::fs::create_dir_all(&data_dir)?;
+            let memory_connections = temm1e_memory::MemoryConnections::resolve(
+                &config.memory,
+                &data_dir,
+                &std::env::current_dir().unwrap_or_else(|_| data_dir.clone()),
+            );
+            if memory_connections.retained_legacy_markdown {
+                tracing::warn!("Retaining legacy Markdown memory location; configure memory.path before changing working directories");
+            }
             let memory: Arc<dyn temm1e_core::Memory> = Arc::from(
-                temm1e_memory::create_memory_backend(&config.memory.backend, &memory_url).await?,
+                temm1e_memory::create_memory_backend(
+                    &config.memory.backend,
+                    &memory_connections.primary,
+                )
+                .await?,
             );
 
             // ── CLI channel ────────────────────────────────────
-            let workspace = dirs::home_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(".temm1e")
-                .join("workspace");
+            let workspace = temm1e_core::config::data_dir().join("workspace");
             if let Err(e) = std::fs::create_dir_all(&workspace) {
                 tracing::warn!(error = %e, path = %workspace.display(), "Failed to create directory");
             }
@@ -6346,8 +6093,9 @@ Just type a message to chat with the AI agent.",
             let setup_tokens = temm1e_gateway::SetupTokenStore::new();
 
             // ── Usage store ──────────────────────────────────────
-            let usage_store: Arc<dyn temm1e_core::UsageStore> =
-                Arc::new(temm1e_memory::SqliteUsageStore::new(&memory_url).await?);
+            let usage_store: Arc<dyn temm1e_core::UsageStore> = Arc::new(
+                temm1e_memory::SqliteUsageStore::new(&memory_connections.sqlite_state).await?,
+            );
 
             // ── Vault (encrypted credential store) ───────────────
             let vault: Option<Arc<dyn temm1e_core::Vault>> = match temm1e_vault::LocalVault::new()
@@ -6377,22 +6125,16 @@ Just type a message to chat with the AI agent.",
                 temm1e_core::types::config::MemoryStrategy::Lambda,
             ));
             // ── Social intelligence: personality + storage (CLI) ──────
-            let personality =
-                std::sync::Arc::new(temm1e_anima::personality::PersonalityConfig::load(
-                    &dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".temm1e"),
-                ));
+            let personality = std::sync::Arc::new(
+                temm1e_anima::personality::PersonalityConfig::load(&temm1e_core::config::data_dir()),
+            );
             let social_storage: Option<std::sync::Arc<temm1e_anima::SocialStorage>> = if config
                 .social
                 .enabled
             {
                 let social_db_url = format!(
                     "sqlite:{}/social.db?mode=rwc",
-                    dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".temm1e")
-                        .display()
+                    temm1e_core::config::data_dir().display()
                 );
                 match temm1e_anima::SocialStorage::new(&social_db_url).await {
                     Ok(s) => {
@@ -6486,9 +6228,7 @@ Just type a message to chat with the AI agent.",
             // ── TemDOS: Load core registry (CLI) ──────────────
             let cli_core_registry = {
                 let mut registry = temm1e_cores::CoreRegistry::new();
-                let ws_path = dirs::home_dir()
-                    .map(|h| h.join(".temm1e"))
-                    .unwrap_or_default();
+                let ws_path = temm1e_core::config::data_dir();
                 registry
                     .load(Some(ws_path.as_path()))
                     .await
@@ -6509,9 +6249,6 @@ Just type a message to chat with the AI agent.",
             let max_rounds = config.agent.max_tool_rounds;
             let max_task_duration = config.agent.max_task_duration_secs;
             let max_spend = config.agent.max_spend_usd;
-            let v2_opt = config.agent.v2_optimizations;
-            let pp_opt = config.agent.parallel_phases;
-            let self_audit_opt = config.agent.self_audit_enabled;
 
             let mut agent_opt: Option<temm1e_agent::AgentRuntime> = None;
             let cli_perp_instance: Arc<
@@ -6525,50 +6262,19 @@ Just type a message to chat with the AI agent.",
                 "CLI Chat: checking credentials for agent init"
             );
             if let Some((pname, key, model)) = credentials {
-                // Filter out placeholder/invalid keys at startup. Use lenient
-                // mode for custom-endpoint providers so short LM Studio / Ollama
-                // keys pass — otherwise this check would wrongly reject keys
-                // that load_saved_credentials already approved via lenient filter.
-                let has_custom_endpoint = load_credentials_file()
-                    .and_then(|c| {
-                        c.providers
-                            .iter()
-                            .find(|p| p.name == pname)
-                            .and_then(|p| p.base_url.clone())
-                    })
-                    .is_some();
-                let is_placeholder_start = if has_custom_endpoint {
-                    is_placeholder_key_lenient(&key)
-                } else {
-                    is_placeholder_key(&key)
-                };
-                if !is_placeholder_start {
-                    let (all_keys, saved_base_url) = load_active_provider_keys()
-                        .map(|(_, keys, _, burl)| {
-                            let has_custom = burl.is_some();
-                            let valid: Vec<String> = keys
-                                .into_iter()
-                                .filter(|k| {
-                                    if has_custom {
-                                        !is_placeholder_key_lenient(k)
-                                    } else {
-                                        !is_placeholder_key(k)
-                                    }
-                                })
-                                .collect();
-                            (valid, burl)
-                        })
-                        .unwrap_or_else(|| (vec![key.clone()], None));
-                    let effective_base_url =
-                        saved_base_url.or_else(|| config.provider.base_url.clone());
-                    let provider_config = temm1e_core::types::config::ProviderConfig {
-                        name: Some(pname.clone()),
-                        api_key: Some(key.clone()),
-                        keys: all_keys,
-                        model: Some(model.clone()),
-                        base_url: effective_base_url,
-                        extra_headers: config.provider.extra_headers.clone(),
+                let has_custom_endpoint = resolved_connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.base_url.is_some());
+                let is_placeholder_start = pname != "openai-codex"
+                    && if has_custom_endpoint {
+                        is_placeholder_key_lenient(&key)
+                    } else {
+                        is_placeholder_key(&key)
                     };
+                if !is_placeholder_start {
+                    let provider_config = resolved_connection
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("Resolved connection unavailable"))?;
                     // Create provider — route to Codex OAuth if configured
                     let provider_result: Result<Arc<dyn temm1e_core::Provider>, String> = {
                         #[cfg(feature = "codex-oauth")]
@@ -6608,7 +6314,7 @@ Just type a message to chat with the AI agent.",
                                     cli_core_registry.clone(),
                                     provider.clone(),
                                     tools_template.clone(),
-                                    Arc::new(temm1e_agent::budget::BudgetTracker::new(max_spend)),
+                                    runtime_budget.clone(),
                                     model_pricing,
                                     model.clone(),
                                     max_ctx,
@@ -6656,21 +6362,18 @@ Just type a message to chat with the AI agent.",
                                         config_path
                                             .and_then(|p| std::fs::read_to_string(p).ok())
                                             .or_else(|| {
-                                                dirs::home_dir().and_then(|h| {
-                                                    std::fs::read_to_string(
-                                                        h.join(".temm1e/config.toml"),
-                                                    )
-                                                    .ok()
-                                                })
+                                                std::fs::read_to_string(
+                                                    temm1e_core::config::data_dir()
+                                                        .join("config.toml"),
+                                                )
+                                                .ok()
                                             })
                                             .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
                                             .and_then(|c| toml::from_str::<HW>(&c).ok())
                                             .map(|w| w.hive)
                                             .unwrap_or_default()
                                     };
-                                    let hive_db = dirs::home_dir()
-                                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                        .join(".temm1e/hive.db");
+                                    let hive_db = temm1e_core::config::data_dir().join("hive.db");
                                     let hive_url = format!("sqlite:{}?mode=rwc", hive_db.display());
                                     match temm1e_hive::Hive::new(&hive_config, &hive_url).await {
                                         Ok(h) => {
@@ -6727,9 +6430,9 @@ Just type a message to chat with the AI agent.",
                                 max_task_duration,
                                 max_spend,
                             )
-                            .with_v2_optimizations(v2_opt)
-                            .with_self_audit_enabled(self_audit_opt)
-                            .with_parallel_phases(pp_opt)
+                            .with_budget(runtime_budget.clone())
+                            .with_policy(&runtime_policy)
+                            .with_durable_execution()
                             .with_hive_enabled(hive_enabled_early)
                             .with_shared_mode(shared_mode.clone())
                             .with_shared_memory_strategy(shared_memory_strategy.clone())
@@ -6771,9 +6474,8 @@ Just type a message to chat with the AI agent.",
                             }
                             // ── Perpetuum: init for CLI chat ──────────
                             if config.perpetuum.enabled {
-                                let perpetuum_db = dirs::home_dir()
-                                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                    .join(".temm1e/perpetuum.db");
+                                let perpetuum_db =
+                                    temm1e_core::config::data_dir().join("perpetuum.db");
                                 let db_url = format!("sqlite:{}?mode=rwc", perpetuum_db.display());
 
                                 let perp_config = temm1e_perpetuum::PerpetualConfig {
@@ -6814,7 +6516,10 @@ Just type a message to chat with the AI agent.",
 
                                 match temm1e_perpetuum::Perpetuum::new(
                                     perp_config,
-                                    consciousness_provider.clone(),
+                                    Arc::new(temm1e_agent::metered_provider::MeteredProvider::new(
+                                        consciousness_provider.clone(),
+                                        runtime_budget.clone(),
+                                    )),
                                     model.clone(),
                                     cli_channel_map,
                                     &db_url,
@@ -6842,9 +6547,9 @@ Just type a message to chat with the AI agent.",
                                             max_task_duration,
                                             max_spend,
                                         )
-                                        .with_v2_optimizations(v2_opt)
-                                        .with_self_audit_enabled(self_audit_opt)
-                                        .with_parallel_phases(pp_opt)
+                                        .with_budget(runtime_budget.clone())
+                                        .with_policy(&runtime_policy)
+                                        .with_durable_execution()
                                         .with_hive_enabled(hive_enabled_early)
                                         .with_shared_mode(shared_mode.clone())
                                         .with_shared_memory_strategy(shared_memory_strategy.clone())
@@ -6904,9 +6609,8 @@ Just type a message to chat with the AI agent.",
                                     memory: memory.clone(),
                                     tools_template: cli_swarm_snapshot.clone(),
                                     model: rt.model().to_string(),
-                                    parent_budget: Arc::new(
-                                        temm1e_agent::budget::BudgetTracker::new(max_spend),
-                                    ),
+                                    parent_budget: rt.budget(),
+                                    policy: rt.runtime_policy(),
                                     cancel: tokio_util::sync::CancellationToken::new(),
                                     workspace_path: std::env::current_dir()
                                         .unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -6963,9 +6667,9 @@ Just type a message to chat with the AI agent.",
                                         max_task_duration,
                                         max_spend,
                                     )
-                                    .with_v2_optimizations(v2_opt)
-                                    .with_self_audit_enabled(self_audit_opt)
-                                    .with_parallel_phases(pp_opt)
+                                    .with_budget(runtime_budget.clone())
+                                    .with_policy(&runtime_policy)
+                                    .with_durable_execution()
                                     .with_shared_mode(shared_mode.clone())
                                     .with_shared_memory_strategy(shared_memory_strategy.clone())
                                     .with_personality(personality.clone())
@@ -7003,26 +6707,67 @@ Just type a message to chat with the AI agent.",
                 eprintln!("CLI channel receiver unavailable");
                 return Ok(());
             };
-            // ── Restore CLI conversation history from memory backend ──
-            let cli_history_key = "chat_history:cli".to_string();
-            let mut history: Vec<temm1e_core::types::message::ChatMessage> =
-                match memory.get(&cli_history_key).await {
-                    Ok(Some(entry)) => match serde_json::from_str(&entry.content) {
-                        Ok(h) => {
-                            let count = Vec::<temm1e_core::types::message::ChatMessage>::len(&h);
-                            if count > 0 {
-                                println!("  Restored {} messages from previous session.", count);
-                            }
-                            h
-                        }
-                        Err(_) => Vec::new(),
-                    },
-                    _ => Vec::new(),
-                };
+            let conversations =
+                Arc::new(temm1e_agent::execution_journal::ExecutionJournal::open_profile().await?);
+            let conversation_scope = temm1e_agent::conversation::ConversationScope::new(
+                &workspace,
+                "cli",
+                "cli",
+                "local-owner",
+            )?;
+            println!("  Workspace: {}", workspace.display());
+            println!("  /history-import previews preserved old chats; /session-new starts a new conversation.");
+            println!("  /goal-status inspects saved objectives, evidence counts and unverified achievement.");
+            println!(
+                "  /goal-assessment <goal-id> inspects recorded checks and unverified coverage."
+            );
 
             while let Some(msg) = rx.recv().await {
                 let msg_text = msg.text.as_deref().unwrap_or("");
                 let cmd_lower = msg_text.trim().to_lowercase();
+
+                match temm1e_agent::delivery::prepare_resume_command(
+                    &conversations,
+                    &conversation_scope,
+                    msg_text,
+                )
+                .await
+                {
+                    Ok(Some(ticket)) => {
+                        if let Err(e) = ticket.deliver(|reply| cli_arc.send_message(reply)).await {
+                            eprintln!("  [{e}]");
+                        }
+                        eprint!("temm1e> ");
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("  [{e}]");
+                        eprint!("temm1e> ");
+                        continue;
+                    }
+                    Ok(None) => {}
+                }
+                match temm1e_agent::conversation::handle_owner_command(
+                    &conversations,
+                    &conversation_scope,
+                    memory.as_ref(),
+                    "chat_history:cli",
+                    msg_text,
+                )
+                .await
+                {
+                    Ok(Some(text)) => {
+                        println!("\n{text}\n");
+                        eprint!("temm1e> ");
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("  [{e}]");
+                        eprint!("temm1e> ");
+                        continue;
+                    }
+                    Ok(None) => {}
+                }
 
                 // ── Command interception (same as gateway) ─────
                 // /eigentune — Eigen-Tune slash dispatch
@@ -7072,14 +6817,47 @@ Just type a message to chat with the AI agent.",
                 // /addmodel — register a custom model for the active provider
                 if cmd_lower.starts_with("/addmodel") {
                     let args = msg_text.trim()["/addmodel".len()..].trim();
-                    println!("\n{}\n", handle_addmodel_command(args));
+                    println!(
+                        "\n{}\n",
+                        handle_addmodel_command(
+                            args,
+                            model_command_context(agent_opt.as_ref(), &config.provider).as_ref()
+                        )
+                    );
+                    eprint!("temm1e> ");
+                    continue;
+                }
+
+                if cmd_lower == "/model" || cmd_lower.starts_with("/model ") {
+                    let args = msg_text.trim()["/model".len()..].trim();
+                    let text = match agent_opt.as_mut() {
+                        None => "No active provider. Configure a connection first.".into(),
+                        Some(agent) if args.is_empty() => runtime_model_status(agent),
+                        Some(agent) => {
+                            match select_runtime_model(agent, args) {
+                                Err(error) => format!("Model selection failed: {error}"),
+                                Ok(text) => {
+                                    if let Some(perp) = cli_perp_instance.read().await.as_ref() {
+                                        perp.rebind_provider(Arc::new(temm1e_agent::metered_provider::MeteredProvider::new(agent.provider_arc(), agent.budget())), agent.model().to_owned());
+                                    }
+                                    text
+                                }
+                            }
+                        }
+                    };
+                    println!("\n{text}\n");
                     eprint!("temm1e> ");
                     continue;
                 }
 
                 // /listmodels — show hardcoded + custom models
                 if cmd_lower == "/listmodels" {
-                    println!("\n{}\n", handle_listmodels_command());
+                    println!(
+                        "\n{}\n",
+                        handle_listmodels_command(
+                            model_command_context(agent_opt.as_ref(), &config.provider).as_ref()
+                        )
+                    );
                     eprint!("temm1e> ");
                     continue;
                 }
@@ -7087,7 +6865,13 @@ Just type a message to chat with the AI agent.",
                 // /removemodel — drop a custom model for the active provider
                 if cmd_lower.starts_with("/removemodel") {
                     let args = msg_text.trim()["/removemodel".len()..].trim();
-                    println!("\n{}\n", handle_removemodel_command(args));
+                    println!(
+                        "\n{}\n",
+                        handle_removemodel_command(
+                            args,
+                            model_command_context(agent_opt.as_ref(), &config.provider).as_ref()
+                        )
+                    );
                     eprint!("temm1e> ");
                     continue;
                 }
@@ -7112,7 +6896,7 @@ Just type a message to chat with the AI agent.",
                                 println!("\nNo usage records for this chat yet.\n");
                             } else {
                                 println!(
-                                    "\nUsage Summary\nTurns: {}\nAPI Calls: {}\nInput Tokens: {}\nOutput Tokens: {}\nCombined Tokens: {}\nTools Used: {}\nTotal Cost: ${:.4}\n",
+                                    "\nUsage Summary\nTurns: {}\nAPI Calls: {}\nInput Tokens: {}\nOutput Tokens: {}\nCombined Tokens: {}\nTools Used: {}\nRecorded API estimate: ${:.4} (excludes unpriced usage; not a subscription bill)\n",
                                     summary.turn_count,
                                     summary.total_api_calls,
                                     summary.total_input_tokens,
@@ -7141,7 +6925,7 @@ Just type a message to chat with the AI agent.",
                          /model — Show current model and available models\n\
                          /model <name> — Switch to a different model\n\
                          /removekey <provider> — Remove a provider's API key\n\
-                         /addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] — Register a custom model\n\
+                         /addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] [vision:true|false|unknown] — Register a custom model\n\
                          /listmodels — Show hardcoded + custom models grouped by provider\n\
                          /removemodel <name> — Remove a custom model from the active provider\n\
                          /usage — Show token usage and cost summary\n\
@@ -7183,10 +6967,7 @@ Just type a message to chat with the AI agent.",
                     let subcmd = cmd_lower.strip_prefix("/vigil").unwrap_or("").trim();
                     match subcmd {
                         "disable" => {
-                            let config_path = dirs::home_dir()
-                                .unwrap_or_default()
-                                .join(".temm1e")
-                                .join("vigil.toml");
+                            let config_path = temm1e_core::config::data_dir().join("vigil.toml");
                             std::fs::write(
                                 &config_path,
                                 "enabled = false\nconsent_given = false\nauto_report = false\n",
@@ -7195,10 +6976,7 @@ Just type a message to chat with the AI agent.",
                             println!("Vigil disabled.");
                         }
                         "auto" => {
-                            let config_path = dirs::home_dir()
-                                .unwrap_or_default()
-                                .join(".temm1e")
-                                .join("vigil.toml");
+                            let config_path = temm1e_core::config::data_dir().join("vigil.toml");
                             std::fs::write(
                                 &config_path,
                                 "enabled = true\nconsent_given = true\nauto_report = true\n",
@@ -7209,10 +6987,7 @@ Just type a message to chat with the AI agent.",
                         "status" => {
                             let has_github = load_credentials_file()
                                 .is_some_and(|c| c.providers.iter().any(|p| p.name == "github"));
-                            let consent_path = dirs::home_dir()
-                                .unwrap_or_default()
-                                .join(".temm1e")
-                                .join("vigil.toml");
+                            let consent_path = temm1e_core::config::data_dir().join("vigil.toml");
                             let consent = std::fs::read_to_string(&consent_path)
                                 .unwrap_or_default()
                                 .contains("consent_given = true");
@@ -7257,10 +7032,7 @@ Just type a message to chat with the AI agent.",
                         .unwrap_or("")
                         .trim();
                     let subcmd = cmd_lower.strip_prefix("/cambium").unwrap_or("").trim();
-                    let cambium_path = dirs::home_dir()
-                        .unwrap_or_default()
-                        .join(".temm1e")
-                        .join("cambium.toml");
+                    let cambium_path = temm1e_core::config::data_dir().join("cambium.toml");
                     let current_enabled = std::fs::read_to_string(&cambium_path)
                         .ok()
                         .and_then(|s| {
@@ -7502,9 +7274,9 @@ Just type a message to chat with the AI agent.",
                                                     max_task_duration,
                                                     max_spend,
                                                 )
-                                                .with_v2_optimizations(v2_opt)
-                                                .with_self_audit_enabled(self_audit_opt)
-                                                .with_parallel_phases(pp_opt)
+                                                .with_budget(runtime_budget.clone())
+                                                .with_policy(&runtime_policy)
+                                                .with_durable_execution()
                                                 .with_shared_mode(shared_mode.clone())
                                                 .with_shared_memory_strategy(
                                                     shared_memory_strategy.clone(),
@@ -7561,9 +7333,9 @@ Just type a message to chat with the AI agent.",
                                             max_task_duration,
                                             max_spend,
                                         )
-                                        .with_v2_optimizations(v2_opt)
-                                        .with_self_audit_enabled(self_audit_opt)
-                                        .with_parallel_phases(pp_opt)
+                                        .with_budget(runtime_budget.clone())
+                                        .with_policy(&runtime_policy)
+                                        .with_durable_execution()
                                         .with_shared_mode(shared_mode.clone())
                                         .with_shared_memory_strategy(shared_memory_strategy.clone())
                                         .with_personality(personality.clone())
@@ -7611,9 +7383,9 @@ Just type a message to chat with the AI agent.",
                                             max_task_duration,
                                             max_spend,
                                         )
-                                        .with_v2_optimizations(v2_opt)
-                                        .with_self_audit_enabled(self_audit_opt)
-                                        .with_parallel_phases(pp_opt)
+                                        .with_budget(runtime_budget.clone())
+                                        .with_policy(&runtime_policy)
+                                        .with_durable_execution()
                                         .with_shared_mode(shared_mode.clone())
                                         .with_shared_memory_strategy(shared_memory_strategy.clone())
                                         .with_personality(personality.clone())
@@ -7842,9 +7614,9 @@ Just type a message to chat with the AI agent.",
                                                 max_task_duration,
                                                 max_spend,
                                             )
-                                            .with_v2_optimizations(v2_opt)
-                                            .with_self_audit_enabled(self_audit_opt)
-                                            .with_parallel_phases(pp_opt)
+                                            .with_budget(runtime_budget.clone())
+                                            .with_policy(&runtime_policy)
+                                            .with_durable_execution()
                                             .with_shared_mode(shared_mode.clone())
                                             .with_shared_memory_strategy(
                                                 shared_memory_strategy.clone(),
@@ -7857,7 +7629,7 @@ Just type a message to chat with the AI agent.",
                                             .with_witness_attachments(witness_attachments.as_ref()),
                                         );
                                         println!(
-                                            "\nAPI key securely received and verified! Configured {} with model {}.",
+                                            "\nCredentials securely received. Configured {} with model {}.",
                                             cred.provider, model
                                         );
                                         println!("TEMM1E is online.\n");
@@ -7929,9 +7701,9 @@ Just type a message to chat with the AI agent.",
                                     max_task_duration,
                                     max_spend,
                                 )
-                                .with_v2_optimizations(v2_opt)
-                                .with_self_audit_enabled(self_audit_opt)
-                                .with_parallel_phases(pp_opt)
+                                .with_budget(runtime_budget.clone())
+                                .with_policy(&runtime_policy)
+                                .with_durable_execution()
                                 .with_hive_enabled(hive_enabled_early)
                                 .with_shared_mode(shared_mode.clone())
                                 .with_shared_memory_strategy(shared_memory_strategy.clone())
@@ -7942,15 +7714,12 @@ Just type a message to chat with the AI agent.",
                                 )
                                 .with_witness_attachments(witness_attachments.as_ref()),
                             );
-                            println!(
-                                "\nAPI key verified! Configured {} with model {}.",
-                                cred.provider, model
-                            );
+                            println!("\nConfigured {} with model {}.", cred.provider, model);
                             println!("TEMM1E is online.\n");
                         }
                         Err(err) => {
                             eprintln!(
-                                "\nInvalid API key — {} returned:\n{}\nCheck the key and try again.\n",
+                                "\nConnection setup failed — {} returned:\n{}\nCheck the provider, model and connection settings.\n",
                                 cred.provider, err
                             );
                         }
@@ -7967,18 +7736,31 @@ Just type a message to chat with the AI agent.",
                     *cli_perp_temporal.write().await = temporal;
                 }
                 if let Some(ref agent) = agent_opt {
+                    let acquired = match conversations
+                        .acquire_conversation(&conversation_scope)
+                        .await
+                    {
+                        Ok(turn) => turn,
+                        Err(e) => {
+                            eprintln!("  [{e}]");
+                            eprint!("temm1e> ");
+                            continue;
+                        }
+                    };
                     let mut session = temm1e_core::types::session::SessionContext {
-                        session_id: "cli-cli".to_string(),
+                        session_id: acquired.epoch().to_string(),
                         user_id: msg.user_id.clone(),
                         channel: msg.channel.clone(),
                         chat_id: msg.chat_id.clone(),
                         role: temm1e_core::types::rbac::Role::Admin,
-                        history: history.clone(),
+                        history: acquired.history().to_vec(),
                         workspace_path: workspace.clone(),
                         read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
                             std::collections::HashSet::new(),
                         )),
                     };
+
+                    let mut conversation_turn = Some(acquired);
 
                     // Early reply channel for LLM classifier (order acknowledgments)
                     let (early_tx, mut early_rx) = tokio::sync::mpsc::unbounded_channel::<
@@ -8004,10 +7786,38 @@ Just type a message to chat with the AI agent.",
                     .catch_unwind()
                     .await;
 
+                    // Save before delivery. Hive fallback continues under the
+                    // same lock; panics leave the durable recovery marker intact.
+                    if matches!(&process_result, Ok(Err(_)))
+                        && !matches!(
+                            &process_result,
+                            Ok(Err(temm1e_core::types::error::Temm1eError::HiveRoute(_)))
+                        )
+                    {
+                        if let Some(turn) = conversation_turn.take() {
+                            if let Err(e) = turn.commit(&session.history).await {
+                                eprintln!(
+                                    "  [History save failed: {e}. Do not retry uncertain effects.]"
+                                );
+                                eprint!("temm1e> ");
+                                continue;
+                            }
+                        }
+                    }
+
                     match process_result {
                         Ok(Ok((mut reply, turn_usage))) => {
                             reply.text = censor_secrets(&reply.text);
-                            cli_arc.send_message(reply).await.ok();
+                            if let Err(e) = deliver_final_reply(
+                                &mut conversation_turn,
+                                &session.history,
+                                &*cli_arc,
+                                reply,
+                            )
+                            .await
+                            {
+                                eprintln!("  [{e}]");
+                            }
 
                             // Record usage
                             let record = temm1e_core::UsageRecord {
@@ -8057,12 +7867,12 @@ Just type a message to chat with the AI agent.",
                                     max_task_duration,
                                     max_spend,
                                 )
-                                .with_v2_optimizations(v2_opt)
-                                .with_self_audit_enabled(self_audit_opt)
-                                .with_parallel_phases(pp_opt)
+                                .with_budget(runtime_budget.clone())
+                                .with_policy(&runtime_policy)
+                                .with_durable_execution()
                                 .with_witness_attachments(witness_attachments.as_ref());
                                 let re_msg = temm1e_core::types::message::InboundMessage {
-                                    id: uuid::Uuid::new_v4().to_string(),
+                                    id: format!("{}:hive-fallback", msg.id),
                                     channel: "cli".into(),
                                     chat_id: "cli".into(),
                                     user_id: "local".into(),
@@ -8072,7 +7882,7 @@ Just type a message to chat with the AI agent.",
                                     reply_to: None,
                                     timestamp: chrono::Utc::now(),
                                 };
-                                match non_hive
+                                let fallback_result = non_hive
                                     .process_message(
                                         &re_msg,
                                         &mut session,
@@ -8082,11 +7892,27 @@ Just type a message to chat with the AI agent.",
                                         None,
                                         None,
                                     )
-                                    .await
-                                {
+                                    .await;
+                                if fallback_result.is_err() {
+                                    if let Some(turn) = conversation_turn.take() {
+                                        if let Err(e) = turn.commit(&session.history).await {
+                                            eprintln!("  [History save failed: {e}. Do not retry uncertain effects.]");
+                                            eprint!("temm1e> ");
+                                            continue;
+                                        }
+                                    }
+                                }
+                                match fallback_result {
                                     Ok((reply, _usage)) => {
-                                        if !reply.text.trim().is_empty() {
-                                            println!("\n{}\n", reply.text);
+                                        if let Err(e) = deliver_final_reply(
+                                            &mut conversation_turn,
+                                            &session.history,
+                                            &*cli_arc,
+                                            reply,
+                                        )
+                                        .await
+                                        {
+                                            eprintln!("  [{e}]");
                                         }
                                     }
                                     Err(e) => eprintln!("  [{}]", format_user_error(&e)),
@@ -8109,25 +7935,8 @@ Just type a message to chat with the AI agent.",
                             };
                             eprintln!("  [panic recovered: {}]", panic_msg);
                             tracing::error!(panic = %panic_msg, "PANIC RECOVERED in CLI processing");
-                            // Rollback session to pre-message state
-                            session.history = history.clone();
-                        }
-                    }
-
-                    history = session.history;
-
-                    // ── Save CLI conversation history to memory backend ──
-                    if let Ok(json) = serde_json::to_string(&history) {
-                        let entry = temm1e_core::MemoryEntry {
-                            id: cli_history_key.clone(),
-                            content: json,
-                            metadata: serde_json::json!({"chat_id": "cli"}),
-                            timestamp: chrono::Utc::now(),
-                            session_id: Some("cli".to_string()),
-                            entry_type: temm1e_core::MemoryEntryType::Conversation,
-                        };
-                        if let Err(e) = memory.store(entry).await {
-                            tracing::warn!(error = %e, "Failed to persist CLI conversation history");
+                            // The lease drops with an interrupted marker. Do
+                            // not overwrite execution evidence with old history.
                         }
                     }
                 } else {
@@ -8141,6 +7950,17 @@ Just type a message to chat with the AI agent.",
                 }
             }
 
+            if let Some(perpetuum) = cli_perp_instance.read().await.as_ref() {
+                perpetuum.shutdown();
+            }
+            if let Some(agent) = agent_opt.as_ref() {
+                let drained = agent
+                    .shutdown_background(std::time::Duration::from_secs(5))
+                    .await;
+                if !drained {
+                    tracing::warn!("CLI background drain deadline reached; cancelled work may have unknown usage");
+                }
+            }
             println!("\nTEMM1E chat ended.");
         }
         Commands::Status => {
@@ -8203,10 +8023,7 @@ Just type a message to chat with the AI agent.",
                         eprintln!("File not found: {}", path);
                         std::process::exit(1);
                     }
-                    let dest_dir = dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".temm1e")
-                        .join("skills");
+                    let dest_dir = temm1e_core::config::data_dir().join("skills");
                     if let Err(e) = std::fs::create_dir_all(&dest_dir) {
                         eprintln!("Failed to create skills directory: {}", e);
                         std::process::exit(1);
@@ -8241,307 +8058,7 @@ Just type a message to chat with the AI agent.",
                 println!("{}", output);
             }
         },
-        Commands::Update => {
-            println!("TEMM1E Update");
-            println!("Current version: {}\n", env!("CARGO_PKG_VERSION"));
-
-            // 1. Check if we're in a git repo — if not, do binary self-update
-            let git_check = std::process::Command::new("git")
-                .args(["rev-parse", "--is-inside-work-tree"])
-                .output();
-            let in_git_repo = git_check.is_ok_and(|o| o.status.success());
-
-            if !in_git_repo {
-                // Binary self-update: download latest release from GitHub
-                println!("Not in a git repo — updating via GitHub Releases...\n");
-
-                // Fetch latest release tag
-                let client = reqwest::blocking::Client::builder()
-                    .user_agent("temm1e-updater")
-                    .build()
-                    .unwrap_or_else(|_| reqwest::blocking::Client::new());
-
-                let api_url = format!(
-                    "https://api.github.com/repos/{}/releases/latest",
-                    "temm1e-labs/temm1e"
-                );
-                let release: serde_json::Value = match client.get(&api_url).send() {
-                    Ok(resp) if resp.status().is_success() => match resp.json() {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("Error: Failed to parse release info: {}", e);
-                            std::process::exit(1);
-                        }
-                    },
-                    Ok(resp) => {
-                        eprintln!("Error: GitHub API returned status {}", resp.status());
-                        std::process::exit(1);
-                    }
-                    Err(e) => {
-                        eprintln!("Error: Failed to reach GitHub: {}", e);
-                        eprintln!("Check your internet connection and try again.");
-                        std::process::exit(1);
-                    }
-                };
-
-                let latest_tag = release["tag_name"]
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .trim_start_matches('v');
-                let current = env!("CARGO_PKG_VERSION");
-
-                if latest_tag == current {
-                    println!("Already up to date (v{}).", current);
-                    return Ok(());
-                }
-
-                println!("New version available: v{} → v{}", current, latest_tag);
-
-                // Detect platform. Asset names follow install.sh / release.yml
-                // convention: `temm1e-{arch}-{macos|linux|linux-desktop}`.
-                // Single source of truth is update_assets::asset_candidates() —
-                // see src/update_assets.rs for the full contract, which a unit
-                // test pins to .github/workflows/release.yml's matrix so any
-                // rename there will break the build loudly.
-                let os = std::env::consts::OS;
-                let arch = std::env::consts::ARCH;
-                let candidates = match update_assets::asset_candidates(os, arch) {
-                    Some(c) => c,
-                    None => {
-                        eprintln!(
-                            "Error: No pre-built binary for {}-{}. Build from source instead.",
-                            os, arch
-                        );
-                        std::process::exit(1);
-                    }
-                };
-
-                // Find the first candidate that exists in the release.
-                // Linux tries `-desktop` first, then `-linux` (server/musl)
-                // fallback — matches install.sh's preference.
-                let assets = release["assets"].as_array();
-                let found = candidates.iter().find_map(|candidate| {
-                    let asset = assets?.iter().find(|a| {
-                        a["name"]
-                            .as_str()
-                            .is_some_and(|n| n == *candidate && !n.ends_with(".sha256"))
-                    })?;
-                    let url = asset["browser_download_url"].as_str()?;
-                    Some((*candidate, url.to_string()))
-                });
-
-                let (asset_name, url) = match found {
-                    Some(pair) => pair,
-                    None => {
-                        eprintln!(
-                            "Error: None of {:?} found in release v{}. Run the installer again:",
-                            candidates, latest_tag
-                        );
-                        eprintln!(
-                            "  curl -sSfL https://raw.githubusercontent.com/temm1e-labs/temm1e/main/install.sh | sh"
-                        );
-                        std::process::exit(1);
-                    }
-                };
-                let asset_name = asset_name.to_string();
-
-                // Download binary
-                println!("Downloading {}...", asset_name);
-                let binary_data = match client.get(&url).send() {
-                    Ok(resp) if resp.status().is_success() => match resp.bytes() {
-                        Ok(b) => b,
-                        Err(e) => {
-                            eprintln!("Error: Failed to download binary: {}", e);
-                            std::process::exit(1);
-                        }
-                    },
-                    _ => {
-                        eprintln!("Error: Failed to download from {}", url);
-                        std::process::exit(1);
-                    }
-                };
-
-                // Find current binary location and replace
-                let current_exe = std::env::current_exe().unwrap_or_else(|_| {
-                    // Fallback: check common install locations
-                    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-                    let local_bin = home.join(".local/bin/temm1e");
-                    if local_bin.exists() {
-                        local_bin
-                    } else {
-                        home.join("bin/temm1e")
-                    }
-                });
-
-                // Atomic replace: write to .tmp, then rename
-                let tmp_path = current_exe.with_extension("tmp");
-                if let Err(e) = std::fs::write(&tmp_path, &binary_data) {
-                    eprintln!("Error: Failed to write temporary binary: {}", e);
-                    std::process::exit(1);
-                }
-
-                // Make executable on Unix
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ =
-                        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755));
-                }
-
-                // Replace current binary
-                if let Err(e) = std::fs::rename(&tmp_path, &current_exe) {
-                    eprintln!("Error: Failed to replace binary: {}", e);
-                    eprintln!(
-                        "You may need to run with sudo or manually move {} to {}",
-                        tmp_path.display(),
-                        current_exe.display()
-                    );
-                    let _ = std::fs::remove_file(&tmp_path);
-                    std::process::exit(1);
-                }
-
-                println!("\nUpdate complete! v{} → v{}", current, latest_tag);
-                println!("Binary: {}", current_exe.display());
-                println!("\nRestart with: temm1e start");
-                println!("\nNote: Your data in ~/.temm1e/ is untouched (keys, memory, config).");
-                return Ok(());
-            }
-
-            // 2. Fetch remote
-            println!("Fetching latest changes...");
-            let fetch = std::process::Command::new("git")
-                .args(["fetch", "origin"])
-                .output();
-            if let Err(e) = fetch {
-                eprintln!("Error: Failed to fetch from remote: {}", e);
-                std::process::exit(1);
-            }
-
-            // 3. Compare local vs remote
-            let local_head = std::process::Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default();
-
-            // Detect the default remote branch (main or master)
-            let remote_branch = {
-                let check_main = std::process::Command::new("git")
-                    .args(["rev-parse", "--verify", "origin/main"])
-                    .output();
-                if check_main.is_ok_and(|o| o.status.success()) {
-                    "origin/main"
-                } else {
-                    "origin/master"
-                }
-            };
-
-            let remote_head = std::process::Command::new("git")
-                .args(["rev-parse", remote_branch])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default();
-
-            if local_head == remote_head {
-                println!("Already up to date.");
-                return Ok(());
-            }
-
-            // 4. Show what's new
-            let log_range = format!("HEAD..{}", remote_branch);
-            let log_output = std::process::Command::new("git")
-                .args(["log", "--oneline", "--no-decorate", &log_range])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-
-            let commit_count = log_output.lines().count();
-            println!("{} new commit(s):\n", commit_count);
-            for line in log_output.lines().take(20) {
-                println!("  {}", line);
-            }
-            if commit_count > 20 {
-                println!("  ... and {} more", commit_count - 20);
-            }
-            println!();
-
-            // 5. Check for dirty working tree
-            let status = std::process::Command::new("git")
-                .args(["status", "--porcelain"])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-            if !status.trim().is_empty() {
-                eprintln!("Warning: You have uncommitted changes. Stashing before update...");
-                let stash = std::process::Command::new("git")
-                    .args(["stash", "push", "-m", "temm1e-update-autostash"])
-                    .output();
-                if stash.map_or(true, |o| !o.status.success()) {
-                    eprintln!("Error: Failed to stash changes. Commit or stash manually first.");
-                    std::process::exit(1);
-                }
-                println!("Changes stashed.\n");
-            }
-
-            // 6. Pull
-            let branch = remote_branch.strip_prefix("origin/").unwrap_or("main");
-            println!("Pulling from origin/{}...", branch);
-            let pull = std::process::Command::new("git")
-                .args(["pull", "origin", branch])
-                .output();
-            match pull {
-                Ok(out) if out.status.success() => {
-                    println!("{}", String::from_utf8_lossy(&out.stdout));
-                }
-                Ok(out) => {
-                    eprintln!(
-                        "Error: git pull failed:\n{}",
-                        String::from_utf8_lossy(&out.stderr)
-                    );
-                    std::process::exit(1);
-                }
-                Err(e) => {
-                    eprintln!("Error: git pull failed: {}", e);
-                    std::process::exit(1);
-                }
-            }
-
-            // 7. Build release binary
-            println!("Building release binary... (this may take a few minutes)");
-            let build = std::process::Command::new("cargo")
-                .args(["build", "--release", "--bin", "temm1e"])
-                .status();
-            match build {
-                Ok(s) if s.success() => {
-                    println!("\nUpdate complete!");
-                    println!("Restart with: temm1e start");
-                }
-                Ok(s) => {
-                    eprintln!("\nBuild failed with exit code: {:?}", s.code());
-                    eprintln!("The source was updated but the binary was not rebuilt.");
-                    eprintln!("Run `cargo build --release --bin temm1e` manually to retry.");
-                    std::process::exit(1);
-                }
-                Err(e) => {
-                    eprintln!("\nBuild failed: {}", e);
-                    eprintln!("The source was updated but the binary was not rebuilt.");
-                    std::process::exit(1);
-                }
-            }
-
-            // 8. Pop stash if we stashed earlier
-            let stash_list = std::process::Command::new("git")
-                .args(["stash", "list"])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-            if stash_list.contains("temm1e-update-autostash") {
-                println!("Restoring stashed changes...");
-                let _ = std::process::Command::new("git")
-                    .args(["stash", "pop"])
-                    .output();
-            }
-        }
+        Commands::Update => updater::run().await?,
         Commands::Version => {
             println!(
                 "temm1e {} — commit: {} — date: {}",
@@ -8576,7 +8093,10 @@ Just type a message to chat with the AI agent.",
                                 std::process::exit(1);
                             }
                             let content = serde_json::to_string_pretty(&tokens).unwrap();
-                            if let Err(e) = std::fs::write(&path, content) {
+                            if let Err(e) = temm1e_core::private_file::write_private_atomic(
+                                &path,
+                                content.as_bytes(),
+                            ) {
                                 eprintln!("Failed to write {}: {}", path.display(), e);
                                 std::process::exit(1);
                             }
@@ -8657,11 +8177,9 @@ fn load_eigentune_config_from_path(
         #[serde(default)]
         eigentune: temm1e_distill::config::EigenTuneConfig,
     }
-    let raw_path: std::path::PathBuf = config_path.map(|p| p.to_path_buf()).unwrap_or_else(|| {
-        dirs::home_dir()
-            .map(|h| h.join(".temm1e/config.toml"))
-            .unwrap_or_else(|| std::path::PathBuf::from("temm1e.toml"))
-    });
+    let raw_path: std::path::PathBuf = config_path
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| temm1e_core::config::data_dir().join("config.toml"));
     let raw = std::fs::read_to_string(&raw_path).unwrap_or_default();
     let expanded = temm1e_core::config::expand_env_vars(&raw);
     toml::from_str::<EigenRoot>(&expanded)
@@ -8673,9 +8191,7 @@ fn load_eigentune_config_from_path(
 async fn open_eigentune_engine(
     cfg: &temm1e_distill::config::EigenTuneConfig,
 ) -> anyhow::Result<temm1e_distill::EigenTuneEngine> {
-    let db_path = dirs::home_dir()
-        .map(|h| h.join(".temm1e").join("eigentune.db"))
-        .unwrap_or_else(|| std::path::PathBuf::from("eigentune.db"));
+    let db_path = temm1e_core::config::data_dir().join("eigentune.db");
     if let Some(parent) = db_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -8693,9 +8209,7 @@ async fn open_eigentune_engine(
 /// SQLite connection setup cost (~50ms) is acceptable.
 async fn handle_eigentune_slash(arg: &str) -> String {
     // Find the config path the same way the daemon does
-    let config_path: std::path::PathBuf = dirs::home_dir()
-        .map(|h| h.join(".temm1e/config.toml"))
-        .unwrap_or_else(|| std::path::PathBuf::from("temm1e.toml"));
+    let config_path: std::path::PathBuf = temm1e_core::config::data_dir().join("config.toml");
     let cfg = load_eigentune_config_from_path(Some(&config_path));
 
     if !cfg.enabled {
@@ -8772,9 +8286,7 @@ async fn handle_eigentune_slash(arg: &str) -> String {
                     "Eigen-Tune: invalid tier '{tier}'. Must be one of: simple, standard, complex"
                 );
             }
-            let db_path = dirs::home_dir()
-                .map(|h| h.join(".temm1e").join("eigentune.db"))
-                .unwrap_or_else(|| std::path::PathBuf::from("eigentune.db"));
+            let db_path = temm1e_core::config::data_dir().join("eigentune.db");
             let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
             let store = match temm1e_distill::store::EigenTuneStore::new(&db_url).await {
                 Ok(s) => std::sync::Arc::new(s),
@@ -8914,9 +8426,7 @@ async fn handle_eigentune_command(
             // public API, so we use the engine's tick to query state and
             // call the graduation manager via store.
             // For now, we open a fresh store connection and demote directly.
-            let db_path = dirs::home_dir()
-                .map(|h| h.join(".temm1e").join("eigentune.db"))
-                .unwrap_or_else(|| std::path::PathBuf::from("eigentune.db"));
+            let db_path = temm1e_core::config::data_dir().join("eigentune.db");
             let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
             let store =
                 std::sync::Arc::new(temm1e_distill::store::EigenTuneStore::new(&db_url).await?);
@@ -8944,6 +8454,195 @@ async fn handle_eigentune_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_shipped_prowl_blueprint_parses_with_real_agent_schema() {
+        let mut ids = std::collections::HashSet::new();
+        for (id, raw) in temm1e_tools::prowl_blueprints::WEB_BLUEPRINTS {
+            let blueprint = temm1e_agent::blueprint::parse_blueprint(raw)
+                .unwrap_or_else(|error| panic!("{id}: {error}"));
+            assert_eq!(&blueprint.id, id);
+            assert!(ids.insert(id));
+            assert!(!blueprint.trigger_patterns.is_empty());
+            assert!(!blueprint.semantic_tags.is_empty());
+        }
+    }
+
+    #[derive(Default)]
+    struct ConversationTestChannel {
+        sent: Mutex<Vec<temm1e_core::types::message::OutboundMessage>>,
+        fail_after_send: bool,
+    }
+    #[async_trait]
+    impl Channel for ConversationTestChannel {
+        fn name(&self) -> &str {
+            "conversation-fixture"
+        }
+        async fn start(
+            &mut self,
+        ) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+            Ok(())
+        }
+        async fn stop(
+            &mut self,
+        ) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+            Ok(())
+        }
+        async fn send_message(
+            &self,
+            msg: temm1e_core::types::message::OutboundMessage,
+        ) -> std::result::Result<(), temm1e_core::types::error::Temm1eError> {
+            self.sent.lock().await.push(msg);
+            if self.fail_after_send {
+                Err(temm1e_core::types::error::Temm1eError::Channel(
+                    "fixture failed after possible acceptance".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        fn file_transfer(&self) -> Option<&dyn temm1e_core::FileTransfer> {
+            None
+        }
+        fn is_allowed(&self, user: &str) -> bool {
+            user == "owner"
+        }
+        fn get_role(&self, user: &str) -> Option<temm1e_core::types::rbac::Role> {
+            (user == "owner").then_some(temm1e_core::types::rbac::Role::Admin)
+        }
+    }
+
+    #[test]
+    fn conversation_censor_wrapper_preserves_owner_authorization() {
+        let wrapped = SecretCensorChannel {
+            inner: Arc::new(ConversationTestChannel::default()),
+        };
+        assert_eq!(
+            wrapped.get_role("owner"),
+            Some(temm1e_core::types::rbac::Role::Admin)
+        );
+        assert_eq!(wrapped.get_role("stranger"), None);
+        assert!(!temm1e_core::types::rbac::Role::User
+            .is_command_allowed("/session-recover confirm digest"));
+        assert!(!temm1e_core::types::rbac::Role::User.is_command_allowed("/session-new"));
+        assert!(!temm1e_core::types::rbac::Role::User.is_command_allowed("/history-import"));
+    }
+
+    #[tokio::test]
+    async fn conversation_commit_failure_preserves_history_and_reports_recovery() {
+        use temm1e_agent::{conversation::ConversationScope, execution_journal::ExecutionJournal};
+        use temm1e_core::types::message::{ChatMessage, InboundMessage, MessageContent, Role};
+        let directory = tempfile::tempdir().unwrap();
+        let journal = Arc::new(
+            ExecutionJournal::open(&directory.path().join("executions.db"))
+                .await
+                .unwrap(),
+        );
+        let scope = ConversationScope::new(
+            directory.path(),
+            "fixture",
+            "shared",
+            "channel-admitted-members",
+        )
+        .unwrap();
+        let channel = ConversationTestChannel::default();
+        let msg = InboundMessage {
+            id: "inbound".into(),
+            channel: "fixture".into(),
+            chat_id: "shared".into(),
+            user_id: "owner".into(),
+            username: None,
+            text: Some("continue".into()),
+            attachments: vec![],
+            reply_to: None,
+            timestamp: chrono::Utc::now(),
+        };
+        let history = vec![ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text("Keep this constraint".into()),
+        }];
+        let mut first = Some(journal.acquire_conversation(&scope).await.unwrap());
+        assert!(commit_channel_conversation(&mut first, &history, &channel, &msg).await);
+        assert!(channel.sent.lock().await.is_empty());
+        let mut second = Some(journal.acquire_conversation(&scope).await.unwrap());
+        assert!(!commit_channel_conversation(&mut second, &[], &channel, &msg).await);
+        assert!(journal.acquire_conversation(&scope).await.is_err());
+        let sent = channel.sent.lock().await;
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].text.contains("Could not save this turn"));
+        assert!(sent[0].text.contains("/session-recover"));
+        let preview = journal.recover_conversation(&scope, None).await.unwrap();
+        assert!(preview.contains("1 checkpoint messages"));
+    }
+
+    #[tokio::test]
+    async fn conversation_final_delivery_is_lossless_and_ambiguous_sends_are_not_retried() {
+        use temm1e_agent::{conversation::ConversationScope, execution_journal::ExecutionJournal};
+        use temm1e_core::types::message::{ChatMessage, MessageContent, OutboundMessage, Role};
+        let directory = tempfile::tempdir().unwrap();
+        let journal = Arc::new(
+            ExecutionJournal::open(&directory.path().join("executions.db"))
+                .await
+                .unwrap(),
+        );
+        let scope =
+            ConversationScope::new(directory.path(), "conversation-fixture", "chat", "owner")
+                .unwrap();
+        let history = vec![ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text("Keep indentation.".into()),
+        }];
+        let text = format!(" {}", "🦀".repeat(2250));
+        let reply = OutboundMessage {
+            chat_id: "chat".into(),
+            text: text.clone(),
+            reply_to: Some("original".into()),
+            parse_mode: None,
+        };
+        let channel = ConversationTestChannel::default();
+        let mut turn = Some(journal.acquire_conversation(&scope).await.unwrap());
+        deliver_final_reply(&mut turn, &history, &channel, reply.clone())
+            .await
+            .unwrap();
+        let sent = channel.sent.lock().await;
+        assert_eq!(
+            sent.iter()
+                .map(|message| message.text.as_str())
+                .collect::<String>(),
+            text
+        );
+        assert!(sent.len() > 1);
+        assert_eq!(sent[0].reply_to.as_deref(), Some("original"));
+        assert!(sent[1..].iter().all(|message| message.reply_to.is_none()));
+        drop(sent);
+        assert_eq!(
+            journal.delivery_records(&scope).await.unwrap()[0].state,
+            "accepted_by_sink"
+        );
+        let mut turn = Some(journal.acquire_conversation(&scope).await.unwrap());
+        let mut empty = reply.clone();
+        empty.text.clear();
+        deliver_final_reply(&mut turn, &history, &channel, empty)
+            .await
+            .unwrap();
+        assert_eq!(journal.delivery_records(&scope).await.unwrap().len(), 1);
+        journal.new_conversation(&scope).await.unwrap();
+        let channel = ConversationTestChannel {
+            fail_after_send: true,
+            ..Default::default()
+        };
+        let mut turn = Some(journal.acquire_conversation(&scope).await.unwrap());
+        assert!(deliver_final_reply(&mut turn, &history, &channel, reply)
+            .await
+            .is_err());
+        assert_eq!(channel.sent.lock().await.len(), 1);
+        let records = journal.delivery_records(&scope).await.unwrap();
+        assert_eq!(records[0].state, "outcome_unknown");
+        assert!(journal
+            .resume_pending_delivery(&scope, &records[0].id)
+            .await
+            .is_err());
+    }
 
     // ── detect_api_key: auto-detect from prefix ──────────────────────
 

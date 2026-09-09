@@ -69,6 +69,17 @@ pub fn model_limits_with_custom(provider: &str, model: &str) -> (usize, usize) {
 }
 
 fn lookup(model: &str) -> Option<ModelLimits> {
+    // Current, source-dated facts supersede the legacy compatibility bank.
+    if let Some(limits) = super::model_catalog::CATALOG
+        .iter()
+        .find(|row| row.model == model || row.aliases.iter().any(|alias| alias == model))
+        .and_then(|row| row.limits)
+    {
+        return Some(ModelLimits {
+            context_window: limits.context_window,
+            max_output_tokens: limits.max_output_tokens,
+        });
+    }
     Some(match model {
         // ── Anthropic ─────────────────────────────────────────────────
         "claude-sonnet-4-6" | "claude-sonnet-4-20250514" | "claude-sonnet-4-0" => ModelLimits {
@@ -177,6 +188,12 @@ fn lookup(model: &str) -> Option<ModelLimits> {
         },
 
         // ── Z.ai (Zhipu AI) ──────────────────────────────────────────
+        // Z.ai model API guide, verified 2026-09-08:
+        // https://docs.z.ai/guides/vlm/glm-5.3-flash (1M context, 128K output).
+        "glm-5.3-flash" => ModelLimits {
+            context_window: 1_000_000,
+            max_output_tokens: 128_000,
+        },
         "glm-4.7-flash" => ModelLimits {
             context_window: 200_000,
             max_output_tokens: 131_072,
@@ -405,6 +422,7 @@ pub fn default_model(provider_name: &str) -> &'static str {
         "minimax" => "MiniMax-M2.5",
         "stepfun" => "step-3.5-flash",
         "zai" => "glm-4.7-flash",
+        "zai-coding-plan" => "glm-5.3-flash",
         "ollama" => "llama3.3",
         // LM Studio runs whatever local model the user downloaded — there is
         // no universal "default". This placeholder is a popular Qwen 3.5
@@ -419,12 +437,28 @@ pub fn default_model(provider_name: &str) -> &'static str {
     }
 }
 
-/// Known models for each provider (used by /model listing and onboarding).
+/// Suggested model IDs for each provider (used by /model listing and onboarding).
+/// These are not an account entitlement probe. Existing configured models and
+/// explicit custom registrations remain valid even when absent from this list.
+/// Modern additions have source-dated facts in `model_catalog.json`; inclusion
+/// does not promote an unaccepted adapter or silently change saved defaults.
 pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
     match provider {
-        "anthropic" => vec!["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
+        "anthropic" => vec![
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "claude-opus-5",
+            "claude-fable-5-1",
+            "claude-opus-4-6",
+            "claude-haiku-4-5",
+        ],
         "openai" => vec![
             "gpt-5.4",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-6-astra",
+            "gpt-5.5",
             "gpt-5.4-mini",
             "gpt-5.4-nano",
             "gpt-5.2",
@@ -435,21 +469,36 @@ pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
             "o4-mini",
             "gpt-3.5-turbo",
         ],
+        // Codex uses the native Responses adapter, not the API-key route.
+        // Account-specific availability is still decided by the provider.
+        "openai-codex" => vec![
+            "gpt-5.4",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-6-astra",
+            "gpt-5.5",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+        ],
         "gemini" => vec![
             "gemini-3-flash-preview",
+            "gemini-3.8-flash",
             "gemini-3.1-pro-preview",
             "gemini-3.1-flash-lite-preview",
             "gemini-2.5-flash",
             "gemini-2.5-pro",
         ],
-        "grok" | "xai" => vec!["grok-4-1-fast-non-reasoning", "grok-3"],
+        "grok" | "xai" => vec!["grok-4-1-fast-non-reasoning", "grok-4.6", "grok-3"],
         "openrouter" => vec![
             "anthropic/claude-sonnet-4-6",
             "openai/gpt-5.2",
             "google/gemini-3-flash-preview",
             "openrouter/hunter-alpha",
         ],
+        "zai-coding-plan" => vec!["glm-5.3-flash"],
         "zai" | "zhipu" => vec![
+            "glm-5.3-flash",
             "glm-5.1",
             "glm-5",
             "glm-4.7",
@@ -494,9 +543,67 @@ pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
     }
 }
 
-/// Quick vision check for model display.
+/// Provider-scoped image capability. Explicit custom registration takes
+/// precedence; omitted custom capability is unknown, never inherited by name.
+pub fn image_input_for(provider: &str, model: &str) -> Option<bool> {
+    let custom = crate::config::custom_models::lookup_custom_model(provider, model);
+    image_input_resolved(provider, model, custom.as_ref())
+}
+
+fn image_input_resolved(
+    provider: &str,
+    model: &str,
+    custom: Option<&crate::config::custom_models::CustomModel>,
+) -> Option<bool> {
+    if let Some(custom) = custom {
+        return custom.image_input;
+    }
+    let provider = match provider {
+        "openai-codex" => "openai",
+        "zai-coding-plan" => "zai",
+        other => other,
+    };
+    super::model_catalog::lookup(provider, model).and_then(|fact| fact.image_input)
+}
+
+pub fn image_input_badge(provider: &str, model: &str) -> &'static str {
+    match image_input_for(provider, model) {
+        Some(true) => " [vision]",
+        Some(false) => " [text only]",
+        None => " [image support unknown]",
+    }
+}
+
+/// Model-only display helper. This is known metadata, not account entitlement.
+/// Only documented namespace prefixes are stripped; arbitrary proxies stay unknown.
+pub fn known_image_input(model: &str) -> Option<bool> {
+    if let Some((prefix, id)) = model.split_once('/') {
+        let provider = match prefix {
+            "google" => "gemini",
+            "xai" => "grok",
+            "openai" | "anthropic" | "gemini" | "zai" => prefix,
+            _ => return None,
+        };
+        return super::model_catalog::lookup(provider, id).and_then(|row| row.image_input);
+    }
+    super::model_catalog::CATALOG
+        .iter()
+        .find(|row| row.model == model || row.aliases.iter().any(|alias| alias == model))
+        .and_then(|row| row.image_input)
+}
+
+/// UI badge: unknown is not proof of vision support.
 pub fn is_vision_model(model: &str) -> bool {
-    let m = model.to_lowercase();
+    known_image_input(model) == Some(true)
+}
+
+/// Legacy image forwarding policy for unverified models. This compatibility
+/// policy is not capability evidence and must not be used for UI badges.
+pub fn legacy_image_forwarding(model: &str) -> bool {
+    let m = model.rsplit('/').next().unwrap_or(model).to_lowercase();
+    if m == "glm-5.3-flash" {
+        return true;
+    }
     if m.starts_with("glm-") {
         return m.contains('v') && !m.starts_with("glm-5");
     }
@@ -515,6 +622,38 @@ pub fn is_vision_model(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_capabilities_do_not_leak_across_namespaces_or_custom_overrides() {
+        assert_eq!(known_image_input("openai/o3-mini"), Some(false));
+        assert_eq!(known_image_input("openai/gpt-4.1"), Some(true));
+        for model in ["anthropic/gpt-4.1", "proxy/gpt-4.1", "gpt-4.1-invented"] {
+            assert_eq!(known_image_input(model), None);
+            assert!(!is_vision_model(model));
+        }
+        assert_eq!(image_input_resolved("ollama", "gpt-4.1", None), None);
+        assert_eq!(
+            image_input_resolved("openai-codex", "gpt-4.1", None),
+            Some(true)
+        );
+        let mut custom = crate::config::custom_models::CustomModel {
+            provider: "openai".into(),
+            name: "gpt-4.1".into(),
+            image_input: None,
+            context_window: 8192,
+            max_output_tokens: 1024,
+            input_price_per_1m: 0.0,
+            output_price_per_1m: 0.0,
+            pricing_verified: false,
+        };
+        for capability in [None, Some(false), Some(true)] {
+            custom.image_input = capability;
+            assert_eq!(
+                image_input_resolved("openai", "gpt-4.1", Some(&custom)),
+                capability
+            );
+        }
+    }
 
     #[test]
     fn known_anthropic_models() {

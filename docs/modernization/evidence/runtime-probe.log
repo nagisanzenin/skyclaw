@@ -1,0 +1,13 @@
+   Compiling temm1e-agent v5.8.1 (<REPO>/crates/temm1e-agent)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.48s
+     Running `target/debug/examples/modernization_probe`
+shell_write_then_read_groups=[[0], [1]]
+browser_action_groups=[[0], [1]]
+wilson_29_of_30_99pct=0.768206
+wilson_30_of_30_99pct=0.818872
+sprt_at_cap_below_boundary=AcceptH1
+power_sample_n=1052
+entropy_missing_categories=1
+different_search_sort_same_cache_key=true
+shell_timeout_error=true; message=Command timed out after 1 seconds
+side_effect_after_timeout=true

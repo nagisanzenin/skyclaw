@@ -106,30 +106,33 @@ if ! curl -sSfL -o "${TMPDIR}/${ARTIFACT}" "$DOWNLOAD_URL"; then
     fi
 fi
 
-# Verify checksum
-info "Verifying checksum..."
-if curl -sSfL -o "${TMPDIR}/checksums.txt" "$CHECKSUM_URL" 2>/dev/null; then
-    EXPECTED=$(grep "${ARTIFACT}" "${TMPDIR}/checksums.txt" | awk '{print $1}')
-    if [ -n "$EXPECTED" ]; then
-        if command -v sha256sum >/dev/null 2>&1; then
-            ACTUAL=$(sha256sum "${TMPDIR}/${ARTIFACT}" | awk '{print $1}')
-        elif command -v shasum >/dev/null 2>&1; then
-            ACTUAL=$(shasum -a 256 "${TMPDIR}/${ARTIFACT}" | awk '{print $1}')
-        else
-            warn "No sha256sum or shasum found — skipping checksum verification"
-            ACTUAL="$EXPECTED"
-        fi
-
-        if [ "$EXPECTED" != "$ACTUAL" ]; then
-            error "Checksum mismatch! Expected: ${EXPECTED}, Got: ${ACTUAL}"
-        fi
-        info "Checksum verified"
+# BEGIN CHECKSUM VERIFIER (also exercised by scripts/test_installer_checksum.py)
+verify_checksum() {
+    VERIFY_FILE="$1"
+    VERIFY_MANIFEST="$2"
+    VERIFY_NAME="$3"
+    if command -v sha256sum >/dev/null 2>&1; then
+        VERIFY_ACTUAL=$(sha256sum "$VERIFY_FILE" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        VERIFY_ACTUAL=$(shasum -a 256 "$VERIFY_FILE" | awk '{print $1}')
     else
-        warn "No checksum found for ${ARTIFACT} — skipping verification"
+        error "Install sha256sum or shasum before installing Temm1e; checksum verification is required"
     fi
-else
-    warn "Could not download checksums — skipping verification"
-fi
+    # Match the complete filename, not a substring shared by fallback artifacts.
+    VERIFY_EXPECTED=$(awk -v name="$VERIFY_NAME" '$2 == name || $2 == "*" name { print $1 }' "$VERIFY_MANIFEST")
+    case "$VERIFY_EXPECTED" in
+        *[!0-9a-fA-F]*|'') error "Missing, malformed or duplicate checksum for ${VERIFY_NAME}" ;;
+    esac
+    [ "${#VERIFY_EXPECTED}" -eq 64 ] || error "Invalid SHA-256 checksum for ${VERIFY_NAME}"
+    VERIFY_EXPECTED=$(printf '%s' "$VERIFY_EXPECTED" | tr 'A-F' 'a-f')
+    [ "$VERIFY_EXPECTED" = "$VERIFY_ACTUAL" ] || error "Checksum mismatch for ${VERIFY_NAME}"
+    info "Checksum verified: ${VERIFY_NAME}"
+}
+# END CHECKSUM VERIFIER
+
+info "Verifying checksum..."
+curl -sSfL -o "${TMPDIR}/checksums.txt" "$CHECKSUM_URL" || error "Cannot download checksums; installation stopped"
+verify_checksum "${TMPDIR}/${ARTIFACT}" "${TMPDIR}/checksums.txt" "$ARTIFACT"
 
 # ────────────────────────────────────────────────────────────────────────
 # Linux desktop binary — runtime library check
@@ -215,23 +218,7 @@ if [ "$PLATFORM" = "linux" ]; then
                     if ! curl -sSfL -o "${TMPDIR}/${FALLBACK_NAME}" "$FALLBACK_URL"; then
                         error "Failed to download fallback binary from ${FALLBACK_URL}"
                     fi
-                    # Verify fallback checksum if the checksum file was fetched
-                    if [ -f "${TMPDIR}/checksums.txt" ]; then
-                        EXPECTED=$(grep "${FALLBACK_NAME}" "${TMPDIR}/checksums.txt" | awk '{print $1}')
-                        if [ -n "$EXPECTED" ]; then
-                            if command -v sha256sum >/dev/null 2>&1; then
-                                ACTUAL=$(sha256sum "${TMPDIR}/${FALLBACK_NAME}" | awk '{print $1}')
-                            elif command -v shasum >/dev/null 2>&1; then
-                                ACTUAL=$(shasum -a 256 "${TMPDIR}/${FALLBACK_NAME}" | awk '{print $1}')
-                            else
-                                ACTUAL="$EXPECTED"
-                            fi
-                            if [ "$EXPECTED" != "$ACTUAL" ]; then
-                                error "Fallback checksum mismatch! Expected ${EXPECTED}, got ${ACTUAL}"
-                            fi
-                            info "Fallback checksum verified"
-                        fi
-                    fi
+                    verify_checksum "${TMPDIR}/${FALLBACK_NAME}" "${TMPDIR}/checksums.txt" "$FALLBACK_NAME"
                     ARTIFACT="$FALLBACK_NAME"
                 fi
             fi

@@ -297,12 +297,9 @@ struct RunResult {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live Gemini benchmark: requires GEMINI_API_KEY and network; run explicitly with --ignored"]
 async fn live_ab_benchmark() {
-    let key = std::env::var("GEMINI_API_KEY");
-    if key.is_err() {
-        println!("GEMINI_API_KEY not set — skipping live benchmark");
-        return;
-    }
+    std::env::var("GEMINI_API_KEY").expect("explicit live benchmark requires GEMINI_API_KEY");
 
     let provider = make_provider().expect("Failed to create Gemini provider");
 
@@ -315,11 +312,7 @@ async fn live_ab_benchmark() {
         Ok((text, _, _, ms)) => {
             println!("API OK: '{}' ({}ms)\n", text.trim(), ms);
         }
-        Err(e) => {
-            println!("API FAILED: {e}");
-            println!("Skipping live benchmark.");
-            return;
-        }
+        Err(e) => panic!("Live benchmark connectivity failed: {e}"),
     }
 
     let bench_tasks = tasks();
@@ -485,12 +478,9 @@ async fn live_ab_benchmark() {
 /// a "think + act" loop where the agent reasons about each subtask
 /// then performs work.
 #[tokio::test]
+#[ignore = "live Gemini benchmark: requires GEMINI_API_KEY and network; run explicitly with --ignored"]
 async fn execution_time_benchmark() {
-    let key = std::env::var("GEMINI_API_KEY");
-    if key.is_err() {
-        println!("GEMINI_API_KEY not set — skipping execution time benchmark");
-        return;
-    }
+    std::env::var("GEMINI_API_KEY").expect("explicit live benchmark requires GEMINI_API_KEY");
 
     let provider = make_provider().expect("Failed to create Gemini provider");
 
@@ -502,10 +492,7 @@ async fn execution_time_benchmark() {
     // Verify connectivity
     match single_call(&*provider, "Say 'ok'").await {
         Ok(_) => println!("API OK\n"),
-        Err(e) => {
-            println!("API FAILED: {e} — skipping");
-            return;
-        }
+        Err(e) => panic!("Live benchmark connectivity failed: {e}"),
     }
 
     // The subtasks — each is an independent unit of work

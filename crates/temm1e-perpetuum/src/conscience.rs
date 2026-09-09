@@ -265,10 +265,7 @@ fn pick_sleep_work() -> SelfWorkKind {
 /// Read the cambium enabled flag from ~/.temm1e/cambium.toml.
 /// Defaults to `true` if the file is missing (matches the v4.7.0 default).
 fn read_cambium_enabled() -> bool {
-    let path = match dirs::home_dir() {
-        Some(h) => h.join(".temm1e").join("cambium.toml"),
-        None => return true,
-    };
+    let path = temm1e_core::config::data_dir().join("cambium.toml");
     match std::fs::read_to_string(&path) {
         Ok(s) => s
             .lines()

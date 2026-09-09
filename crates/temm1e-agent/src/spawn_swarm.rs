@@ -39,7 +39,7 @@ pub const IN_SWARM_ENV: &str = "TEMM1E_IN_SWARM";
 const WORKER_MAX_TURNS: usize = 10;
 const WORKER_MAX_CONTEXT_TOKENS: usize = 30_000;
 /// 0 = unlimited (matches post-P4 behaviour). Workers still respect parent
-/// BudgetTracker via the dispatcher's record_usage after swarm completes.
+/// BudgetTracker through per-call child accounting before further admission.
 const WORKER_MAX_TOOL_ROUNDS: usize = 0;
 /// Hard wall-clock cap per worker (5 minutes) — independent of parent agent.
 const WORKER_MAX_TASK_DURATION: u64 = 300;
@@ -70,6 +70,7 @@ struct SubtaskSpec {
 /// asynchronously after Hive + provider + memory + tools are all ready.
 /// When None, the tool returns a "swarm not available yet" message so the
 /// model knows to continue with its own tools.
+#[derive(Clone)]
 pub struct SpawnSwarmContext {
     pub hive: Arc<temm1e_hive::Hive>,
     pub provider: Arc<dyn Provider>,
@@ -77,10 +78,10 @@ pub struct SpawnSwarmContext {
     pub tools_template: Vec<Arc<dyn Tool>>,
     pub model: String,
     pub parent_budget: Arc<BudgetTracker>,
+    pub policy: crate::runtime_policy::RuntimePolicy,
     pub cancel: CancellationToken,
-    /// Parent's workspace_path. Workers use this so Witness Planner
-    /// Oaths ground against the user's real filesystem instead of the
-    /// process cwd. Defaults to "." if construction site passed None.
+    /// Legacy composition hint retained for source compatibility. The actual
+    /// invocation's ToolContext workspace is authoritative for each worker.
     pub workspace_path: std::path::PathBuf,
     /// Parent's Witness attachments. When Some, each JIT swarm worker
     /// is constructed with `.with_witness_attachments(...)` so Oath
@@ -99,11 +100,15 @@ pub type SwarmHandle = Arc<tokio::sync::RwLock<Option<SpawnSwarmContext>>>;
 /// (later in startup, after Hive is initialized).
 pub struct SpawnSwarmTool {
     handle: SwarmHandle,
+    resources: Option<temm1e_core::runtime_resources::RuntimeResources>,
 }
 
 impl SpawnSwarmTool {
     pub fn new(handle: SwarmHandle) -> Self {
-        Self { handle }
+        Self {
+            handle,
+            resources: None,
+        }
     }
 
     /// Convenience: create a fresh shared handle populated with nothing.
@@ -116,6 +121,16 @@ impl SpawnSwarmTool {
 
 #[async_trait]
 impl Tool for SpawnSwarmTool {
+    fn bind_runtime(
+        &self,
+        resources: &temm1e_core::runtime_resources::RuntimeResources,
+    ) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self {
+            handle: self.handle.clone(),
+            resources: Some(resources.clone()),
+        }))
+    }
+
     fn name(&self) -> &str {
         SPAWN_SWARM_TOOL_NAME
     }
@@ -189,7 +204,7 @@ impl Tool for SpawnSwarmTool {
     async fn execute(
         &self,
         input: ToolInput,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> Result<ToolOutput, Temm1eError> {
         let args: SpawnArgs = serde_json::from_value(input.arguments)
             .map_err(|e| Temm1eError::Tool(format!("spawn_swarm: invalid arguments: {e}")))?;
@@ -198,8 +213,8 @@ impl Tool for SpawnSwarmTool {
         // finished wiring yet, return a graceful fallback so the model can
         // continue with its own tools instead of crashing.
         let ctx_guard = self.handle.read().await;
-        let swarm_ctx = match ctx_guard.as_ref() {
-            Some(c) => c,
+        let mut swarm_ctx = match ctx_guard.as_ref() {
+            Some(c) => c.clone(),
             None => {
                 return Ok(ToolOutput {
                     content: "Swarm not available yet (Hive not initialized). \
@@ -209,6 +224,15 @@ impl Tool for SpawnSwarmTool {
                 });
             }
         };
+
+        drop(ctx_guard);
+        if let Some(resources) = &self.resources {
+            swarm_ctx.provider = resources.provider.clone();
+            swarm_ctx.memory = resources.memory.clone();
+            swarm_ctx.model = resources.model.clone();
+            swarm_ctx.parent_budget = resources.budget.clone();
+            swarm_ctx.policy = resources.policy.clone();
+        }
 
         // Writer-exclusion advisory check — reject obvious collisions up front
         // so the model can retry with a sequential decomposition.
@@ -231,8 +255,10 @@ impl Tool for SpawnSwarmTool {
         let tools_template = swarm_ctx.tools_template.clone();
         let model = swarm_ctx.model.clone();
         let witness_attachments_for_closure = swarm_ctx.witness_attachments.clone();
-        let workspace_for_closure = swarm_ctx.workspace_path.clone();
+        let parent_context = ctx.clone();
         let shared_context = args.shared_context.clone();
+        let parent_budget = swarm_ctx.parent_budget.clone();
+        let policy = swarm_ctx.policy.clone();
 
         let execute_fn = Arc::new(
             move |task: temm1e_hive::types::HiveTask, dep_results: Vec<(String, String)>| {
@@ -242,7 +268,9 @@ impl Tool for SpawnSwarmTool {
                 let model = model.clone();
                 let shared_context = shared_context.clone();
                 let witness_for_worker = witness_attachments_for_closure.clone();
-                let workspace_for_worker = workspace_for_closure.clone();
+                let parent_context = parent_context.clone();
+                let worker_budget = Arc::new(BudgetTracker::child(parent_budget.clone()));
+                let policy = policy.clone();
                 async move {
                     // Tool filter: strip spawn_swarm so the worker can't recurse.
                     let filter: crate::runtime::ToolFilter =
@@ -260,6 +288,8 @@ impl Tool for SpawnSwarmTool {
                         WORKER_MAX_TASK_DURATION,
                         0.0,
                     )
+                    .with_budget(worker_budget)
+                    .with_policy(&policy)
                     .with_tool_filter(filter)
                     .with_witness_attachments(witness_for_worker.as_ref());
 
@@ -271,29 +301,18 @@ impl Tool for SpawnSwarmTool {
                         task.description,
                     );
 
+                    let mut session = parent_context
+                        .delegated_session("jit-swarm", format!("jit-swarm-{}", task.id));
                     let inbound = InboundMessage {
                         id: uuid::Uuid::new_v4().to_string(),
-                        chat_id: format!("jit-swarm-{}", task.id),
-                        user_id: "jit-swarm".into(),
+                        chat_id: session.chat_id.clone(),
+                        user_id: session.user_id.clone(),
                         username: None,
-                        channel: "jit-swarm".into(),
+                        channel: session.channel.clone(),
                         text: Some(initial_msg),
                         attachments: vec![],
                         reply_to: None,
                         timestamp: chrono::Utc::now(),
-                    };
-
-                    let mut session = temm1e_core::types::session::SessionContext {
-                        session_id: format!("jit-swarm-{}", task.id),
-                        user_id: "jit-swarm".into(),
-                        channel: "jit-swarm".into(),
-                        chat_id: format!("jit-swarm-{}", task.id),
-                        role: temm1e_core::types::rbac::Role::Admin,
-                        history: vec![],
-                        workspace_path: workspace_for_worker.clone(),
-                        read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
-                            std::collections::HashSet::new(),
-                        )),
                     };
 
                     match worker
@@ -313,16 +332,23 @@ impl Tool for SpawnSwarmTool {
                                 error: None,
                             })
                         }
-                        Err(e) => Ok(temm1e_hive::worker::TaskResult {
-                            summary: String::new(),
-                            tokens_used: 0,
-                            input_tokens: 0,
-                            output_tokens: 0,
-                            cost_usd: 0.0,
-                            artifacts: vec![],
-                            success: false,
-                            error: Some(e.to_string()),
-                        }),
+                        Err(e) => {
+                            let snap = worker.budget_snapshot();
+                            Ok(temm1e_hive::worker::TaskResult {
+                                summary: String::new(),
+                                tokens_used: snap
+                                    .input_tokens
+                                    .saturating_add(snap.output_tokens)
+                                    .min(u64::from(u32::MAX))
+                                    as u32,
+                                input_tokens: snap.input_tokens,
+                                output_tokens: snap.output_tokens,
+                                cost_usd: snap.cost_usd,
+                                artifacts: vec![],
+                                success: false,
+                                error: Some(e.to_string()),
+                            })
+                        }
                     }
                 }
             },
@@ -334,7 +360,7 @@ impl Tool for SpawnSwarmTool {
         if args.subtasks.is_some() {
             info!("spawn_swarm: caller provided subtasks, but Queen still runs (v1 behaviour)");
         }
-        let order_id = match Self::decompose_with_provider(swarm_ctx, &args.goal).await? {
+        let order_id = match Self::decompose_with_provider(&swarm_ctx, &args.goal).await? {
             Some(oid) => oid,
             None => {
                 return Ok(ToolOutput {
@@ -356,15 +382,8 @@ impl Tool for SpawnSwarmTool {
             })
             .await?;
 
-        // Record swarm cost against the PARENT's budget tracker — workers
-        // had their own isolated trackers, so no double-count.
-        if swarm_result.total_input_tokens > 0 || swarm_result.total_output_tokens > 0 {
-            swarm_ctx.parent_budget.record_usage(
-                swarm_result.total_input_tokens.min(u32::MAX as u64) as u32,
-                swarm_result.total_output_tokens.min(u32::MAX as u64) as u32,
-                swarm_result.total_cost_usd,
-            );
-        }
+        // Workers now propagate typed usage/unknownness to the parent per
+        // call. Re-adding the final scalar aggregate here would double-charge.
 
         info!(
             order_id = %order_id,
@@ -401,7 +420,10 @@ impl SpawnSwarmTool {
         swarm_ctx: &SpawnSwarmContext,
         goal: &str,
     ) -> Result<Option<String>, Temm1eError> {
-        let provider = swarm_ctx.provider.clone();
+        let provider: Arc<dyn Provider> = Arc::new(crate::metered_provider::MeteredProvider::new(
+            swarm_ctx.provider.clone(),
+            swarm_ctx.parent_budget.clone(),
+        ));
         let model = swarm_ctx.model.clone();
         let provider_call = move |prompt: String| {
             let provider = provider.clone();
@@ -434,8 +456,8 @@ impl SpawnSwarmTool {
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        let total_tokens =
-                            (resp.usage.input_tokens + resp.usage.output_tokens) as u64;
+                        let total_tokens = u64::from(resp.usage.input_tokens)
+                            + u64::from(resp.usage.output_tokens);
                         Ok((text, total_tokens))
                     }
                     Err(e) => Err(e),
@@ -571,5 +593,186 @@ mod tests {
         assert!(text.contains("task1"));
         assert!(text.contains("task2"));
         assert!(text.contains("done"));
+    }
+    struct ContextProbe {
+        name: &'static str,
+        calls: std::sync::atomic::AtomicUsize,
+        seen: tokio::sync::Mutex<Option<ToolContext>>,
+    }
+    #[async_trait::async_trait]
+    impl Tool for ContextProbe {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "local identity test probe"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object","properties":{}})
+        }
+        fn declarations(&self) -> ToolDeclarations {
+            ToolDeclarations {
+                file_access: vec![],
+                network_access: vec![],
+                shell_access: false,
+            }
+        }
+        async fn execute(
+            &self,
+            _: ToolInput,
+            context: &ToolContext,
+        ) -> Result<ToolOutput, Temm1eError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *self.seen.lock().await = Some(context.clone());
+            let content =
+                tokio::fs::read_to_string(context.workspace_path.join("caller-marker.txt"))
+                    .await
+                    .map_err(|e| Temm1eError::Tool(e.to_string()))?;
+            Ok(ToolOutput {
+                content,
+                is_error: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn real_jit_worker_inherits_user_role_and_invocation_workspace() {
+        use temm1e_test_utils::{MockMemory, QueuedMockProvider};
+        for bind_current in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let workspace = directory.path().join("caller-workspace");
+            std::fs::create_dir(&workspace).unwrap();
+            std::fs::write(workspace.join("caller-marker.txt"), "caller-owned-marker").unwrap();
+            let config = temm1e_hive::config::HiveConfig {
+                min_workers: 1,
+                max_workers: 1,
+                swarm_threshold_speedup: 1.0,
+                queen_cost_ratio_max: 1.0,
+                ..Default::default()
+            };
+            let hive = Arc::new(
+                temm1e_hive::Hive::new(
+                    &config,
+                    &format!(
+                        "sqlite://{}?mode=rwc",
+                        directory.path().join("hive.db").display()
+                    ),
+                )
+                .await
+                .unwrap(),
+            );
+            let provider = Arc::new(QueuedMockProvider::with_responses(vec![
+                QueuedMockProvider::text_response(
+                    r#"{"tasks":[{"id":"t1","description":"Inspect caller identity","dependencies":[],"context_tags":[],"estimated_tokens":2000},{"id":"t2","description":"Inspect again","dependencies":["t1"],"context_tags":[],"estimated_tokens":2000}],"single_agent_recommended":false,"reasoning":"fixture"}"#,
+                ),
+                QueuedMockProvider::tool_use_response(
+                    "forged-shell",
+                    "shell",
+                    serde_json::json!({}),
+                ),
+                QueuedMockProvider::tool_use_response(
+                    "inspect-context",
+                    "identity_probe",
+                    serde_json::json!({}),
+                ),
+                QueuedMockProvider::text_response("worker returned"),
+                QueuedMockProvider::tool_use_response(
+                    "inspect-second-context",
+                    "identity_probe",
+                    serde_json::json!({}),
+                ),
+                QueuedMockProvider::text_response("second worker returned"),
+            ]));
+            let probe = Arc::new(ContextProbe {
+                name: "identity_probe",
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                seen: tokio::sync::Mutex::new(None),
+            });
+            let shell = Arc::new(ContextProbe {
+                name: "shell",
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                seen: tokio::sync::Mutex::new(None),
+            });
+            let mut policy_config = temm1e_core::types::config::Temm1eConfig::default();
+            policy_config.agent.v2_optimizations = false;
+            policy_config.memory.engram.enabled = false;
+            let obsolete = Arc::new(QueuedMockProvider::with_responses(vec![]));
+            let obsolete_budget = Arc::new(BudgetTracker::new(0.0));
+            let current_budget = Arc::new(BudgetTracker::new(0.0));
+            let handle = Arc::new(tokio::sync::RwLock::new(Some(SpawnSwarmContext {
+                hive,
+                provider: if bind_current {
+                    obsolete.clone()
+                } else {
+                    provider.clone()
+                },
+                memory: Arc::new(MockMemory::new()),
+                tools_template: vec![probe.clone(), shell.clone()],
+                model: if bind_current {
+                    "obsolete".into()
+                } else {
+                    "fixture".into()
+                },
+                parent_budget: obsolete_budget.clone(),
+                policy: crate::runtime_policy::RuntimePolicy::from_config(&policy_config),
+                cancel: CancellationToken::new(),
+                workspace_path: directory.path().join("wrong-composition-workspace"),
+                witness_attachments: None,
+            })));
+            let template = SpawnSwarmTool::new(handle.clone());
+            let tool: Arc<dyn Tool> = if bind_current {
+                template
+                    .bind_runtime(&temm1e_core::runtime_resources::RuntimeResources {
+                        provider: provider.clone(),
+                        memory: Arc::new(MockMemory::new()),
+                        budget: current_budget.clone(),
+                        model: "current-model".into(),
+                        pricing: crate::budget::ModelPricing::Unknown,
+                        max_context_tokens: 30000,
+                        policy: crate::runtime_policy::RuntimePolicy::from_config(&policy_config),
+                    })
+                    .unwrap()
+            } else {
+                Arc::new(template)
+            };
+            let context = ToolContext {
+                user_id: "caller-alice".into(),
+                role: temm1e_core::types::rbac::Role::User,
+                channel: "telegram".into(),
+                workspace_path: workspace.clone(),
+                session_id: "parent-session".into(),
+                chat_id: "parent-room".into(),
+                read_tracker: None,
+            };
+            let result = tokio::time::timeout(std::time::Duration::from_secs(10), tool.execute(ToolInput {
+            name: SPAWN_SWARM_TOOL_NAME.into(), arguments: serde_json::json!({"goal":"inspect identity", "shared_context":"local fixture"}),
+        }, &context)).await.unwrap().unwrap();
+            assert!(!result.is_error, "{}", result.content);
+            assert_eq!(shell.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(probe.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+            let seen = probe.seen.lock().await;
+            let seen = seen.as_ref().unwrap();
+            assert_eq!(seen.user_id, "caller-alice");
+            assert_eq!(seen.role, temm1e_core::types::rbac::Role::User);
+            assert_eq!(seen.workspace_path, workspace);
+            assert_ne!(seen.chat_id, context.chat_id);
+            if bind_current {
+                assert_eq!(obsolete.calls().await, 0);
+                assert_eq!(obsolete_budget.snapshot().recorded_calls, 0);
+                assert!(current_budget.snapshot().recorded_calls > 0);
+                assert!(provider
+                    .captured_requests
+                    .lock()
+                    .await
+                    .iter()
+                    .all(|r| r.model == "current-model"));
+                let original = handle.read().await;
+                assert_eq!(
+                    original.as_ref().unwrap().model,
+                    "obsolete",
+                    "binding mutated shared startup state"
+                );
+            }
+        }
     }
 }

@@ -336,3 +336,396 @@ async fn watch_channel_with_multiple_messages() {
         );
     }
 }
+
+#[tokio::test]
+async fn classification_usage_survives_invalid_json_without_doubling_valid_json() {
+    use temm1e_test_utils::QueuedMockProvider;
+    for classifier_text in [
+        "invalid classifier JSON",
+        r#"{"category":"chat","chat_text":"","difficulty":"simple"}"#,
+    ] {
+        let provider = Arc::new(QueuedMockProvider::with_responses(vec![
+            QueuedMockProvider::text_response(classifier_text),
+            QueuedMockProvider::text_response("final fixture reply"),
+        ]));
+        let runtime = AgentRuntime::new(
+            provider.clone(),
+            Arc::new(MockMemory::new()),
+            vec![],
+            "model".into(),
+            None,
+        )
+        .with_v2_optimizations(true);
+        let (reply, usage) = runtime
+            .process_message(
+                &make_inbound_msg("Hello there"),
+                &mut make_session(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.text, "final fixture reply");
+        assert_eq!(provider.calls().await, 2);
+        assert_eq!(usage.api_calls, 2);
+        assert_eq!((usage.input_tokens, usage.output_tokens), (20, 40));
+        let recorded = runtime.budget_snapshot();
+        assert_eq!(recorded.recorded_calls, 2);
+        assert_eq!((recorded.input_tokens, recorded.output_tokens), (20, 40));
+        assert_eq!(recorded.unpriced_calls, 2); // mock provider has no verified tariff
+    }
+}
+
+struct PendingClassifier {
+    started: tokio::sync::Semaphore,
+    calls: std::sync::atomic::AtomicUsize,
+}
+#[async_trait::async_trait]
+impl temm1e_core::Provider for PendingClassifier {
+    fn name(&self) -> &str {
+        "openai"
+    }
+    async fn complete(
+        &self,
+        _: CompletionRequest,
+    ) -> Result<CompletionResponse, temm1e_core::types::error::Temm1eError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.started.add_permits(1);
+        std::future::pending().await
+    }
+    async fn stream(
+        &self,
+        _: CompletionRequest,
+    ) -> Result<
+        futures::stream::BoxStream<'_, Result<StreamChunk, temm1e_core::types::error::Temm1eError>>,
+        temm1e_core::types::error::Temm1eError,
+    > {
+        panic!("classifier must use complete")
+    }
+    async fn health_check(&self) -> Result<bool, temm1e_core::types::error::Temm1eError> {
+        Ok(true)
+    }
+    async fn list_models(&self) -> Result<Vec<String>, temm1e_core::types::error::Temm1eError> {
+        Ok(vec![])
+    }
+}
+
+#[tokio::test]
+async fn canceled_or_deadline_limited_classifier_records_unknown_once_and_blocks_further_spend() {
+    for use_deadline in [false, true] {
+        let provider = Arc::new(PendingClassifier {
+            started: tokio::sync::Semaphore::new(0),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let runtime = Arc::new(
+            AgentRuntime::with_limits(
+                provider.clone(),
+                Arc::new(MockMemory::new()),
+                vec![],
+                "gpt-4.1".into(),
+                None,
+                10,
+                32768,
+                8,
+                if use_deadline { 1 } else { 60 },
+                1.0,
+            )
+            .with_v2_optimizations(true),
+        );
+        let cancel = CancellationToken::new();
+        let task_runtime = runtime.clone();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            task_runtime
+                .process_message(
+                    &make_inbound_msg("Hello"),
+                    &mut make_session(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(task_cancel),
+                )
+                .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            provider.started.acquire(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+        if !use_deadline {
+            cancel.cancel();
+        }
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_err());
+        let usage = runtime.budget_snapshot();
+        assert_eq!(usage.recorded_calls, 1);
+        assert_eq!(usage.unpriced_calls, 1);
+        assert_eq!((usage.input_tokens, usage.output_tokens), (0, 0));
+        let retry = runtime
+            .process_message(
+                &make_inbound_msg("Try again"),
+                &mut make_session(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+        assert!(retry
+            .unwrap_err()
+            .to_string()
+            .contains("unknown pricing or missing usage"));
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(runtime.budget_snapshot().recorded_calls, 1);
+    }
+}
+
+/// Only the second call is the optional curator. The first is a foreground
+/// response with a known tariff, so canceled/error usage stays distinguishable.
+struct CuratorFixture {
+    calls: std::sync::atomic::AtomicUsize,
+    started: tokio::sync::Semaphore,
+    mode: &'static str,
+}
+#[async_trait::async_trait]
+impl temm1e_core::Provider for CuratorFixture {
+    fn name(&self) -> &str {
+        "openai"
+    }
+    async fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, temm1e_core::types::error::Temm1eError> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let text = if call == 0 {
+            "Foreground reply"
+        } else {
+            assert_eq!(call, 1, "unexpected extra provider call");
+            assert!(request
+                .system
+                .as_deref()
+                .unwrap_or_default()
+                .contains("long-term-memory curator"));
+            self.started.add_permits(1);
+            match self.mode {
+                "error" => {
+                    return Err(temm1e_core::types::error::Temm1eError::Provider(
+                        "synthetic curator failure".into(),
+                    ))
+                }
+                "pending" => return std::future::pending().await,
+                "valid" => r#"{"facts":[]}"#,
+                _ => "malformed curator JSON",
+            }
+        };
+        let mut response = temm1e_test_utils::QueuedMockProvider::text_response(text);
+        response.usage.totals_reported = Some(true);
+        Ok(response)
+    }
+    async fn stream(
+        &self,
+        _: CompletionRequest,
+    ) -> Result<
+        futures::stream::BoxStream<'_, Result<StreamChunk, temm1e_core::types::error::Temm1eError>>,
+        temm1e_core::types::error::Temm1eError,
+    > {
+        unreachable!("fixture uses complete")
+    }
+    async fn health_check(&self) -> Result<bool, temm1e_core::types::error::Temm1eError> {
+        Ok(true)
+    }
+    async fn list_models(&self) -> Result<Vec<String>, temm1e_core::types::error::Temm1eError> {
+        Ok(vec![])
+    }
+}
+
+#[tokio::test]
+async fn optional_curator_charges_returned_usage_before_parsing_and_unknown_on_error_or_cancel() {
+    for mode in ["valid", "malformed", "error", "pending"] {
+        let provider = Arc::new(CuratorFixture {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            started: tokio::sync::Semaphore::new(0),
+            mode,
+        });
+        let runtime = AgentRuntime::new(
+            provider.clone(),
+            Arc::new(
+                temm1e_memory::SqliteMemory::new("sqlite::memory:")
+                    .await
+                    .unwrap(),
+            ),
+            vec![],
+            "gpt-4o".into(),
+            None,
+        )
+        .with_v2_optimizations(false);
+        let (reply, foreground) = runtime
+            .process_message(
+                &make_inbound_msg(
+                    "I prefer Vietnamese when we discuss my ordinary project conversations.",
+                ),
+                &mut make_session(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.text, "Foreground reply");
+        assert_eq!(
+            foreground.api_calls, 1,
+            "background usage is not retroactively added to returned foreground usage"
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            provider.started.acquire(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+        let drained = runtime
+            .shutdown_background(std::time::Duration::from_millis(20))
+            .await;
+        assert_eq!(drained, mode != "pending");
+        let budget = runtime.budget_snapshot();
+        assert_eq!(budget.recorded_calls, 2, "mode={mode}");
+        let incomplete = mode == "error" || mode == "pending";
+        assert_eq!(budget.unpriced_calls, u64::from(incomplete), "mode={mode}");
+        assert_eq!(budget.input_tokens, if incomplete { 10 } else { 20 });
+        assert_eq!(budget.output_tokens, if incomplete { 20 } else { 40 });
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+}
+
+#[tokio::test]
+async fn unsupported_memory_backend_does_not_schedule_paid_curator_work() {
+    let provider = Arc::new(temm1e_test_utils::QueuedMockProvider::with_responses(vec![
+        temm1e_test_utils::QueuedMockProvider::text_response("foreground only"),
+    ]));
+    let runtime = AgentRuntime::new(
+        provider.clone(),
+        Arc::new(MockMemory::new()),
+        vec![],
+        "fixture".into(),
+        None,
+    )
+    .with_v2_optimizations(false);
+    runtime.process_message(&make_inbound_msg("This ordinary conversation is long enough to trigger the default substantive curator."),
+        &mut make_session(), None, None, None, None, None).await.unwrap();
+    assert!(
+        runtime
+            .shutdown_background(std::time::Duration::from_secs(1))
+            .await
+    );
+    assert_eq!(provider.calls().await, 1);
+    assert_eq!(runtime.budget_snapshot().recorded_calls, 1);
+}
+
+#[tokio::test]
+async fn model_selection_preserves_runtime_owner_and_raw_history_without_native_replay() {
+    use temm1e_test_utils::QueuedMockProvider;
+    let mut first = QueuedMockProvider::text_response("first answer");
+    first.content.push(ContentPart::ProviderState {
+        provider: "fixture-owner".into(),
+        model: "old-model".into(),
+        response_id: "old-response".into(),
+        context_fingerprint: None,
+        output: vec![serde_json::json!({"opaque":"must stay raw"})],
+    });
+    let provider = Arc::new(QueuedMockProvider::with_responses(vec![
+        first,
+        QueuedMockProvider::text_response("second answer"),
+    ]));
+    let owner = Arc::new(temm1e_agent::BudgetTracker::new(0.0));
+    let memory = Arc::new(MockMemory::new());
+    let mut runtime = AgentRuntime::new(
+        provider.clone(),
+        memory.clone(),
+        vec![],
+        "old-model".into(),
+        None,
+    )
+    .with_budget(owner.clone())
+    .with_v2_optimizations(false)
+    .with_self_audit_enabled(false);
+    let directory = tempfile::tempdir().unwrap();
+    let mut session = make_session();
+    session.workspace_path = directory.path().into();
+    session.history.push(ChatMessage {
+        role: Role::User,
+        content: MessageContent::Text("prior turn".into()),
+    });
+    session.history.push(ChatMessage {
+        role: Role::Assistant,
+        content: MessageContent::Parts(vec![ContentPart::ProviderState {
+            provider: "fixture-owner".into(),
+            model: "old-model".into(),
+            response_id: "opaque-only".into(),
+            context_fingerprint: None,
+            output: vec![],
+        }]),
+    });
+    runtime
+        .process_message(
+            &make_inbound_msg("hello"),
+            &mut session,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let before = serde_json::to_string(&session.history).unwrap();
+    assert!(before.contains("must stay raw"));
+    assert!(runtime.select_model("bad model").is_err());
+    assert_eq!(runtime.model(), "old-model");
+    runtime.select_model("new-model").unwrap();
+    assert!(Arc::ptr_eq(&runtime.budget(), &owner));
+    assert_eq!(
+        provider.calls().await,
+        1,
+        "model selection performed a provider call"
+    );
+    assert_eq!(serde_json::to_string(&session.history).unwrap(), before);
+    runtime
+        .process_message(
+            &make_inbound_msg("continue"),
+            &mut session,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let requests = provider.captured_requests.lock().await;
+    assert_eq!(requests[0].model, "old-model");
+    assert_eq!(requests[1].model, "new-model");
+    assert!(requests[1].messages.iter().all(
+        |message| !matches!(&message.content, MessageContent::Parts(parts) if parts.is_empty())
+    ));
+    assert!(!serde_json::to_string(&requests[1])
+        .unwrap()
+        .contains("must stay raw"));
+    assert!(serde_json::to_string(&session.history)
+        .unwrap()
+        .contains("must stay raw"));
+    assert_eq!(owner.snapshot().recorded_calls, 2);
+}

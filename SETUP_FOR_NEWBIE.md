@@ -35,7 +35,7 @@ Did it work? Let's check!
 
 ```bash
 rustc --version
-# Should print something like: rustc 1.82.0 (...)
+# Should print something like: rustc 1.91.1 (...)
 ```
 
 If you see a version number, NICE. Rust is ready.

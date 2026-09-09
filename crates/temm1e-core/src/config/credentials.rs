@@ -32,7 +32,7 @@ pub struct CredentialsFile {
     pub providers: Vec<CredentialsProvider>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CredentialsProvider {
     pub name: String,
     #[serde(default)]
@@ -43,7 +43,7 @@ pub struct CredentialsProvider {
 }
 
 /// Result of credential detection from user input.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DetectedCredential {
     pub provider: &'static str,
     pub api_key: String,
@@ -56,14 +56,30 @@ pub struct DetectedCredential {
     pub model: Option<String>,
 }
 
+impl std::fmt::Debug for CredentialsProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialsProvider")
+            .field("name", &self.name)
+            .field("model", &self.model)
+            .field("key_count", &self.keys.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for DetectedCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DetectedCredential")
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .finish_non_exhaustive()
+    }
+}
+
 // ── Path Helpers ────────────────────────────────────────────────────
 
 /// Returns `~/.temm1e/credentials.toml`.
 pub fn credentials_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".temm1e")
-        .join("credentials.toml")
+    crate::config::data_dir().join("credentials.toml")
 }
 
 // ── Placeholder Detection ───────────────────────────────────────────
@@ -173,6 +189,7 @@ pub fn normalize_provider_name(name: &str) -> Option<&'static str> {
         "minimax" => Some("minimax"),
         "stepfun" | "step" => Some("stepfun"),
         "zai" | "zhipu" | "glm" => Some("zai"),
+        "zai-coding-plan" | "glm-coding-plan" => Some("zai-coding-plan"),
         "ollama" => Some("ollama"),
         "lmstudio" | "lm-studio" | "lm_studio" => Some("lmstudio"),
         _ => None,
@@ -216,7 +233,7 @@ pub fn detect_api_key(text: &str) -> Option<DetectedCredential> {
             match p.as_str() {
                 "anthropic" | "openai" | "gemini" | "grok" | "xai" | "openrouter" | "minimax"
                 | "stepfun" | "step" | "zai" | "zhipu" | "ollama" | "lmstudio" | "lm-studio"
-                | "github" | "gh"
+                | "zai-coding-plan" | "glm-coding-plan" | "github" | "gh"
                     if key.len() >= 8 && !is_placeholder_key(key) =>
                 {
                     return Some(DetectedCredential {
@@ -229,6 +246,7 @@ pub fn detect_api_key(text: &str) -> Option<DetectedCredential> {
                             "minimax" => "minimax",
                             "stepfun" | "step" => "stepfun",
                             "zai" | "zhipu" => "zai",
+                            "zai-coding-plan" | "glm-coding-plan" => "zai-coding-plan",
                             "ollama" => "ollama",
                             "lmstudio" | "lm-studio" => "lmstudio",
                             "github" | "gh" => "github",
@@ -417,10 +435,7 @@ pub async fn save_credentials(
     model: &str,
     custom_base_url: Option<&str>,
 ) -> Result<(), Temm1eError> {
-    let dir = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".temm1e");
-    tokio::fs::create_dir_all(&dir).await?;
+    let dir = crate::config::data_dir();
     let path = dir.join("credentials.toml");
 
     let mut creds = load_credentials_file().unwrap_or_default();
@@ -452,7 +467,7 @@ pub async fn save_credentials(
 
     let content = toml::to_string_pretty(&creds)
         .map_err(|e| Temm1eError::Config(format!("Failed to serialize credentials: {e}")))?;
-    tokio::fs::write(&path, content).await?;
+    crate::private_file::write_private_atomic(&path, content.as_bytes())?;
     tracing::info!(path = %path.display(), provider = %provider_name, "Credentials saved");
     Ok(())
 }
@@ -531,6 +546,19 @@ pub fn load_active_provider_keys() -> Option<(String, Vec<String>, String, Optio
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn credential_debug_does_not_expose_secret_or_endpoint() {
+        let credential = super::CredentialsProvider {
+            name: "test".into(),
+            keys: vec!["private-api-secret".into()],
+            model: "test".into(),
+            base_url: Some("https://secret-endpoint.invalid".into()),
+        };
+        let rendered = format!("{credential:?}");
+        assert!(!rendered.contains("private-api-secret"));
+        assert!(!rendered.contains("secret-endpoint"));
+    }
     use super::*;
 
     #[test]

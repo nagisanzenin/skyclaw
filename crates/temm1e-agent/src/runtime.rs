@@ -1,7 +1,6 @@
 //! AgentRuntime — main agent loop that processes messages through the
 //! provider, executing tool calls in a loop until a final text reply.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,13 +11,42 @@ use tokio_util::sync::CancellationToken;
 use base64::Engine;
 use temm1e_core::types::error::Temm1eError;
 use temm1e_core::types::message::{
-    ChatMessage, ContentPart, InboundMessage, MessageContent, OutboundMessage, ParseMode, Role,
-    TurnUsage,
+    ChatMessage, CompletionRequest, ContentPart, InboundMessage, MessageContent, OutboundMessage,
+    ParseMode, Role, TurnUsage,
 };
 use temm1e_core::types::model_registry;
 use temm1e_core::types::session::SessionContext;
 use temm1e_core::{Memory, Provider, Tool};
 use tracing::{debug, info, warn};
+
+/// Preserve incomplete tool calls as uncertainty, instead of silently stripping
+/// their intent from history or claiming their effects were rolled back.
+pub(crate) fn record_interrupted_tool_results(history: &mut Vec<ChatMessage>) {
+    let mut pending: Vec<String> = Vec::new();
+    for message in history.iter() {
+        if let MessageContent::Parts(parts) = &message.content {
+            for part in parts {
+                match part {
+                    ContentPart::ToolUse { id, .. } => pending.push(id.clone()),
+                    ContentPart::ToolResult { tool_use_id, .. } => {
+                        pending.retain(|id| id != tool_use_id)
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if !pending.is_empty() {
+        history.push(ChatMessage {
+            role: Role::Tool,
+            content: MessageContent::Parts(pending.into_iter().map(|id| ContentPart::ToolResult {
+                tool_use_id: id,
+                content: "Interrupted before a confirmed result was recorded. This call may not have started, or its effects may already have occurred. Outcome unknown: inspect external state before retrying.".into(),
+                is_error: true,
+            }).collect()),
+        });
+    }
+}
 
 /// Image MIME types that vision-capable models can process.
 const IMAGE_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
@@ -80,7 +108,6 @@ use crate::agent_task_status::{AgentTaskPhase, AgentTaskStatus};
 use crate::budget::{self, BudgetTracker, ModelPricing};
 use crate::circuit_breaker::CircuitBreaker;
 use crate::context::build_context;
-use crate::done_criteria::{self, DoneCriteria};
 use crate::executor::execute_tool;
 use crate::learning;
 use crate::prompted_tool_calling::{self, PromptedToolResult};
@@ -194,18 +221,22 @@ pub fn derive_outcome_difficulty(tool_rounds: usize) -> &'static str {
 }
 
 /// Shared pending-message queue (same type as temm1e_tools::PendingMessages).
-pub type PendingMessages = Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>;
+pub type PendingMessages = temm1e_core::types::message::PendingMessages;
 
 /// The core agent runtime. Holds references to the AI provider, memory backend,
 /// and registered tools.
 pub struct AgentRuntime {
+    /// Capability snapshot resolved with provider/custom registration at construction.
+    image_input: Option<bool>,
     provider: Arc<dyn Provider>,
+    background: crate::background::BackgroundTasks,
     memory: Arc<dyn Memory>,
     tools: Vec<Arc<dyn Tool>>,
     model: String,
     system_prompt: Option<String>,
     max_turns: usize,
     max_context_tokens: usize,
+    configured_context_tokens: usize,
     max_tool_rounds: usize,
     max_task_duration: Duration,
     circuit_breaker: CircuitBreaker,
@@ -215,6 +246,10 @@ pub struct AgentRuntime {
     max_consecutive_failures: usize,
     /// Optional persistent task queue for checkpointing (None = no persistence).
     task_queue: Option<Arc<TaskQueue>>,
+    durable_execution: bool,
+    journal: tokio::sync::OnceCell<Arc<crate::execution_journal::ExecutionJournal>>,
+    tool_observer: Option<Arc<dyn Fn(crate::agent_task_status::AgentToolEvent) + Send + Sync>>,
+    text_observer: Option<Arc<dyn Fn(crate::agent_task_status::AgentTextEvent) + Send + Sync>>,
     /// Per-session budget tracker (Arc-wrapped for sharing with TemDOS cores).
     budget: Arc<BudgetTracker>,
     /// Pricing for the current model.
@@ -264,7 +299,7 @@ pub struct AgentRuntime {
     /// Social intelligence: concurrent evaluation guard to prevent overlapping evals.
     social_evaluating: Arc<AtomicBool>,
     /// Eigen-Tune self-tuning distillation engine. None = disabled (default).
-    /// All hooks are fire-and-forget — never blocks the user reply path.
+    /// Hooks use owned, bounded background work without awaiting results on the reply path.
     /// Default-config users (engine=None) see zero new code paths exercised.
     eigen_tune: Option<Arc<EigenTuneEngine>>,
     /// Whether local routing of distilled models is enabled. The double opt-in
@@ -316,8 +351,9 @@ impl AgentRuntime {
         model: String,
         system_prompt: Option<String>,
     ) -> Self {
-        let model_pricing = budget::get_pricing(&model);
+        let model_pricing = budget::get_pricing_with_custom(provider.name(), &model);
         Self {
+            image_input: model_registry::image_input_for(provider.name(), &model),
             provider,
             memory,
             tools,
@@ -325,6 +361,7 @@ impl AgentRuntime {
             system_prompt,
             max_turns: 200,
             max_context_tokens: 30_000,
+            configured_context_tokens: 30_000,
             // v5.3.6: max_tool_rounds = 0 means unlimited (matches
             // max_task_duration_secs convention). Stagnation detection +
             // budget + duration are the real safety nets; iteration count
@@ -336,6 +373,11 @@ impl AgentRuntime {
             verification_enabled: true,
             max_consecutive_failures: 2,
             task_queue: None,
+            durable_execution: false,
+            journal: tokio::sync::OnceCell::new(),
+            background: crate::background::BackgroundTasks::default(),
+            tool_observer: None,
+            text_observer: None,
             budget: Arc::new(BudgetTracker::new(0.0)),
             hive_enabled: false,
             model_pricing,
@@ -362,6 +404,42 @@ impl AgentRuntime {
             tool_filter: None,
             self_audit_enabled: false,
         }
+    }
+
+    /// Select another model on the same provider route without rebuilding
+    /// runtime state, tools, observers, budget or owned background work.
+    pub fn select_model(&mut self, model: &str) -> Result<(), Temm1eError> {
+        if model.is_empty()
+            || model.len() > 256
+            || model.chars().any(char::is_whitespace)
+            || model.chars().any(char::is_control)
+        {
+            return Err(Temm1eError::Config(
+                "Model must be a nonempty identifier of at most256bytes".into(),
+            ));
+        }
+        if model == self.model {
+            return Ok(());
+        }
+        if self.eigen_tune_local_routing {
+            return Err(Temm1eError::Config("Model selection requires Eigen-Tune local routing to be disabled; its current qualification belongs to the existing reference configuration".into()));
+        }
+        let (window, output) =
+            model_registry::model_limits_with_custom(self.provider.name(), model);
+        if window < 2 || output == 0 {
+            return Err(Temm1eError::Config(
+                "Model has no usable context/output allowance".into(),
+            ));
+        }
+        let input = window.saturating_sub(output.min(window / 2));
+        let effective = self
+            .configured_context_tokens
+            .min(input.saturating_sub(input / 10));
+        self.model_pricing = budget::get_pricing_with_custom(self.provider.name(), model);
+        self.image_input = model_registry::image_input_for(self.provider.name(), model);
+        self.max_context_tokens = effective;
+        self.model = model.to_owned();
+        Ok(())
     }
 
     /// Attach a Witness verification layer to this runtime.
@@ -416,9 +494,10 @@ impl AgentRuntime {
     /// the Witness Ledger. The gate hook at the end of the agent loop will
     /// then verify it.
     ///
-    /// Adds **one extra LLM call per process_message** (clean-slate context,
-    /// max_tokens=1024). Cost on a typical model: ~$0.001 per call. Failures
-    /// (LLM error, parse error, Spec Reviewer rejection) are non-fatal —
+    /// Adds a clean-slate planner call when the current turn-selection policy
+    /// admits it. Usage is charged to the owning runtime; output policy follows
+    /// the selected provider/model. Failures (LLM error, parse error, Spec
+    /// Reviewer rejection) are non-fatal —
     /// they're logged and the runtime proceeds with no sealed Oath, so the
     /// gate hook becomes a no-op for that session (Law 5: zero downside).
     pub fn with_auto_planner_oath(mut self, enabled: bool) -> Self {
@@ -477,7 +556,7 @@ impl AgentRuntime {
         max_task_duration_secs: u64,
         max_spend_usd: f64,
     ) -> Self {
-        let model_pricing = budget::get_pricing(&model);
+        let model_pricing = budget::get_pricing_with_custom(provider.name(), &model);
 
         // Cap max_context_tokens to the model's actual context window minus
         // output token headroom. This prevents trying to fill 30K tokens of
@@ -485,7 +564,9 @@ impl AgentRuntime {
         // A 10% safety margin absorbs token estimation errors (estimate_tokens()
         // uses len/4 which can underestimate by ~20% on code/CJK text).
         // Floor at context_window/2 for models where output == context (e.g. phi-4).
-        let (model_ctx_window, model_max_output) = model_registry::model_limits(&model);
+        let (model_ctx_window, model_max_output) =
+            model_registry::model_limits_with_custom(provider.name(), &model);
+        let model_max_output = model_max_output.min(model_ctx_window / 2);
         let raw_input_budget = model_ctx_window.saturating_sub(model_max_output);
         let min_input_budget = model_ctx_window / 2;
         let model_input_budget = raw_input_budget.max(min_input_budget) * 9 / 10;
@@ -503,6 +584,7 @@ impl AgentRuntime {
         }
 
         Self {
+            image_input: model_registry::image_input_for(provider.name(), &model),
             provider,
             memory,
             tools,
@@ -510,12 +592,18 @@ impl AgentRuntime {
             system_prompt,
             max_turns,
             max_context_tokens: effective_context,
+            configured_context_tokens: max_context_tokens,
             max_tool_rounds,
             max_task_duration: Duration::from_secs(max_task_duration_secs),
             circuit_breaker: CircuitBreaker::default(),
             verification_enabled: true,
             max_consecutive_failures: 2,
             task_queue: None,
+            durable_execution: false,
+            journal: tokio::sync::OnceCell::new(),
+            background: crate::background::BackgroundTasks::default(),
+            tool_observer: None,
+            text_observer: None,
             budget: Arc::new(BudgetTracker::new(max_spend_usd)),
             hive_enabled: false,
             model_pricing,
@@ -542,6 +630,22 @@ impl AgentRuntime {
             tool_filter: None,
             self_audit_enabled: false,
         }
+    }
+
+    fn forwards_images(&self) -> bool {
+        match self.image_input {
+            Some(supported) => supported,
+            None => {
+                tracing::warn!(model = %self.model, provider = self.provider.name(), "Image capability is unverified; using legacy forwarding policy. Set image_input in custom_models.toml to declare this endpoint's capability.");
+                model_registry::legacy_image_forwarding(&self.model)
+            }
+        }
+    }
+
+    /// Bind a composed runtime to its owning session's accounting before use.
+    pub fn with_budget(mut self, budget: Arc<BudgetTracker>) -> Self {
+        self.budget = budget;
+        self
     }
 
     /// Get a shared reference to the budget tracker (for TemDOS core sharing).
@@ -605,7 +709,31 @@ impl AgentRuntime {
         self
     }
 
+    /// Subscribe to each tool start/completion without watch-channel coalescing.
+    pub fn with_tool_observer(
+        mut self,
+        observer: Arc<dyn Fn(crate::agent_task_status::AgentToolEvent) + Send + Sync>,
+    ) -> Self {
+        self.tool_observer = Some(observer);
+        self
+    }
+
     /// Set the persistent task queue for checkpointing.
+    pub fn with_durable_execution(mut self) -> Self {
+        self.durable_execution = true;
+        self
+    }
+
+    /// Supply an isolated journal (e.g. an embedded host or integration test).
+    pub fn with_execution_journal(
+        mut self,
+        journal: Arc<crate::execution_journal::ExecutionJournal>,
+    ) -> Self {
+        self.durable_execution = true;
+        self.journal = tokio::sync::OnceCell::from(journal);
+        self
+    }
+
     pub fn with_task_queue(mut self, task_queue: Arc<TaskQueue>) -> Self {
         self.task_queue = Some(task_queue);
         self
@@ -647,6 +775,40 @@ impl AgentRuntime {
     pub fn with_blueprint_notice(mut self, enabled: bool) -> Self {
         self.blueprint_notice = enabled;
         self
+    }
+
+    /// Apply one captured user policy without replacing resources or accounting.
+    pub fn with_policy(mut self, policy: &crate::runtime_policy::RuntimePolicy) -> Self {
+        self.v2_optimizations = policy.v2_optimizations;
+        self.self_audit_enabled = policy.self_audit_enabled;
+        self.parallel_phases = policy.parallel_phases;
+        self.blueprint_notice = policy.blueprint_notice;
+        self.engram_config = policy.engram.clone();
+        self
+    }
+
+    /// Capture the parent's effective policy for delegated runtimes.
+    pub fn runtime_policy(&self) -> crate::runtime_policy::RuntimePolicy {
+        crate::runtime_policy::RuntimePolicy {
+            v2_optimizations: self.v2_optimizations,
+            self_audit_enabled: self.self_audit_enabled,
+            parallel_phases: self.parallel_phases,
+            blueprint_notice: self.blueprint_notice,
+            engram: self.engram_config.clone(),
+        }
+    }
+
+    /// Capture the effective resources after builder overrides, for this runtime only.
+    pub fn runtime_resources(&self) -> temm1e_core::runtime_resources::RuntimeResources {
+        temm1e_core::runtime_resources::RuntimeResources {
+            provider: self.provider.clone(),
+            memory: self.memory.clone(),
+            budget: self.budget.clone(),
+            model: self.model.clone(),
+            pricing: self.model_pricing,
+            max_context_tokens: self.max_context_tokens,
+            policy: self.runtime_policy(),
+        }
     }
 
     /// Set the Engram permanent-memory configuration (default-on).
@@ -695,9 +857,9 @@ impl AgentRuntime {
     ///   result each round so the LLM sees them without extra API calls.
     /// - `status_tx`: optional `watch` channel for real-time task status emission.
     ///   If `None`, no status is emitted (zero overhead). `send_modify` is infallible.
-    /// - `cancel`: optional `CancellationToken` for future mid-stream cancellation.
-    ///   Phase 1: created and cancelled alongside `interrupt`, but not yet awaited
-    ///   in the loop. Phase 2 will add `tokio::select!` on provider calls.
+    /// - `cancel`: interrupts in-flight provider/tool futures. Legacy interrupt
+    ///   flags are also observed while waiting. External effects may already
+    ///   have occurred; interrupted calls require reconciliation before replay.
     #[allow(clippy::too_many_arguments)]
     pub async fn process_message(
         &self,
@@ -709,6 +871,127 @@ impl AgentRuntime {
         status_tx: Option<tokio::sync::watch::Sender<AgentTaskStatus>>,
         cancel: Option<CancellationToken>,
     ) -> Result<(OutboundMessage, TurnUsage), Temm1eError> {
+        self.budget
+            .check_model_budget(&self.model_pricing)
+            .map_err(Temm1eError::Provider)?;
+
+        let journal = if self.durable_execution {
+            Some(
+                self.journal
+                    .get_or_try_init(|| async {
+                        crate::execution_journal::ExecutionJournal::open_profile()
+                            .await
+                            .map(Arc::new)
+                    })
+                    .await?
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        let execution = if let Some(journal) = &journal {
+            Some(journal.begin(msg, session).await?)
+        } else {
+            None
+        };
+        let background = self.background.scope();
+        let mut background_guard = background.cancel_on_drop();
+        let stopped = async {
+            loop {
+                if interrupt
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::Relaxed))
+                {
+                    break;
+                }
+                tokio::select! {
+                    _ = async {
+                        if let Some(token) = &cancel { token.cancelled().await; }
+                        else { std::future::pending::<()>().await; }
+                    } => break,
+                    _ = tokio::time::sleep(Duration::from_millis(25)), if interrupt.is_some() => {},
+                }
+            }
+        };
+        let deadline = async {
+            if self.max_task_duration.is_zero() {
+                std::future::pending::<()>().await;
+            } else {
+                tokio::time::sleep(self.max_task_duration).await;
+            }
+        };
+        let mut deadline_expired = false;
+        let outcome = tokio::select! {
+            biased;
+            _ = stopped => None,
+            _ = deadline => { deadline_expired = true; None },
+            result = self.process_message_inner(msg, session, interrupt.clone(), pending, reply_tx, status_tx.clone(), journal.as_deref().zip(execution.as_deref()), &background) => Some(result),
+        };
+        if let Some(result) = outcome {
+            if result.is_err() {
+                background.cancel();
+                record_interrupted_tool_results(&mut session.history);
+            }
+            if let (Some(journal), Some(id)) = (&journal, &execution) {
+                journal
+                    .finish(
+                        id,
+                        if result.is_ok() {
+                            "reply_returned"
+                        } else {
+                            "failed"
+                        },
+                        &session.history,
+                        result.as_ref().ok().map(|(reply, _)| reply.text.as_str()),
+                    )
+                    .await?;
+            }
+            if result.is_ok() {
+                background_guard.release();
+            }
+            return result;
+        }
+        background.cancel();
+        record_interrupted_tool_results(&mut session.history);
+        if let (Some(journal), Some(id)) = (&journal, &execution) {
+            journal
+                .finish(id, "interrupted", &session.history, None)
+                .await?;
+        }
+        if let Some(tx) = status_tx {
+            tx.send_modify(|status| {
+                let round = match status.phase {
+                    AgentTaskPhase::CallingProvider { round }
+                    | AgentTaskPhase::ExecutingTool { round, .. }
+                    | AgentTaskPhase::ToolCompleted { round, .. }
+                    | AgentTaskPhase::Interrupted { round } => round,
+                    _ => 0,
+                };
+                status.phase = AgentTaskPhase::Interrupted { round };
+            });
+        }
+        let reason = if deadline_expired {
+            "Task deadline reached"
+        } else {
+            "Task stopped"
+        };
+        Err(Temm1eError::Tool(format!("{reason}. Interrupted operations may already have taken effect; inspect them before retrying. Usage from an interrupted provider request may be unavailable.")))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn process_message_inner(
+        &self,
+        msg: &InboundMessage,
+        session: &mut SessionContext,
+        interrupt: Option<Arc<AtomicBool>>,
+        pending: Option<PendingMessages>,
+        reply_tx: Option<tokio::sync::mpsc::UnboundedSender<OutboundMessage>>,
+        status_tx: Option<tokio::sync::watch::Sender<AgentTaskStatus>>,
+        execution: Option<(&crate::execution_journal::ExecutionJournal, &str)>,
+        background: &crate::background::BackgroundScope,
+    ) -> Result<(OutboundMessage, TurnUsage), Temm1eError> {
+        let bound_tools = self.runtime_resources().bind_tools(&self.tools);
+
         info!(
             channel = %msg.channel,
             chat_id = %msg.chat_id,
@@ -735,9 +1018,31 @@ impl AgentRuntime {
         // prevents orphan Oaths (from e.g. HiveRoute early-returns, or
         // Planner-sealed turns whose workspace state was mutated by a
         // sibling session) from being applied to unrelated replies.
+        let turn_witness = self.witness.as_ref().map(|witness| {
+            let scoped = witness.for_authority(session.workspace_path.clone(), session.role);
+            if let Some(limit) = scoped.configured_model_call_limit() {
+                let provider = Arc::new(crate::witness_provider::WitnessProvider::new(
+                    self.auxiliary_provider(),
+                    self.model.clone(),
+                    self.max_context_tokens,
+                    limit,
+                ));
+                Arc::new(scoped.bind_configured_provider(provider, &self.model))
+            } else {
+                Arc::new(scoped)
+            }
+        });
+        let turn_consciousness = self.consciousness.as_ref().and_then(|observer| {
+            observer.for_runtime(
+                self.auxiliary_provider(),
+                &self.model,
+                self.max_context_tokens,
+                session,
+            )
+        });
         let mut oath_sealed_this_turn: Option<temm1e_witness::types::Oath> = None;
         if self.auto_seal_planner_oath {
-            if let Some(ref witness) = self.witness {
+            if let Some(ref witness) = turn_witness {
                 let user_text = msg.text.as_deref().unwrap_or("");
                 if !user_text.trim().is_empty() {
                     // Complexity gate (Phase 4.5): fire the Planner LLM only
@@ -757,15 +1062,20 @@ impl AgentRuntime {
                             "phase4.5: planner oath skipped (turn not code-shaped)"
                         );
                     } else {
+                        // One goal per admitted execution, not per conversation epoch.
+                        // Embedded non-durable callers still get a fresh turn identity.
+                        let verification_id = execution
+                            .map(|(_, id)| id.to_owned())
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                         let planner_req = temm1e_witness::planner::PlannerOathRequest {
                             witness,
-                            provider: self.provider.clone(),
+                            provider: self.auxiliary_provider(),
                             model: self.model.clone(),
                             user_request: user_text,
                             workspace_root: &session.workspace_path,
                             session_id: session.session_id.clone(),
-                            root_goal_id: format!("root-{}", session.session_id),
-                            subtask_id: format!("rootst-{}", session.session_id),
+                            root_goal_id: verification_id.clone(),
+                            subtask_id: format!("rootst-{verification_id}"),
                         };
                         match temm1e_witness::planner::seal_oath_via_planner(planner_req).await {
                             Ok((sealed, entry_id)) => {
@@ -776,7 +1086,26 @@ impl AgentRuntime {
                                     postcondition_count = sealed.postconditions.len(),
                                     "phase4: planner oath sealed for session"
                                 );
-                                oath_sealed_this_turn = Some(sealed);
+                                // Freeze the exact proposal into the active goal before
+                                // using it. A failed durable binding must not yield a
+                                // verification claim from an unbound Oath.
+                                let bound = if let Some((journal, id)) = execution {
+                                    match journal
+                                        .record_goal_criteria(id, session, &sealed, 0)
+                                        .await
+                                    {
+                                        Ok(_) => true,
+                                        Err(error) => {
+                                            tracing::warn!(%error, "goal criteria binding unavailable; continuing unverified");
+                                            false
+                                        }
+                                    }
+                                } else {
+                                    true
+                                };
+                                if bound {
+                                    oath_sealed_this_turn = Some(sealed);
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -794,8 +1123,6 @@ impl AgentRuntime {
         // ── Status emission helper ──────────────────────────────
         // Infallible: send_modify never panics, never allocates.
         // If status_tx is None, the closure is a no-op (zero overhead).
-        // We capture `cancel` here only for future Phase 2 use.
-        let _cancel = cancel; // bind to suppress unused-variable warning
 
         // Per-turn usage accumulators
         let mut turn_api_calls: u32 = 0;
@@ -917,20 +1244,19 @@ impl AgentRuntime {
         // If the user sent images but the current model doesn't support
         // vision, strip the images and prepend a notice so the user gets
         // a helpful message instead of an API error.
-        if !image_parts.is_empty() && !model_supports_vision(&self.model) {
+        if !image_parts.is_empty() && !self.forwards_images() {
             let count = image_parts.len();
             image_parts.clear();
+            let reason = if self.image_input == Some(false) {
+                "image input is marked unsupported for this provider/model"
+            } else {
+                "image support is unverified and the legacy forwarding policy excludes this model"
+            };
             let notice = format!(
-                "[{} image(s) received but your current model ({}) does not support vision. \
-                 Switch to a vision-capable model to analyze images. \
-                 Examples: claude-sonnet-4-6, gpt-5.2, gemini-3-flash-preview, glm-4.6v-flash]",
-                count, self.model
+                "[{count} image(s) omitted for {}: {reason}. Select a verified image-capable model, or declare the custom endpoint's image_input capability in custom_models.toml.]",
+                self.model
             );
-            warn!(
-                model = %self.model,
-                images_stripped = count,
-                "Images stripped — model does not support vision"
-            );
+            warn!(model = %self.model, images_stripped = count, %reason, "Images omitted");
             user_text = format!("{}\n\n{}", notice, user_text);
         }
 
@@ -970,7 +1296,7 @@ impl AgentRuntime {
                 };
                 let engine = et.clone();
                 let chat_id = msg.chat_id.clone();
-                tokio::spawn(async move {
+                background.spawn("eigentune_signal", async move {
                     engine.on_signal(&chat_id, signal).await;
                 });
             }
@@ -1020,7 +1346,7 @@ impl AgentRuntime {
                 let turn = turn_facts.turn_number;
                 let facts_clone = turn_facts.clone();
                 let text_clone = user_text.clone();
-                tokio::spawn(async move {
+                background.spawn("social_facts", async move {
                     if let Err(e) = social_storage
                         .buffer_facts(&social_user_id, turn, &facts_clone, &text_clone)
                         .await
@@ -1076,14 +1402,16 @@ impl AgentRuntime {
                 None
             };
 
-            // Safety-net timeout on the classifier LLM call (30s). Under normal
-            // operation the classifier returns in 1–6 s across all supported
-            // providers. A longer stall indicates a provider-side incident;
-            // falling through to the rule-based classifier keeps the session
-            // alive rather than blocking the user. Root-cause notes:
-            // docs/full-sweep-1/TUI-CLASSIFIER-HANG.md.
+            // Bound classification separately from the overall task deadline.
+            // A timed-out provider call remains an unknown charge; fallback
+            // must not turn it into zero usage or reopen limited admission.
+            let classify_budget = Arc::new(BudgetTracker::child(self.budget.clone()));
+            let classifier_provider = crate::metered_provider::MeteredProvider::new(
+                self.provider.clone(),
+                classify_budget.clone(),
+            );
             let classify_fut = crate::llm_classifier::classify_message(
-                self.provider.as_ref(),
+                &classifier_provider,
                 &self.model,
                 &user_text,
                 &session.history,
@@ -1102,26 +1430,19 @@ impl AgentRuntime {
                     "classify_message 30s timeout".to_string(),
                 ))
             });
+            // The provider settled usage before parsing. Parse failure and
+            // timeout still contribute local totals/unknownness to the parent.
+            // Do not re-record successful usage and double-charge this call.
+            let classify_usage = classify_budget.snapshot();
+            turn_api_calls = turn_api_calls
+                .saturating_add(u32::try_from(classify_usage.recorded_calls).unwrap_or(u32::MAX));
+            turn_input_tokens = turn_input_tokens
+                .saturating_add(u32::try_from(classify_usage.input_tokens).unwrap_or(u32::MAX));
+            turn_output_tokens = turn_output_tokens
+                .saturating_add(u32::try_from(classify_usage.output_tokens).unwrap_or(u32::MAX));
+            turn_cost_usd += classify_usage.cost_usd;
             match unwrapped {
-                Ok((classification, classify_usage)) => {
-                    // Record classification call in per-turn accumulators
-                    let classify_cost = crate::budget::calculate_cost(
-                        classify_usage.input_tokens,
-                        classify_usage.output_tokens,
-                        &self.model_pricing,
-                    );
-                    turn_api_calls = turn_api_calls.saturating_add(1);
-                    turn_input_tokens =
-                        turn_input_tokens.saturating_add(classify_usage.input_tokens);
-                    turn_output_tokens =
-                        turn_output_tokens.saturating_add(classify_usage.output_tokens);
-                    turn_cost_usd += classify_cost;
-                    self.budget.record_usage(
-                        classify_usage.input_tokens,
-                        classify_usage.output_tokens,
-                        classify_cost,
-                    );
-
+                Ok((classification, _)) => {
                     info!(
                         category = ?classification.category,
                         difficulty = ?classification.difficulty,
@@ -1134,11 +1455,14 @@ impl AgentRuntime {
                     // Phase C (GH-62): derive compound-task flag from the
                     // classifier's difficulty rather than keyword matching.
                     // Standard or Complex ⇒ compound; Simple ⇒ not compound.
-                    classifier_compound = Some(matches!(
-                        classification.difficulty,
-                        crate::llm_classifier::TaskDifficulty::Standard
-                            | crate::llm_classifier::TaskDifficulty::Complex
-                    ));
+                    classifier_compound = Some(
+                        classification.category == crate::llm_classifier::MessageCategory::Order
+                            && matches!(
+                                classification.difficulty,
+                                crate::llm_classifier::TaskDifficulty::Standard
+                                    | crate::llm_classifier::TaskDifficulty::Complex
+                            ),
+                    );
 
                     match classification.category {
                         crate::llm_classifier::MessageCategory::Chat => {
@@ -1269,25 +1593,11 @@ impl AgentRuntime {
             None
         };
 
-        // ── DONE Definition Engine ─────────────────────────────────
-        // Detect compound tasks and inject a DONE criteria prompt so
-        // the LLM articulates verifiable completion conditions.
-        // Phase C (GH-62): prefer the LLM classifier's difficulty signal
-        // (set above for both v2 LLM path and rule-based fallback).
-        // Fall back to the keyword heuristic only when the classifier is
-        // entirely disabled (v2_optimizations = false).
-        let is_compound = classifier_compound
-            .unwrap_or_else(|| done_criteria::is_compound_task_fallback(&user_text));
-        let mut _done_criteria = DoneCriteria::new();
-
-        if is_compound {
-            info!("Compound task detected — injecting DONE criteria prompt");
-            let done_prompt = done_criteria::format_done_prompt(&user_text);
-            session.history.push(ChatMessage {
-                role: Role::System,
-                content: MessageContent::Text(done_prompt),
-            });
-        }
+        // Difficulty is a routing hint, not proof that the user asked for a
+        // visible plan. Planning guidance belongs in the stable system policy;
+        // never persist a duplicated user request as a new System message.
+        // Unknown classification must not activate keyword-based planning.
+        let is_compound = classifier_compound.unwrap_or(false);
 
         // ── Persistent Task Queue ──────────────────────────────────
         // Create a task entry if the queue is available.
@@ -1368,6 +1678,10 @@ impl AgentRuntime {
         // raw "[DONE]" token.
         let mut audits_used_this_turn: u8 = 0;
         let mut pending_audit_pre_text: Option<String> = None;
+        let mut context_handoff = match execution {
+            Some((journal, _)) => journal.load_handoff(session).await?,
+            None => None,
+        };
         loop {
             rounds += 1;
 
@@ -1427,8 +1741,7 @@ impl AgentRuntime {
             // Role-based tool filtering + P6 per-runtime tool filter.
             // Both filters compose with AND: a tool must be permitted by the
             // session role AND pass the runtime filter (if set) to be visible.
-            let effective_tools: Vec<Arc<dyn Tool>> = self
-                .tools
+            let mut effective_tools: Vec<Arc<dyn Tool>> = bound_tools
                 .iter()
                 .filter(|t| {
                     let role_ok =
@@ -1442,23 +1755,228 @@ impl AgentRuntime {
                 .cloned()
                 .collect();
 
-            let mut request = build_context(
-                session,
-                self.memory.as_ref(),
-                &effective_tools,
-                &self.model,
-                self.system_prompt.as_deref(),
-                self.max_turns,
-                self.max_context_tokens,
-                prompt_tier,
-                &matched_blueprints,
-                lambda_enabled,
-                self.personality.as_deref(),
-            )
-            .await;
+            let mut pending_handoff_generation = None;
+            let mut context_session = session.clone();
+            let mut context_injection = None;
+            let mut context_pins = Vec::new();
+            if execution.is_some() {
+                let previous = context_handoff
+                    .as_ref()
+                    .filter(|(_, h)| h.matches_prefix(&session.history));
+                let previous_boundary = previous.map_or(0, |(_, h)| h.high_water);
+                let previous_tokens = match previous {
+                    Some((_, h)) => crate::context::estimate_tokens(&h.context_injection()?)
+                        .saturating_add(
+                            h.pinned_messages()
+                                .iter()
+                                .map(crate::context::estimate_message_tokens)
+                                .sum::<usize>(),
+                        ),
+                    None => 0,
+                };
+                let retained_tokens: usize = session.history[previous_boundary..]
+                    .iter()
+                    .map(crate::context::estimate_message_tokens)
+                    .sum();
+                let needs_compaction = retained_tokens.saturating_add(previous_tokens)
+                    > self.max_context_tokens / 2
+                    || (self.max_turns > 0
+                        && session.history.len() - previous_boundary
+                            > self.max_turns.saturating_mul(2));
+                if needs_compaction {
+                    if let Some(cutoff) = crate::compaction::eligible_cutoff(&session.history)
+                        .filter(|n| *n > previous_boundary)
+                    {
+                        if let Some(tx) = &status_tx {
+                            tx.send_modify(|status| {
+                                status.phase = AgentTaskPhase::Compacting {
+                                    source_messages: cutoff,
+                                }
+                            });
+                        }
+                        let raw = &session.history[..cutoff];
+                        let (window, max_output) = model_registry::model_limits_with_custom(
+                            self.provider.name(),
+                            &self.model,
+                        );
+                        let requests = crate::compaction::summary_requests(
+                            raw,
+                            &self.model,
+                            max_output.min(4096).min(u32::MAX as usize) as u32,
+                            self.max_context_tokens,
+                            window,
+                        )?;
+                        let mut summary = crate::compaction::Summary::default();
+                        for mut summary_request in requests {
+                            let mut attempt = 0;
+                            let mut part = loop {
+                                crate::context::check_context_fit(
+                                    &summary_request,
+                                    self.max_context_tokens,
+                                    window,
+                                )?;
+                                self.budget
+                                    .check_model_budget(&self.model_pricing)
+                                    .map_err(Temm1eError::Provider)?;
+                                tracing::info!(source_messages=cutoff, "Generating source-grounded context handoff; raw history remains intact");
+                                let response =
+                                    self.provider.complete(summary_request.clone()).await?;
+                                let cost = self
+                                    .budget
+                                    .record_model_usage(&response.usage, &self.model_pricing)
+                                    .upper_usd()
+                                    .unwrap_or(0.0);
+                                turn_api_calls = turn_api_calls.saturating_add(1);
+                                turn_input_tokens =
+                                    turn_input_tokens.saturating_add(response.usage.input_tokens);
+                                turn_output_tokens =
+                                    turn_output_tokens.saturating_add(response.usage.output_tokens);
+                                turn_cost_usd += cost;
+                                let text = response_to_text(&response);
+                                let parsed = serde_json::from_str::<crate::compaction::Summary>(&text)
+                                .map_err(|_| Temm1eError::Provider("Compaction returned invalid structured JSON; emit only the specified object".into()))
+                                .and_then(|part| { crate::compaction::Handoff::new(raw,part.clone())?; Ok(part) });
+                                match parsed {
+                                    Ok(part) => break part,
+                                    Err(error) if attempt == 0 => {
+                                        attempt += 1;
+                                        summary_request.append_system_volatile(&format!("Your previous attempt failed validation: {error}. Correct the JSON schema and use exact quotations from the named source records. Do not add commentary or markdown fences."));
+                                    }
+                                    Err(error) => return Err(error),
+                                }
+                            };
+                            summary.work_state.append(&mut part.work_state);
+                            summary.decisions.append(&mut part.decisions);
+                            summary.pending_work.append(&mut part.pending_work);
+                            summary.uncertainties.append(&mut part.uncertainties);
+                        }
+                        let handoff = crate::compaction::Handoff::new(raw, summary)?;
+                        let injection = handoff.context_injection()?;
+                        let old_tokens: usize = raw
+                            .iter()
+                            .map(crate::context::estimate_message_tokens)
+                            .sum();
+                        if crate::context::estimate_tokens(&injection).saturating_add(
+                            handoff
+                                .pinned_messages()
+                                .iter()
+                                .map(crate::context::estimate_message_tokens)
+                                .sum::<usize>(),
+                        ) >= old_tokens
+                        {
+                            return Err(Temm1eError::Provider("Compaction cannot reduce context while preserving the original constraints. Raw history is intact; increase the context budget or reduce optional context.".into()));
+                        }
+                        let expected = context_handoff
+                            .as_ref()
+                            .map_or(0, |(generation, _)| *generation);
+                        let generation = expected.checked_add(1).ok_or_else(|| {
+                            Temm1eError::Internal("Compaction generation overflow".into())
+                        })?;
+                        pending_handoff_generation = Some(expected);
+                        context_handoff = Some((generation, handoff));
+                    }
+                }
+                if let Some((_, handoff)) = context_handoff
+                    .as_ref()
+                    .filter(|(_, h)| h.matches_prefix(&session.history))
+                {
+                    context_session.history = session.history[handoff.high_water..].to_vec();
+                    let recall: Arc<dyn Tool> = Arc::new(crate::compaction::RecallTool {
+                        handoff: Arc::new(handoff.clone()),
+                        session_id: session.session_id.clone(),
+                        chat_id: session.chat_id.clone(),
+                        workspace: session.workspace_path.clone(),
+                    });
+                    if (session.role.has_all_tools() || session.role.is_tool_allowed(recall.name()))
+                        && self
+                            .tool_filter
+                            .as_ref()
+                            .is_none_or(|filter| filter(recall.as_ref()))
+                    {
+                        if effective_tools
+                            .iter()
+                            .any(|tool| tool.name() == recall.name())
+                        {
+                            return Err(Temm1eError::Config(
+                                "context_recall is reserved for scoped runtime history access"
+                                    .into(),
+                            ));
+                        }
+                        effective_tools.push(recall);
+                    }
+                    context_pins = handoff.pinned_messages();
+                    context_injection = Some(handoff.context_injection()?);
+                }
+            }
+
+            effective_tools.sort_by(|a, b| a.name().cmp(b.name()));
+            if effective_tools
+                .windows(2)
+                .any(|pair| pair[0].name() == pair[1].name())
+            {
+                return Err(Temm1eError::Config(
+                    "Duplicate visible tool names make dispatch ambiguous".into(),
+                ));
+            }
+            let mut request = if execution.is_some() {
+                crate::context::build_context_preserving_history(
+                    &context_session,
+                    self.memory.as_ref(),
+                    &effective_tools,
+                    &self.model,
+                    self.system_prompt.as_deref(),
+                    self.max_turns,
+                    self.max_context_tokens,
+                    prompt_tier,
+                    &matched_blueprints,
+                    lambda_enabled,
+                    self.personality.as_deref(),
+                )
+                .await
+            } else {
+                build_context(
+                    &context_session,
+                    self.memory.as_ref(),
+                    &effective_tools,
+                    &self.model,
+                    self.system_prompt.as_deref(),
+                    self.max_turns,
+                    self.max_context_tokens,
+                    prompt_tier,
+                    &matched_blueprints,
+                    lambda_enabled,
+                    self.personality.as_deref(),
+                )
+                .await
+            };
+            request.messages.splice(0..0, context_pins);
+            // Raw history stays intact; opaque state from another model cannot
+            // be replayed as native state after an explicit model selection.
+            request.messages.retain_mut(|message| {
+                if let MessageContent::Parts(parts) = &mut message.content {
+                    let foreign = parts.iter().any(|part| matches!(part, ContentPart::ProviderState { model, .. } if model != &self.model));
+                    if foreign {
+                        parts.retain(|part| !matches!(part, ContentPart::ProviderState { model, .. } if model != &self.model));
+                        for part in parts.iter_mut() {
+                            if let ContentPart::ToolUse {
+                                thought_signature, ..
+                            } = part
+                            {
+                                *thought_signature = None;
+                            }
+                        }
+                        return !parts.is_empty();
+                    }
+                }
+                true
+            });
+            request.prepend_system_volatile(&format!("CURRENT RUNTIME: provider={}, model={}. Stored defaults may differ from this active selection.", self.provider.name(), self.model));
+            if let Some(injection) = context_injection {
+                request.prepend_system_volatile(&injection);
+            }
 
             // ── Engram: prepend the permanent-memory block (scoped, capped) ──
-            if self.engram_config.enabled {
+            if self.engram_config.enabled && self.memory.supports_engram() {
                 let (skull, _mo) = temm1e_core::types::model_registry::model_limits(&self.model);
                 let p_max = ((skull as f32) * self.engram_config.p_max_frac) as usize;
                 if p_max > 0 {
@@ -1523,10 +2041,10 @@ impl AgentRuntime {
             // has no codebase trajectory to reason about, so the LLM call is
             // pure +3-5s latency tax. On code-shaped turns we still want the
             // observer so it can flag drift or inefficiency.
-            let consciousness_should_fire = self.consciousness.is_some()
+            let consciousness_should_fire = turn_consciousness.is_some()
                 && turn_is_code_shaped(session.history.len(), &user_text).0;
             if let (true, Some(consciousness_observer)) =
-                (consciousness_should_fire, self.consciousness.as_ref())
+                (consciousness_should_fire, turn_consciousness.as_ref())
             {
                 let pre_obs = crate::consciousness_engine::PreObservation {
                     user_message: user_text.clone(),
@@ -1544,8 +2062,7 @@ impl AgentRuntime {
                     turn_input_tokens = turn_input_tokens.saturating_add(cu.input_tokens);
                     turn_output_tokens = turn_output_tokens.saturating_add(cu.output_tokens);
                     turn_cost_usd += cu.cost_usd;
-                    self.budget
-                        .record_usage(cu.input_tokens, cu.output_tokens, cu.cost_usd);
+                    // The turn-bound provider already records success/error/drop.
                 }
                 if let Some(injection) = injection {
                     had_whisper = true;
@@ -1578,6 +2095,31 @@ impl AgentRuntime {
                 );
             }
 
+            crate::context::remove_legacy_done_directives(&mut request.messages, &session.history);
+            let (context_window, output_limit) =
+                model_registry::model_limits_with_custom(self.provider.name(), &self.model);
+            request.max_tokens =
+                Some(output_limit.min(context_window / 2).min(u32::MAX as usize) as u32);
+            if execution.is_some() {
+                crate::context::check_context_fit(
+                    &request,
+                    self.max_context_tokens,
+                    context_window,
+                )?;
+            } else {
+                crate::context::finalize_context(
+                    &mut request,
+                    self.max_context_tokens,
+                    context_window,
+                )?;
+            }
+
+            if let Some(expected) = pending_handoff_generation {
+                if let (Some((journal, _)), Some((_, handoff))) = (execution, &context_handoff) {
+                    journal.save_handoff(session, expected, handoff).await?;
+                }
+            }
+
             debug!(
                 round = rounds,
                 messages = request.messages.len(),
@@ -1586,7 +2128,7 @@ impl AgentRuntime {
             );
 
             // Check budget before calling provider
-            if let Err(budget_err) = self.budget.check_budget() {
+            if let Err(budget_err) = self.budget.check_model_budget(&self.model_pricing) {
                 return Ok((
                     OutboundMessage {
                         chat_id: msg.chat_id.clone(),
@@ -1638,7 +2180,7 @@ impl AgentRuntime {
             }
 
             // Track whether the original request had tools (for fallback detection)
-            let request_had_tools = !self.tools.is_empty();
+            let request_had_tools = !request.tools.is_empty();
 
             // Pre-extract Eigen-Tune collection data so `request` can be
             // moved (not cloned) into the routing match below.
@@ -1679,7 +2221,10 @@ impl AgentRuntime {
                     // prompted-tool-calling fallback logic verbatim.
                     // `request` is moved (not cloned) — collection data was
                     // pre-extracted above.
-                    match self.provider.complete(request).await {
+                    match self
+                        .complete_foreground(self.provider.as_ref(), request)
+                        .await
+                    {
                         Ok(resp) => {
                             self.circuit_breaker.record_success();
                             resp
@@ -1727,7 +2272,7 @@ impl AgentRuntime {
                     local_req.model = endpoint.model_name.clone();
                     let local_result = tokio::time::timeout(
                         std::time::Duration::from_secs(30),
-                        local_provider.complete(local_req),
+                        self.complete_foreground(&local_provider, local_req),
                     )
                     .await;
                     match local_result {
@@ -1747,7 +2292,10 @@ impl AgentRuntime {
                                 error = %e,
                                 "Eigen-Tune: local call failed, falling back to cloud"
                             );
-                            match self.provider.complete(request).await {
+                            match self
+                                .complete_foreground(self.provider.as_ref(), request)
+                                .await
+                            {
                                 // move, not clone
                                 Ok(resp) => {
                                     self.circuit_breaker.record_success();
@@ -1764,7 +2312,10 @@ impl AgentRuntime {
                                 model = %endpoint.model_name,
                                 "Eigen-Tune: local call timed out (30s), falling back to cloud"
                             );
-                            match self.provider.complete(request).await {
+                            match self
+                                .complete_foreground(self.provider.as_ref(), request)
+                                .await
+                            {
                                 // move, not clone
                                 Ok(resp) => {
                                     self.circuit_breaker.record_success();
@@ -1787,7 +2338,7 @@ impl AgentRuntime {
                     local_req.model = endpoint.model_name.clone();
                     let local_result = tokio::time::timeout(
                         std::time::Duration::from_secs(30),
-                        local_provider.complete(local_req),
+                        self.complete_foreground(&local_provider, local_req),
                     )
                     .await;
                     match local_result {
@@ -1800,7 +2351,7 @@ impl AgentRuntime {
                                     &eigentune_complexity,
                                 );
                                 let local_text = response_to_text(&local_resp);
-                                tokio::spawn(async move {
+                                background.spawn("eigentune_cloud_shadow", async move {
                                     if let Ok(Ok(cloud_resp)) = tokio::time::timeout(
                                         std::time::Duration::from_secs(30),
                                         cloud_provider.complete(request),
@@ -1823,7 +2374,10 @@ impl AgentRuntime {
                             tracing::warn!(
                                 "Eigen-Tune: monitor-mode local call failed, falling back to cloud"
                             );
-                            match self.provider.complete(request).await {
+                            match self
+                                .complete_foreground(self.provider.as_ref(), request)
+                                .await
+                            {
                                 // move, not clone
                                 Ok(resp) => {
                                     self.circuit_breaker.record_success();
@@ -1842,7 +2396,10 @@ impl AgentRuntime {
                     // Cloud serves the user; local runs in parallel for SPRT evidence.
                     // Clone request for the spawn; move original into cloud call.
                     let spawn_req = request.clone(); // 1 clone — needed for async spawn
-                    let cloud_resp = match self.provider.complete(request).await {
+                    let cloud_resp = match self
+                        .complete_foreground(self.provider.as_ref(), request)
+                        .await
+                    {
                         // move
                         Ok(resp) => {
                             self.circuit_breaker.record_success();
@@ -1859,7 +2416,7 @@ impl AgentRuntime {
                         let tier =
                             temm1e_distill::types::EigenTier::from_str(&eigentune_complexity);
                         let cloud_text = response_to_text(&cloud_resp);
-                        tokio::spawn(async move {
+                        background.spawn("eigentune_local_shadow", async move {
                             let local_provider =
                                 temm1e_providers::OpenAICompatProvider::new(String::new())
                                     .with_base_url(endpoint_clone.base_url.clone());
@@ -1906,22 +2463,17 @@ impl AgentRuntime {
                     tokens_out: Some(response.usage.output_tokens),
                     cost_usd: None, // call_cost is computed in the next block
                 };
-                tokio::spawn(async move {
+                background.spawn("eigentune_completion", async move {
                     engine.on_completion(pair_data).await;
                 });
             }
 
             // Record usage and cost
-            let call_cost = budget::calculate_cost(
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-                &self.model_pricing,
-            );
-            self.budget.record_usage(
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-                call_cost,
-            );
+            let call_cost = self
+                .budget
+                .record_model_usage(&response.usage, &self.model_pricing)
+                .upper_usd()
+                .unwrap_or(0.0);
 
             // Accumulate per-turn metrics
             turn_api_calls = turn_api_calls.saturating_add(1);
@@ -1994,7 +2546,9 @@ impl AgentRuntime {
                     } => {
                         tool_uses.push((id.clone(), name.clone(), input.clone()));
                     }
-                    ContentPart::ToolResult { .. } | ContentPart::Image { .. } => {
+                    ContentPart::ToolResult { .. }
+                    | ContentPart::Image { .. }
+                    | ContentPart::ProviderState { .. } => {
                         // Should not appear in provider response, ignore
                     }
                 }
@@ -2010,7 +2564,7 @@ impl AgentRuntime {
                         arguments,
                     } => {
                         // Validate the tool actually exists
-                        let tool_exists = self.tools.iter().any(|t| t.name() == tool_name);
+                        let tool_exists = effective_tools.iter().any(|t| t.name() == tool_name);
                         if tool_exists {
                             info!(
                                 tool = %tool_name,
@@ -2121,8 +2675,8 @@ impl AgentRuntime {
                 // were available AND this is the first audit this turn:
                 // run one verification round. The same model is asked
                 // to confirm completion ("[DONE]") or commit to the tool
-                // call it skipped. Anything else fails open — exits
-                // with the original text, identical to v5.5.5 baseline.
+                // call it skipped, or provide a corrected answer. A correction
+                // must not be discarded in favor of the original claim.
                 let should_audit = self.self_audit_enabled
                     && audits_used_this_turn == 0
                     && pending_audit_pre_text.is_none()
@@ -2183,7 +2737,7 @@ impl AgentRuntime {
                     let provider_name = self.provider.name().to_string();
                     let model_name = self.model.clone();
                     let outcome_kind = outcome.to_kind();
-                    tokio::spawn(async move {
+                    background.spawn("audit_telemetry", async move {
                         if let Err(e) = mem
                             .record_audit_outcome(&provider_name, &model_name, outcome_kind, true)
                             .await
@@ -2191,10 +2745,19 @@ impl AgentRuntime {
                             tracing::debug!(error = %e, "audit telemetry record failed");
                         }
                     });
-                    // Always serve the pre-audit text — never leak the
-                    // [DONE] token or the audit's malformed response.
-                    text_parts.clear();
-                    text_parts.push(pre_text);
+                    // Exact confirmation preserves the prior answer. Otherwise
+                    // keep the model's correction; never hide a retraction by
+                    // restoring the unsupported claim it just corrected.
+                    if outcome == crate::self_audit::AuditOutcome::Done {
+                        text_parts = vec![pre_text];
+                    } else {
+                        for text in &mut text_parts {
+                            *text = text.replace(crate::self_audit::AUDIT_DONE_TOKEN, "");
+                        }
+                        if text_parts.iter().all(|text| text.trim().is_empty()) {
+                            text_parts = vec!["I could not confirm the preceding answer. The requested outcome remains unverified.".into()];
+                        }
+                    }
                 }
 
                 // P5: log outcome-derived difficulty alongside intent-based label.
@@ -2229,15 +2792,6 @@ impl AgentRuntime {
                     reply_text.clear();
                 }
 
-                // For compound tasks, append a DONE verification reminder
-                // so the LLM checks its criteria before responding.
-                if is_compound {
-                    let verification = done_criteria::format_verification_prompt(&_done_criteria);
-                    if !verification.is_empty() {
-                        reply_text.push_str(&verification);
-                    }
-                }
-
                 // ── Witness gate ─────────────────────────────────────
                 // Phase 2: if a Witness is attached AND THIS turn sealed its
                 // own Oath (via the Planner hook at the start of
@@ -2251,21 +2805,37 @@ impl AgentRuntime {
                 // unrelated replies, producing false footers).
                 //
                 // Law 5 (Narrative-Only FAIL): any error in verification
-                // leaves reply_text untouched — delivery is never blocked,
-                // files are never mutated. Witness only controls the
-                // narrative.
+                // controls the reply according to configured strictness.
+                // Reply composition is narrative-only; authorized verification
+                // commands themselves may have filesystem or external effects.
                 if let (Some(witness), Some(oath)) =
-                    (self.witness.as_ref(), oath_sealed_this_turn.as_ref())
+                    (turn_witness.as_ref(), oath_sealed_this_turn.as_ref())
                 {
-                    match witness.verify_oath(oath).await {
-                        Ok(verdict) => {
+                    match witness.verify_oath_report(oath).await {
+                        Ok(report) => {
+                            let verdict = report.verdict;
+                            if let Some((journal, id)) = execution {
+                                if let Err(error) = journal
+                                    .record_goal_assessment(
+                                        id,
+                                        session,
+                                        oath,
+                                        &verdict,
+                                        &report.evidence,
+                                        1,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(%error, "durable assessment unavailable; goal remains unverified");
+                                }
+                            }
                             tracing::info!(
                                 session_id = %session.session_id,
                                 outcome = ?verdict.outcome,
                                 pass = verdict.pass_count(),
                                 fail = verdict.fail_count(),
                                 inconclusive = verdict.inconclusive_count(),
-                                cost_usd = verdict.cost_usd,
+                                cost_usd = ?verdict.attributable_verifier_cost_usd(),
                                 latency_ms = verdict.latency_ms,
                                 "witness verdict rendered"
                             );
@@ -2313,8 +2883,16 @@ impl AgentRuntime {
                             tracing::warn!(
                                 session_id = %session.session_id,
                                 error = %e,
-                                "witness verification error; reply unchanged (Law 5)"
+                                "witness verification unavailable"
                             );
+                            use temm1e_witness::config::WitnessStrictness;
+                            match self.witness_strictness {
+                                WitnessStrictness::Observe => {},
+                                WitnessStrictness::Warn => reply_text.push_str("\n\nWitness verification was unavailable. The requested outcome is not independently verified."),
+                                WitnessStrictness::Block | WitnessStrictness::BlockWithRetry => {
+                                    reply_text = "Witness verification was unavailable, so I cannot confirm completion. Any work already performed remains in place; inspect it before retrying.".into();
+                                }
+                            }
                         }
                     }
                 }
@@ -2324,7 +2902,25 @@ impl AgentRuntime {
                 if !reply_text.trim().is_empty() {
                     session.history.push(ChatMessage {
                         role: Role::Assistant,
-                        content: MessageContent::Text(reply_text.clone()),
+                        content: {
+                            let mut parts = vec![ContentPart::Text {
+                                text: reply_text.clone(),
+                            }];
+                            parts.extend(
+                                response
+                                    .content
+                                    .iter()
+                                    .filter(|part| {
+                                        matches!(part, ContentPart::ProviderState { .. })
+                                    })
+                                    .cloned(),
+                            );
+                            if parts.len() == 1 {
+                                MessageContent::Text(reply_text.clone())
+                            } else {
+                                MessageContent::Parts(parts)
+                            }
+                        },
                     });
                 }
 
@@ -2438,7 +3034,7 @@ impl AgentRuntime {
                         let prompt =
                             crate::blueprint::build_authoring_prompt(&session.history, &exec_meta);
                         let memory = Arc::clone(&self.memory);
-                        let provider = Arc::clone(&self.provider);
+                        let provider = self.auxiliary_provider();
                         let model = self.model.clone();
                         let user_id = msg.user_id.clone();
                         let session_id = session.session_id.clone();
@@ -2447,7 +3043,7 @@ impl AgentRuntime {
                         let notice_chat_id = msg.chat_id.clone();
                         let notice_reply_to = msg.id.clone();
 
-                        tokio::spawn(async move {
+                        background.spawn("blueprint_author", async move {
                             match author_blueprint(provider.as_ref(), &model, &prompt, &user_id)
                                 .await
                             {
@@ -2490,7 +3086,7 @@ impl AgentRuntime {
                             let prompt =
                                 crate::blueprint::build_refinement_prompt(loaded_bp, &exec_meta);
                             let memory = Arc::clone(&self.memory);
-                            let provider = Arc::clone(&self.provider);
+                            let provider = self.auxiliary_provider();
                             let model = self.model.clone();
                             let bp_id = loaded_bp.id.clone();
                             let session_id = session.session_id.clone();
@@ -2513,7 +3109,7 @@ impl AgentRuntime {
                             let notice_reply_to = msg.id.clone();
                             let notice_name = updated_bp.name.clone();
 
-                            tokio::spawn(async move {
+                            background.spawn("blueprint_refine", async move {
                                 match refine_blueprint(
                                     provider.as_ref(),
                                     &model,
@@ -2568,9 +3164,10 @@ impl AgentRuntime {
                 // ── Engram curator: auto-capture durable facts (gated, background) ──
                 // After a substantive turn, one bounded LLM call extracts durable
                 // facts and stores them as Agent-pinned Engram facts. Best-effort
-                // and detached so it never blocks the reply. User pins are never
+                // and owned by the background pool without awaiting results on the reply path. User pins are never
                 // overwritten; subject_key dedups/supersedes.
                 if self.engram_config.enabled
+                    && self.memory.supports_engram()
                     && self.engram_config.curator == "substantive"
                     && msg
                         .text
@@ -2579,13 +3176,13 @@ impl AgentRuntime {
                         .unwrap_or(false)
                 {
                     let digest = build_engram_digest(&session.history);
-                    let provider = Arc::clone(&self.provider);
+                    let provider = self.auxiliary_provider();
                     let model = self.model.clone();
                     let memory = Arc::clone(&self.memory);
                     let user_id = msg.user_id.clone();
                     let chat_id = msg.chat_id.clone();
                     let cap = self.engram_config.max_facts.min(3);
-                    tokio::spawn(async move {
+                    background.spawn("engram_curator", async move {
                         let facts = curate_engram_facts(provider.as_ref(), &model, &digest).await;
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -2596,6 +3193,7 @@ impl AgentRuntime {
                             if content.is_empty() {
                                 continue;
                             }
+                            let scope = temm1e_core::MemoryScope::User(user_id.clone());
                             let existing = match cf.subject_key.as_deref() {
                                 Some(sk) => memory
                                     .engram_by_subject(sk, &user_id, &chat_id)
@@ -2603,7 +3201,10 @@ impl AgentRuntime {
                                     .ok()
                                     .flatten(),
                                 None => None,
-                            };
+                            }
+                            .filter(|fact| fact.scope == scope);
+                            // Only update this user's own fact. A visible shared
+                            // fact is not authority to overwrite global memory.
                             // Trust boundary: never overwrite a user pin.
                             if existing
                                 .as_ref()
@@ -2626,11 +3227,12 @@ impl AgentRuntime {
                             let id = existing.as_ref().map(|e| e.id.clone()).unwrap_or_else(|| {
                                 use std::hash::{Hash, Hasher};
                                 let mut h = std::collections::hash_map::DefaultHasher::new();
-                                format!(
-                                    "global|curator|{}",
-                                    cf.subject_key.as_deref().unwrap_or(&content)
+                                (
+                                    "user-curator",
+                                    &user_id,
+                                    cf.subject_key.as_deref().unwrap_or(&content),
                                 )
-                                .hash(&mut h);
+                                    .hash(&mut h);
                                 format!("eg{:016x}", h.finish())
                             });
                             let fact_type = match cf.fact_type.as_str() {
@@ -2659,7 +3261,7 @@ impl AgentRuntime {
                                 summary,
                                 essence,
                                 fact_type,
-                                scope: temm1e_core::MemoryScope::Global,
+                                scope,
                                 pinned_by: temm1e_core::PinnedBy::Agent,
                                 subject_key: cf.subject_key.clone(),
                                 importance: 4.0,
@@ -2670,7 +3272,7 @@ impl AgentRuntime {
                             };
                             match memory.engram_store(fact).await {
                                 Ok(()) => {
-                                    info!(content = %content, "Engram curator captured a durable fact")
+                                    info!("Engram curator captured a user-scoped durable fact")
                                 }
                                 Err(e) => warn!(error = %e, "Engram curator store failed"),
                             }
@@ -2693,10 +3295,10 @@ impl AgentRuntime {
                 // Gated to code-shaped turns to match pre_observe — avoid
                 // paying the post-LLM round-trip when pre-observer also
                 // skipped. Symmetric: observer fires as a pair or not at all.
-                let post_consciousness_should_fire = self.consciousness.is_some()
+                let post_consciousness_should_fire = turn_consciousness.is_some()
                     && turn_is_code_shaped(session.history.len(), &user_text).0;
                 if let (true, Some(consciousness_observer)) =
-                    (post_consciousness_should_fire, self.consciousness.as_ref())
+                    (post_consciousness_should_fire, turn_consciousness.as_ref())
                 {
                     let obs = crate::consciousness::TurnObservation {
                         turn_number: turn_api_calls,
@@ -2723,8 +3325,7 @@ impl AgentRuntime {
                         turn_input_tokens = turn_input_tokens.saturating_add(cu.input_tokens);
                         turn_output_tokens = turn_output_tokens.saturating_add(cu.output_tokens);
                         turn_cost_usd += cu.cost_usd;
-                        self.budget
-                            .record_usage(cu.input_tokens, cu.output_tokens, cu.cost_usd);
+                        // The turn-bound provider already records success/error/drop.
                     }
                 }
 
@@ -2761,7 +3362,7 @@ impl AgentRuntime {
                             social_config.min_interval_seconds,
                         ) {
                             let eval_storage = storage.clone();
-                            let eval_provider = self.provider.clone();
+                            let eval_provider = self.auxiliary_provider();
                             let eval_model = self.model.clone();
                             let eval_user_id = msg.user_id.clone();
                             let personality_name = self
@@ -2771,7 +3372,9 @@ impl AgentRuntime {
                                 .unwrap_or_else(|| "Tem".to_string());
                             let evaluating = self.social_evaluating.clone();
                             evaluating.store(true, Ordering::Relaxed);
-                            tokio::spawn(async move {
+                            let evaluation_guard = crate::background::ResetFlag(evaluating.clone());
+                            background.spawn("social_evaluation", async move {
+                                let _evaluation_guard = evaluation_guard;
                                 let result = tokio::time::timeout(
                                     std::time::Duration::from_secs(30),
                                     run_social_evaluation(
@@ -2860,7 +3463,7 @@ impl AgentRuntime {
                 let provider_name = self.provider.name().to_string();
                 let model_name = self.model.clone();
                 let outcome_kind = outcome.to_kind();
-                tokio::spawn(async move {
+                background.spawn("audit_telemetry", async move {
                     if let Err(e) = mem
                         .record_audit_outcome(&provider_name, &model_name, outcome_kind, true)
                         .await
@@ -2922,7 +3525,46 @@ impl AgentRuntime {
                     });
                 }
 
-                let result = execute_tool(tool_name, arguments.clone(), &self.tools, session).await;
+                let execution_id = format!(
+                    "{}:{}:{}:{}",
+                    session.session_id, msg.id, rounds, tool_index
+                );
+                if let Some(observer) = &self.tool_observer {
+                    observer(crate::agent_task_status::AgentToolEvent {
+                        execution_id: execution_id.clone(),
+                        phase: AgentTaskPhase::ExecutingTool {
+                            round: rounds as u32,
+                            tool_name: tool_name.clone(),
+                            tool_index: tool_index as u32,
+                            tool_total,
+                            args_preview: truncate_json_preview(arguments, 2048),
+                            started_at_ms: task_start.elapsed().as_millis() as u64,
+                        },
+                    });
+                }
+
+                if let Some((journal, turn_id)) = execution {
+                    journal
+                        .intent(
+                            turn_id,
+                            &execution_id,
+                            tool_name,
+                            arguments,
+                            &session.history,
+                        )
+                        .await?;
+                }
+                let result =
+                    execute_tool(tool_name, arguments.clone(), &effective_tools, session).await;
+                if let Some((journal, turn_id)) = execution {
+                    let (text, is_error) = match &result {
+                        Ok(output) => (output.content.clone(), output.is_error),
+                        Err(error) => (error.to_string(), true),
+                    };
+                    journal
+                        .result(turn_id, &execution_id, &text, is_error)
+                        .await?;
+                }
                 let tool_duration_ms = tool_started.elapsed().as_millis() as u64;
 
                 // ── Status: ToolCompleted (v4.8.0 — new variant) ─
@@ -2950,6 +3592,25 @@ impl AgentRuntime {
                     });
                 }
 
+                if let Some(observer) = &self.tool_observer {
+                    let detail = match &result {
+                        Ok(output) => output.content.chars().take(4096).collect(),
+                        Err(error) => error.to_string().chars().take(4096).collect(),
+                    };
+                    observer(crate::agent_task_status::AgentToolEvent {
+                        execution_id,
+                        phase: AgentTaskPhase::ToolCompleted {
+                            round: rounds as u32,
+                            tool_name: tool_name.clone(),
+                            tool_index: tool_index as u32,
+                            tool_total,
+                            duration_ms: tool_duration_ms,
+                            ok: completion_ok,
+                            result_preview: detail,
+                        },
+                    });
+                }
+
                 if tool_name == "send_message" && result.as_ref().is_ok_and(|o| !o.is_error) {
                     send_message_used = true;
                 }
@@ -2973,11 +3634,11 @@ impl AgentRuntime {
                                 let safe_end = if output.content.is_char_boundary(output_cap) {
                                     output_cap
                                 } else {
-                                    output.content[..output_cap]
-                                        .char_indices()
-                                        .last()
-                                        .map(|(i, _)| i)
-                                        .unwrap_or(0)
+                                    let mut end = output_cap;
+                                    while !output.content.is_char_boundary(end) {
+                                        end -= 1;
+                                    }
+                                    end
                                 };
                                 let truncated = &output.content[..safe_end];
                                 format!(
@@ -3003,7 +3664,7 @@ impl AgentRuntime {
                     } else {
                         temm1e_distill::types::QualitySignal::ToolCallSucceeded
                     };
-                    tokio::spawn(async move {
+                    background.spawn("eigentune_tool_signal", async move {
                         engine.on_signal(&chat_id, signal).await;
                     });
                 }
@@ -3066,7 +3727,7 @@ impl AgentRuntime {
 
                 // Tool reliability tracking (v4.6.0 self-learning)
                 {
-                    let task_label = format!("{}:{}", &classification_label, &difficulty_label);
+                    let task_label = format!("{}:{}", classification_label, difficulty_label);
                     let _ = self
                         .memory
                         .record_tool_outcome(tool_name, &task_label, !is_error)
@@ -3095,9 +3756,9 @@ impl AgentRuntime {
                 // If the tool produced an image (e.g., browser screenshot),
                 // inject it as a ContentPart::Image so the LLM can see it.
                 // Only works with vision-capable models; silently skipped otherwise.
-                if let Some(tool_ref) = self.tools.iter().find(|t| t.name() == tool_name) {
+                if let Some(tool_ref) = effective_tools.iter().find(|t| t.name() == tool_name) {
                     if let Some(img) = tool_ref.take_last_image() {
-                        if model_supports_vision(&self.model) {
+                        if self.forwards_images() {
                             info!(
                                 tool = %tool_name,
                                 media_type = %img.media_type,
@@ -3111,10 +3772,8 @@ impl AgentRuntime {
                         } else {
                             warn!(
                                 model = %self.model,
-                                "Tool produced image but model '{}' does not support vision — image discarded. \
-                                 Switch to a vision-capable model (claude-3.5-sonnet, gpt-4o, gemini-2.0-flash, etc.) \
-                                 for visual browser interaction.",
-                                self.model
+                                image_input = ?self.image_input,
+                                "Tool image omitted by configured capability or legacy forwarding policy; verify custom endpoint capability before enabling image input"
                             );
                         }
                     }
@@ -3138,7 +3797,10 @@ impl AgentRuntime {
             // LLM sees them without any extra API call or tool invocation.
             if let Some(ref pq) = pending {
                 if let Ok(mut map) = pq.lock() {
-                    if let Some(msgs) = map.remove(&msg.chat_id) {
+                    if let Some(msgs) = map.remove(&temm1e_core::types::message::ChatRoute::new(
+                        &msg.channel,
+                        &msg.chat_id,
+                    )) {
                         if !msgs.is_empty() {
                             info!(
                                 count = msgs.len(),
@@ -3148,11 +3810,7 @@ impl AgentRuntime {
                             let notice = format!(
                                 "\n\n---\n[PENDING MESSAGES — the user sent new message(s) while you were working. \
                                  Acknowledge with send_message and decide: finish current task or stop and respond.]\n{}",
-                                msgs.iter()
-                                    .enumerate()
-                                    .map(|(i, t)| format!("  {}. \"{}\"", i + 1, t))
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
+                                temm1e_core::types::message::format_pending(&msgs)
                             );
                             // Append to last ToolResult (not .last_mut() which
                             // could be an Image from vision injection).
@@ -3355,13 +4013,64 @@ impl AgentRuntime {
     }
 
     /// Get the maximum task duration.
+    pub fn with_text_observer(
+        mut self,
+        observer: Arc<dyn Fn(crate::agent_task_status::AgentTextEvent) + Send + Sync>,
+    ) -> Self {
+        self.text_observer = Some(observer);
+        self
+    }
+
+    /// Auxiliary consumers discard Usage while parsing their own result. Meter
+    /// at the provider boundary so errors, malformed output and dropped futures
+    /// cannot bypass the owning command's budget. Foreground remains separate.
+    fn auxiliary_provider(&self) -> Arc<dyn Provider> {
+        Arc::new(crate::metered_provider::MeteredProvider::new(
+            self.provider.clone(),
+            self.budget.clone(),
+        ))
+    }
+
+    async fn complete_foreground(
+        &self,
+        provider: &dyn Provider,
+        request: CompletionRequest,
+    ) -> Result<temm1e_core::types::message::CompletionResponse, Temm1eError> {
+        if let Some(observer) = &self.text_observer {
+            let id = uuid::Uuid::new_v4().to_string();
+            observer(crate::agent_task_status::AgentTextEvent::Begin { id: id.clone() });
+            let observer = observer.clone();
+            provider
+                .complete_with_observer(
+                    request,
+                    Arc::new(move |text| {
+                        observer(crate::agent_task_status::AgentTextEvent::Delta {
+                            id: id.clone(),
+                            text: text.to_string(),
+                        })
+                    }),
+                )
+                .await
+        } else {
+            provider.complete(request).await
+        }
+    }
+
+    pub fn background_stats(&self) -> crate::background::BackgroundStats {
+        self.background.stats()
+    }
+
+    pub async fn shutdown_background(&self, budget: Duration) -> bool {
+        self.background.shutdown(budget).await
+    }
+
     pub fn max_task_duration(&self) -> Duration {
         self.max_task_duration
     }
 }
 
 // ---------------------------------------------------------------------------
-// Blueprint authoring / refinement helpers (fire-and-forget from tokio::spawn)
+// Blueprint authoring / refinement helpers (owned background tasks)
 // ---------------------------------------------------------------------------
 
 /// Make a single LLM call to author a Blueprint. Parses the response into a
@@ -3748,44 +4457,12 @@ async fn run_social_evaluation(
     Ok(())
 }
 
-/// Returns `true` for models known to accept image content parts,
-/// `false` for models known to be text-only.  Unknown models default
-/// to `true` so we never accidentally strip images from a capable model.
+/// Compatibility forwarding decision for model-only callers. Published
+/// capability wins; unknown models retain legacy forwarding. This is not a
+/// vision capability badge or an account-specific entitlement check.
 pub fn model_supports_vision(model: &str) -> bool {
-    let m = model.to_lowercase();
-
-    // ── Known text-only models (deny-list) ──────────────────────
-
-    // Z.ai / Zhipu: only V-suffix models have vision.
-    // glm-4.6v, glm-4.6v-flash, glm-4.6v-flashx, glm-4.5v → vision
-    // glm-4.7-flash, glm-4.7, glm-5, glm-5-code, glm-4.5-flash → text-only
-    if m.starts_with("glm-") {
-        return m.contains('v') && !m.starts_with("glm-5");
-    }
-
-    // MiniMax: M2 text-only, M2.5 limited multimodal — not reliable
-    // through OpenAI-compat endpoint. Treat as text-only.
-    if m.starts_with("minimax") {
-        return false;
-    }
-
-    // Legacy OpenAI: GPT-3.5 has no vision support.
-    if m.starts_with("gpt-3") {
-        return false;
-    }
-
-    // ── Known vision-capable families ───────────────────────────
-
-    // Anthropic: all Claude models support vision.
-    // OpenAI: GPT-4o, GPT-4.1, GPT-5.x, o1/o3/o4-mini all support vision.
-    // Gemini: all main models are natively multimodal.
-    // Grok: grok-3, grok-4 support vision; grok-2-vision-* explicitly.
-    // OpenRouter: depends on underlying model — allow by default.
-
-    // Default: allow images through. Most modern models support vision,
-    // and if they don't the provider returns a clear error which is
-    // better than silently stripping images from a capable model.
-    true
+    model_registry::known_image_input(model)
+        .unwrap_or_else(|| model_registry::legacy_image_forwarding(model))
 }
 
 #[cfg(test)]
@@ -4011,7 +4688,7 @@ mod tests {
         assert!(model_supports_vision("gpt-5.2"));
         assert!(model_supports_vision("gpt-4o"));
         assert!(model_supports_vision("gpt-4.1"));
-        assert!(model_supports_vision("o3-mini"));
+        assert!(!model_supports_vision("o3-mini")); // Official model page: image input unsupported.
         assert!(!model_supports_vision("gpt-3.5-turbo"));
     }
 

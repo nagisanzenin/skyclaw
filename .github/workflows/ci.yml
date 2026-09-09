@@ -11,6 +11,24 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  msrv:
+    name: Minimum Rust (1.91.1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.91.1
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxkbcommon-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev libegl1-mesa-dev libgbm-dev libdrm-dev libxdo-dev
+      - name: Check all shipped features with the declared minimum toolchain
+        run: cargo check --locked --workspace --all-targets --all-features
+
   # -----------------------------------------------
   # Job 1: Code quality (fmt + clippy)
   # -----------------------------------------------
@@ -62,6 +80,12 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      - name: Exercise actual TUI input, resize and terminal restoration
+        run: |
+          cargo build --locked --bin temm1e
+          python3 scripts/tui_pty_smoke.py target/debug/temm1e
+          python3 scripts/gateway_onboarding_smoke.py --binary target/debug/temm1e
+
   # -----------------------------------------------
   # Job 2b: Windows cross-platform gate — fmt + clippy + test on windows-latest
   #
@@ -105,6 +129,10 @@ jobs:
             --no-default-features \
             --features telegram,discord,browser,mcp,codex-oauth,tui \
             -- -D warnings
+
+      - name: Record cancellation phase timings
+        shell: bash
+        run: cargo test -p temm1e-agent --test cancellation -- --nocapture
 
       - name: Run tests (default features, skip desktop-control)
         shell: bash
@@ -234,19 +262,18 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: temm1e:ci-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Check image size (<50 MB)
+      - name: Verify persistent profile across container replacement
+        run: bash scripts/docker_profile_smoke.sh temm1e:ci-${{ github.sha }}
+
+      - name: Report loaded image size
         run: |
-          docker buildx build --load -t temm1e:size-check .
-          SIZE=$(docker image inspect temm1e:size-check --format='{{.Size}}')
-          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
-          echo "Image size: ${SIZE_MB} MB"
-          if [ "$SIZE" -gt 52428800 ]; then
-            echo "::warning::Docker image size ${SIZE_MB} MB exceeds 50 MB target"
-          fi
+          SIZE=$(docker image inspect temm1e:ci-${{ github.sha }} --format='{{.Size}}')
+          echo "Image size: $SIZE bytes (includes Chromium and desktop libraries)"
 
   # -----------------------------------------------
   # Job 5: Security audit

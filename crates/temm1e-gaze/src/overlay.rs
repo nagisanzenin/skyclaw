@@ -235,7 +235,7 @@ pub fn overlay_coordinate_grid_with_origin(
         while phys_x(xx) < pw {
             let px = phys_x(xx);
             draw_dot_blend(&mut rgba, px, py, GRID_COLOR, 1);
-            if xx % (step * 3) == 0 && yy % (step * 3) == 0 {
+            if xx.is_multiple_of(step * 3) && yy.is_multiple_of(step * 3) {
                 draw_grid_label(&mut rgba, &format!("{},{}", xx, yy), px + 3, py + 3);
             }
             xx += step;

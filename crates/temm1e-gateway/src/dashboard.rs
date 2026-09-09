@@ -86,10 +86,19 @@ pub struct GatewayConfigSummary {
 
 /// GET /dashboard — serves the HTML dashboard page with embedded HTMX.
 pub async fn dashboard_page(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let Some(agent) = state.agent.read().await.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "onboarding", "message": "Configure a provider to enable the agent."
+            })),
+        )
+            .into_response();
+    };
     let version = env!("CARGO_PKG_VERSION");
-    let provider_name = state.agent.provider().name().to_string();
-    let memory_backend = state.agent.memory().backend_name().to_string();
-    let model = state.agent.model().to_string();
+    let provider_name = agent.provider().name().to_string();
+    let memory_backend = agent.memory().backend_name().to_string();
+    let model = agent.model().to_string();
 
     let channel_names: Vec<String> = state
         .channels
@@ -97,12 +106,7 @@ pub async fn dashboard_page(State(state): State<Arc<AppState>>) -> impl IntoResp
         .map(|c| c.name().to_string())
         .collect();
 
-    let tool_names: Vec<String> = state
-        .agent
-        .tools()
-        .iter()
-        .map(|t| t.name().to_string())
-        .collect();
+    let tool_names: Vec<String> = agent.tools().iter().map(|t| t.name().to_string()).collect();
 
     let channels_html: String = if channel_names.is_empty() {
         "<li class=\"item\">No channels configured</li>".to_string()
@@ -288,10 +292,10 @@ pub async fn dashboard_page(State(state): State<Arc<AppState>>) -> impl IntoResp
         provider_escaped = html_escape(&provider_name),
         model_escaped = html_escape(&model),
         memory_escaped = html_escape(&memory_backend),
-        max_turns = state.agent.max_turns(),
-        max_context_tokens = state.agent.max_context_tokens(),
-        max_tool_rounds = state.agent.max_tool_rounds(),
-        max_task_duration_secs = state.agent.max_task_duration().as_secs(),
+        max_turns = agent.max_turns(),
+        max_context_tokens = agent.max_context_tokens(),
+        max_tool_rounds = agent.max_tool_rounds(),
+        max_task_duration_secs = agent.max_task_duration().as_secs(),
         gw_host = html_escape(&state.config.host),
         gw_port = state.config.port,
         gw_tls = if state.config.tls {
@@ -301,13 +305,22 @@ pub async fn dashboard_page(State(state): State<Arc<AppState>>) -> impl IntoResp
         },
     );
 
-    (StatusCode::OK, Html(html))
+    (StatusCode::OK, Html(html)).into_response()
 }
 
 /// GET /dashboard/api/health — JSON health data for HTMX polling.
 pub async fn dashboard_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let provider_name = state.agent.provider().name().to_string();
-    let memory_backend = state.agent.memory().backend_name().to_string();
+    let Some(agent) = state.agent.read().await.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "onboarding", "message": "Configure a provider to enable the agent."
+            })),
+        )
+            .into_response();
+    };
+    let provider_name = agent.provider().name().to_string();
+    let memory_backend = agent.memory().backend_name().to_string();
 
     let channels: Vec<ChannelStatus> = state
         .channels
@@ -332,12 +345,21 @@ pub async fn dashboard_health(State(state): State<Arc<AppState>>) -> impl IntoRe
         channels,
     };
 
-    (StatusCode::OK, Json(resp))
+    (StatusCode::OK, Json(resp)).into_response()
 }
 
 /// GET /dashboard/api/tasks — JSON list of active tasks.
 pub async fn dashboard_tasks(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let tasks = if let Some(tq) = state.agent.task_queue() {
+    let Some(agent) = state.agent.read().await.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "onboarding", "message": "Configure a provider to enable the agent."
+            })),
+        )
+            .into_response();
+    };
+    let tasks = if let Some(tq) = agent.task_queue() {
         match tq.load_incomplete().await {
             Ok(entries) => entries
                 .into_iter()
@@ -355,21 +377,25 @@ pub async fn dashboard_tasks(State(state): State<Arc<AppState>>) -> impl IntoRes
     };
 
     let resp = DashboardTasksResponse { tasks };
-    (StatusCode::OK, Json(resp))
+    (StatusCode::OK, Json(resp)).into_response()
 }
 
 /// GET /dashboard/api/config — JSON config overview with secrets redacted.
 pub async fn dashboard_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let provider_name = state.agent.provider().name().to_string();
-    let model = state.agent.model().to_string();
-    let memory_backend = state.agent.memory().backend_name().to_string();
+    let Some(agent) = state.agent.read().await.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "onboarding", "message": "Configure a provider to enable the agent."
+            })),
+        )
+            .into_response();
+    };
+    let provider_name = agent.provider().name().to_string();
+    let model = agent.model().to_string();
+    let memory_backend = agent.memory().backend_name().to_string();
 
-    let tool_names: Vec<String> = state
-        .agent
-        .tools()
-        .iter()
-        .map(|t| t.name().to_string())
-        .collect();
+    let tool_names: Vec<String> = agent.tools().iter().map(|t| t.name().to_string()).collect();
 
     let channel_names: Vec<String> = state
         .channels
@@ -382,10 +408,10 @@ pub async fn dashboard_config(State(state): State<Arc<AppState>>) -> impl IntoRe
         model,
         memory_backend,
         agent: AgentConfigSummary {
-            max_turns: state.agent.max_turns(),
-            max_context_tokens: state.agent.max_context_tokens(),
-            max_tool_rounds: state.agent.max_tool_rounds(),
-            max_task_duration_secs: state.agent.max_task_duration().as_secs(),
+            max_turns: agent.max_turns(),
+            max_context_tokens: agent.max_context_tokens(),
+            max_tool_rounds: agent.max_tool_rounds(),
+            max_task_duration_secs: agent.max_task_duration().as_secs(),
         },
         tools: tool_names,
         channels: channel_names,
@@ -396,7 +422,7 @@ pub async fn dashboard_config(State(state): State<Arc<AppState>>) -> impl IntoRe
         },
     };
 
-    (StatusCode::OK, Json(resp))
+    (StatusCode::OK, Json(resp)).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +474,7 @@ mod tests {
         let channel: Arc<dyn temm1e_core::Channel> = Arc::new(MockChannel::new("telegram"));
         Arc::new(AppState {
             channels: vec![channel],
-            agent,
+            agent: Arc::new(tokio::sync::RwLock::new(Some(agent))),
             config: GatewayConfig {
                 host: "127.0.0.1".to_string(),
                 port: 8080,
@@ -646,7 +672,7 @@ mod tests {
         ));
         let state = Arc::new(AppState {
             channels: Vec::new(),
-            agent,
+            agent: Arc::new(tokio::sync::RwLock::new(Some(agent))),
             config: GatewayConfig::default(),
             sessions: SessionManager::new(),
             identity: None,

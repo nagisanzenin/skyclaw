@@ -4,7 +4,7 @@ You know what you're doing. Here's what you need.
 
 ## Requirements
 
-- Rust 1.82+ (or Docker, or [one-line installer](#one-line-install))
+- Rust 1.91.1+ (or Docker, or [one-line installer](#one-line-install))
 - Chrome/Chromium (optional, for browser tool)
 - At least one channel: Telegram bot token, Discord bot token, or WhatsApp on your phone
 

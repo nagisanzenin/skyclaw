@@ -12,6 +12,8 @@ pub enum SprtDecision {
     AcceptH1,
     /// Accept H0 (p = p0).
     AcceptH0,
+    /// Sample limit reached without crossing either evidence boundary.
+    Inconclusive,
     /// Continue sampling.
     Continue,
 }
@@ -27,7 +29,7 @@ pub struct Sprt {
     log_a: f64,
     /// Lower boundary: ln(beta / (1 - alpha)).
     log_b: f64,
-    /// Maximum observations before forced decision (truncation).
+    /// Maximum observations before an inconclusive result.
     max_n: u32,
     /// Cumulative log-likelihood ratio.
     lambda: f64,
@@ -88,6 +90,10 @@ impl Sprt {
     /// `agree == true` means the outcome supports H1.
     /// Returns the current decision after this observation.
     pub fn observe(&mut self, agree: bool) -> SprtDecision {
+        let previous = self.decision();
+        if previous != SprtDecision::Continue {
+            return previous;
+        }
         self.n += 1;
         if agree {
             self.lambda += (self.p1 / self.p0).ln();
@@ -104,12 +110,7 @@ impl Sprt {
         } else if self.lambda <= self.log_b {
             SprtDecision::AcceptH0
         } else if self.n >= self.max_n {
-            // Truncation: decide based on which boundary is closer.
-            if self.lambda > 0.0 {
-                SprtDecision::AcceptH1
-            } else {
-                SprtDecision::AcceptH0
-            }
+            SprtDecision::Inconclusive
         } else {
             SprtDecision::Continue
         }
@@ -134,6 +135,15 @@ impl Sprt {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn positive_likelihood_at_cap_is_not_evidence_of_graduation() {
+        let mut test = super::Sprt::new(0.5, 0.7, 0.05, 0.10, 1);
+        assert_eq!(test.observe(true), super::SprtDecision::Inconclusive);
+        assert!(test.lambda() > 0.0);
+        assert_eq!(test.observe(true), super::SprtDecision::Inconclusive);
+        assert_eq!(test.n(), 1);
+    }
     use super::*;
 
     #[test]
@@ -182,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_forces_decision() {
+    fn truncation_without_boundary_is_inconclusive() {
         let mut sprt = Sprt::new(0.5, 0.7, 0.05, 0.10, 10);
         // Alternate to stay indeterminate.
         for _ in 0..5 {
@@ -191,7 +201,7 @@ mod tests {
         }
         // After 10 observations, truncation fires.
         let d = sprt.decision();
-        assert!(d == SprtDecision::AcceptH1 || d == SprtDecision::AcceptH0);
+        assert_eq!(d, SprtDecision::Inconclusive);
     }
 
     #[test]
@@ -200,16 +210,16 @@ mod tests {
         //   agree  increment = ln(0.7/0.5) ≈ 0.3365
         //   disagree increment = ln(0.3/0.5) ≈ -0.5108
         // One disagree offsets about 1.5 agrees.
-        // So 19 agrees + 1 disagree should still be strongly positive but
-        // less than 20 agrees alone.
+        // So 4 agrees + 1 disagree stay below the stopping boundary but
+        // have less evidence than 5 agrees alone.
         let mut sprt_pure = Sprt::new(0.5, 0.7, 0.05, 0.10, 1000);
-        for _ in 0..20 {
+        for _ in 0..5 {
             sprt_pure.observe(true);
         }
         let lambda_pure = sprt_pure.lambda();
 
         let mut sprt_mixed = Sprt::new(0.5, 0.7, 0.05, 0.10, 1000);
-        for _ in 0..19 {
+        for _ in 0..4 {
             sprt_mixed.observe(true);
         }
         sprt_mixed.observe(false);

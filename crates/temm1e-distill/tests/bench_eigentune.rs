@@ -587,6 +587,7 @@ async fn test_04_sprt_graduation() {
             SprtDecision::AcceptH1 => "eventually accepted H1",
             SprtDecision::AcceptH0 => "eventually accepted H0",
             SprtDecision::Continue => "still undecided at 200",
+            SprtDecision::Inconclusive => "sample limit without sufficient evidence",
         }
     );
     println!("  PASS: SPRT engine verified");

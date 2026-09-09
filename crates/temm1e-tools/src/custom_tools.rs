@@ -231,10 +231,7 @@ pub struct CustomToolRegistry {
 
 impl CustomToolRegistry {
     pub fn new() -> Self {
-        let tools_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".temm1e")
-            .join("custom-tools");
+        let tools_dir = temm1e_core::config::data_dir().join("custom-tools");
         Self {
             tools_dir,
             tools_changed: AtomicBool::new(false),
@@ -780,6 +777,9 @@ mod tests {
         assert_eq!(tools.len(), 1);
 
         let ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
+            channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),
@@ -804,6 +804,9 @@ mod tests {
 
         let tool = SelfCreateTool::new(registry.clone());
         let ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
+            channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),

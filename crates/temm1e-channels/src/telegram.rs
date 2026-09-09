@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use temm1e_core::message_text::split_message;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -38,25 +39,18 @@ struct AllowlistFile {
 
 /// Return the path to `~/.temm1e/allowlist.toml`.
 fn allowlist_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".temm1e").join("allowlist.toml"))
+    Some(temm1e_core::config::data_dir().join("allowlist.toml"))
 }
 
 /// Load the persisted allowlist from disk.
 /// Returns `None` if the file does not exist or cannot be parsed.
 fn load_allowlist_file() -> Option<AllowlistFile> {
     let path = allowlist_path()?;
-    let content = std::fs::read_to_string(&path).ok()?;
-    match toml::from_str(&content) {
-        Ok(parsed) => Some(parsed),
-        Err(e) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %e,
-                "Failed to parse allowlist file, ignoring"
-            );
-            None
-        }
-    }
+    let file = temm1e_core::types::rbac::read_role_file(&path).ok()??;
+    Some(AllowlistFile {
+        admin: file.admin,
+        users: file.users,
+    })
 }
 
 /// Save the allowlist to disk. Creates `~/.temm1e/` if needed.
@@ -64,15 +58,7 @@ fn save_allowlist_file(data: &AllowlistFile) -> Result<(), Temm1eError> {
     let path = allowlist_path().ok_or_else(|| {
         Temm1eError::Channel("Cannot determine home directory for allowlist".into())
     })?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            Temm1eError::Channel(format!("Failed to create ~/.temm1e directory: {e}"))
-        })?;
-    }
-    let content = toml::to_string_pretty(data)
-        .map_err(|e| Temm1eError::Channel(format!("Failed to serialize allowlist: {e}")))?;
-    std::fs::write(&path, content)
-        .map_err(|e| Temm1eError::Channel(format!("Failed to write allowlist file: {e}")))?;
+    temm1e_core::types::rbac::save_channel_allowlist(&path, &data.admin, &data.users)?;
     tracing::info!(path = %path.display(), "Allowlist saved");
     Ok(())
 }
@@ -114,6 +100,10 @@ impl TelegramChannel {
         let (tx, rx) = mpsc::channel(256);
 
         // Try to load persisted allowlist; fall back to config.
+        // Corruption is not first-user setup. Preserve the file and fail startup.
+        if let Some(path) = allowlist_path() {
+            temm1e_core::types::rbac::read_role_file(&path)?;
+        }
         let (allowlist, admin) = if let Some(file) = load_allowlist_file() {
             tracing::info!(
                 admin = %file.admin,
@@ -273,7 +263,7 @@ impl Channel for TelegramChannel {
             .map_err(|_| Temm1eError::Channel(format!("Invalid chat_id: {}", msg.chat_id)))?;
 
         // Split messages that exceed Telegram's 4096 character limit.
-        let chunks = split_message(&msg.text, TELEGRAM_MESSAGE_LIMIT);
+        let chunks = split_message(&msg.text, TELEGRAM_MESSAGE_LIMIT)?;
 
         for chunk in &chunks {
             let mut request = bot.send_message(chat_id, chunk);
@@ -298,6 +288,21 @@ impl Channel for TelegramChannel {
 
     fn file_transfer(&self) -> Option<&dyn FileTransfer> {
         Some(self)
+    }
+
+    fn get_role(&self, user_id: &str) -> Option<temm1e_core::types::rbac::Role> {
+        let owner = self.admin.read().ok()?;
+        let path = temm1e_core::types::rbac::role_file_path(self.name());
+        temm1e_core::types::rbac::resolve_channel_role(
+            path.as_deref(),
+            user_id,
+            self.is_allowed(user_id),
+            owner.as_deref(),
+        )
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, channel = self.name(), "Authorization denied");
+            None
+        })
     }
 
     fn is_allowed(&self, user_id: &str) -> bool {
@@ -795,49 +800,6 @@ fn extract_attachments(msg: &teloxide::types::Message) -> Vec<AttachmentRef> {
     attachments
 }
 
-/// Find the last byte offset that is on a UTF-8 char boundary at or before `max`.
-fn floor_char_boundary(s: &str, max: usize) -> usize {
-    if max >= s.len() {
-        return s.len();
-    }
-    // Walk backwards from max until we hit a char boundary
-    let mut i = max;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// Split a message into chunks that fit within a character limit.
-/// Tries to split at newline boundaries first, then spaces, then hard limit.
-/// All splits respect UTF-8 char boundaries to prevent panics on multi-byte text.
-fn split_message(text: &str, max_len: usize) -> Vec<String> {
-    if text.len() <= max_len {
-        return vec![text.to_string()];
-    }
-
-    let mut chunks = Vec::new();
-    let mut remaining = text;
-
-    while !remaining.is_empty() {
-        if remaining.len() <= max_len {
-            chunks.push(remaining.to_string());
-            break;
-        }
-
-        let safe_end = floor_char_boundary(remaining, max_len);
-        let split_at = remaining[..safe_end]
-            .rfind('\n')
-            .unwrap_or_else(|| remaining[..safe_end].rfind(' ').unwrap_or(safe_end));
-
-        let (chunk, rest) = remaining.split_at(split_at);
-        chunks.push(chunk.to_string());
-        remaining = rest.trim_start_matches('\n');
-    }
-
-    chunks
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -970,21 +932,21 @@ mod tests {
 
     #[test]
     fn split_message_short() {
-        let chunks = split_message("hello", TELEGRAM_MESSAGE_LIMIT);
+        let chunks = split_message("hello", TELEGRAM_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks, vec!["hello"]);
     }
 
     #[test]
     fn split_message_at_limit() {
         let text = "a".repeat(TELEGRAM_MESSAGE_LIMIT);
-        let chunks = split_message(&text, TELEGRAM_MESSAGE_LIMIT);
+        let chunks = split_message(&text, TELEGRAM_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks.len(), 1);
     }
 
     #[test]
     fn split_message_over_limit() {
         let text = "a".repeat(5000);
-        let chunks = split_message(&text, TELEGRAM_MESSAGE_LIMIT);
+        let chunks = split_message(&text, TELEGRAM_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].len(), TELEGRAM_MESSAGE_LIMIT);
     }
@@ -994,14 +956,14 @@ mod tests {
         let mut text = "a".repeat(3900);
         text.push('\n');
         text.push_str(&"b".repeat(500));
-        let chunks = split_message(&text, TELEGRAM_MESSAGE_LIMIT);
+        let chunks = split_message(&text, TELEGRAM_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].len(), 3900);
+        assert_eq!(chunks[0].len(), 3901);
     }
 
     #[test]
     fn split_message_empty() {
-        let chunks = split_message("", TELEGRAM_MESSAGE_LIMIT);
+        let chunks = split_message("", TELEGRAM_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks, vec![""]);
     }
 }

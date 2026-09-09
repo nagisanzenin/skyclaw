@@ -7,6 +7,8 @@ rust-version.workspace = true
 description = "LLM provider integrations for TEMM1E"
 
 [dependencies]
+sha2.workspace = true
+hex.workspace = true
 temm1e-core.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
@@ -16,6 +18,8 @@ futures.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
+rand.workspace = true
+httpdate = "1"
 
 [dev-dependencies]
 temm1e-test-utils.workspace = true

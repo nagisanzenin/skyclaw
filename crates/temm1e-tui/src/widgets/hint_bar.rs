@@ -52,7 +52,7 @@ fn hint_for_state(state: &AppState) -> &'static str {
 
     // Agent working — offer cancel
     if state.is_agent_working {
-        return "Esc cancel · ^O activity · ^C cancel (×2 quit)";
+        return "Esc cancel · ^T tools · ^O activity · ^C cancel (×2 quit)";
     }
 
     // Active drag selection — show in-flight state
@@ -67,5 +67,5 @@ fn hint_for_state(state: &AppState) -> &'static str {
     }
 
     // Idle default (mouse capture ON, exclusive TUI, drag-to-select)
-    "Enter submit · ^C cancel · ^Y yank · drag to copy · ^O activity · ? help"
+    "Enter submit · ^T tools · ^O activity · ^Y yank · ? help"
 }

@@ -1,5 +1,22 @@
 use serde::{Deserialize, Serialize};
 
+/// In-process routing identity. Channel and chat are separate fields so IDs
+/// cannot collide across transports or through delimiter concatenation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ChatRoute {
+    pub channel: String,
+    pub chat_id: String,
+}
+
+impl ChatRoute {
+    pub fn new(channel: &str, chat_id: &str) -> Self {
+        Self {
+            channel: channel.into(),
+            chat_id: chat_id.into(),
+        }
+    }
+}
+
 /// Normalized inbound message from any channel
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundMessage {
@@ -12,6 +29,15 @@ pub struct InboundMessage {
     pub attachments: Vec<AttachmentRef>,
     pub reply_to: Option<String>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+/// Shared in-process amendment queue, scoped by transport and conversation.
+pub type PendingMessages =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<ChatRoute, Vec<InboundMessage>>>>;
+
+/// Encode original sender metadata and content without delimiter ambiguity.
+pub fn format_pending(messages: &[InboundMessage]) -> String {
+    serde_json::to_string(messages).expect("inbound messages have infallible serializers")
 }
 
 /// Reference to a file attachment (platform-specific ID for lazy download)
@@ -151,6 +177,18 @@ pub enum ContentPart {
     },
     #[serde(rename = "image")]
     Image { media_type: String, data: String },
+    /// Opaque native response items, retained for same-route/model replay.
+    /// Not user-facing text and never tool instructions to execute directly.
+    #[serde(rename = "provider_state")]
+    ProviderState {
+        provider: String,
+        model: String,
+        response_id: String,
+        /// Optional hash of the request prefix for context-bound native state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_fingerprint: Option<String>,
+        output: Vec<serde_json::Value>,
+    },
 }
 
 /// Tool definition for the AI model
@@ -173,6 +211,14 @@ pub struct CompletionResponse {
 /// Streaming chunk from an AI model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChunk {
+    /// Final native replay state. Accepted only with a confirmed terminal response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_state: Option<ContentPart>,
+    /// Cumulative normalized usage for this request; absence is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
     pub delta: Option<String>,
     pub tool_use: Option<ContentPart>,
     pub stop_reason: Option<String>,
@@ -180,8 +226,17 @@ pub struct StreamChunk {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
+    /// Some(false): provider omitted totals. None: legacy producer did not declare completeness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totals_reported: Option<bool>,
+    /// Total input, including cache reads and writes. Provider adapters normalize this.
     pub input_tokens: u32,
     pub output_tokens: u32,
+    /// None means the provider did not report this measurement, not zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u32>,
     #[serde(default)]
     pub cost_usd: f64,
 }
@@ -208,26 +263,23 @@ pub struct TurnUsage {
 impl TurnUsage {
     /// Combined (input + output) token count.
     pub fn combined_tokens(&self) -> u32 {
-        self.input_tokens + self.output_tokens
+        self.input_tokens.saturating_add(self.output_tokens)
     }
 
     /// Format as a multi-line, messenger-agnostic usage summary.
     pub fn format_summary(&self) -> String {
+        let cost = if matches!(self.provider.as_str(), "zai-coding-plan" | "openai-codex") {
+            "Billing: subscription; actual charge and remaining quota unavailable".to_owned()
+        } else if self.total_cost_usd > 0.0 {
+            format!("Recorded token estimate: ${:.4}", self.total_cost_usd)
+        } else {
+            "Token estimate: unavailable (zero is not proof of free usage)".to_owned()
+        };
         format!(
-            "Model: {}\n\
-             API Calls: {}\n\
-             Input Tokens: {}\n\
-             Output Tokens: {}\n\
-             Tools Used: {}\n\
-             Combined Tokens: {}\n\
-             Total Cost: ${:.4}",
-            self.model,
-            self.api_calls,
-            format_number(self.input_tokens),
-            format_number(self.output_tokens),
-            self.tools_used,
-            format_number(self.combined_tokens()),
-            self.total_cost_usd,
+            "Model: {}\nAPI Calls: {}\nInput Tokens: {}\nOutput Tokens: {}\nTools Used: {}\nCombined Tokens: {}\n{}",
+            self.model, self.api_calls, format_number(self.input_tokens),
+            format_number(self.output_tokens), self.tools_used,
+            format_number(self.combined_tokens()), cost,
         )
     }
 }
@@ -237,7 +289,7 @@ fn format_number(n: u32) -> String {
     let s = n.to_string();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
+        if i > 0 && i.is_multiple_of(3) {
             result.push(',');
         }
         result.push(c);
@@ -508,7 +560,7 @@ mod tests {
         assert!(summary.contains("Output Tokens: 1,823"));
         assert!(summary.contains("Tools Used: 2"));
         assert!(summary.contains("Combined Tokens: 14,273"));
-        assert!(summary.contains("Total Cost: $0.0524"));
+        assert!(summary.contains("Recorded token estimate: $0.0524"));
     }
 
     #[test]

@@ -37,6 +37,7 @@
 pub mod auto_detect;
 pub mod config;
 pub mod error;
+pub mod evidence;
 pub mod ledger;
 pub mod oath;
 pub mod planner;

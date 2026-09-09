@@ -1,36 +1,10 @@
-//! Self-Audit Pass — one-shot verification that catches "stalled promise"
-//! turns where a weak model emits intent text without calling a tool.
+//! One bounded self-audit round using the active provider and model.
 //!
-//! ## Why this exists
-//!
-//! The agent loop's stop condition is "model emitted no tool call ⇒ done"
-//! (`runtime.rs::process_message` near the `tool_uses.is_empty()` branch).
-//! Flagship models (Claude / GPT / Gemini) honor an implicit "say-it-or-
-//! call-it" contract — if they say "Let me X", they emit the X tool call
-//! in the same turn. Smaller open-weight models (e.g. Qwen 27B / 35B-A3B,
-//! reported in GH-62) routinely break that contract: they emit "Let me X"
-//! as text and forget the tool call. The loop then exits as if done; the
-//! worker flips `is_busy=false`; `/status` correctly reports "Idle"; the
-//! user sees a promise and a silent bot.
-//!
-//! ## Design
-//!
-//! Per the One Model Rule (`feedback_one_model_rule.md`), the audit uses
-//! the SAME active provider+model as the main loop — no cheap-fallback
-//! classifier. To bound cost, the audit:
-//!
-//! - Runs at most ONCE per turn (hard cap, enforced at the call site).
-//! - Only triggers when tools were available, the response had text, and
-//!   no tool call was emitted (would be redundant otherwise).
-//! - Fail-open: any malformed audit response degrades to today's baseline
-//!   behavior — the loop exits with the original text. No worse than
-//!   v5.5.5; never a regression.
-//!
-//! ## Marker
-//!
-//! Synthetic audit messages are tagged with [`AUDIT_MARKER_PREFIX`] so
-//! they can be filtered from user-visible history dumps and from any
-//! tooling that wants to ignore them.
+//! The audit may confirm the prior answer with an exact `[DONE]`, issue a
+//! missing tool call, or provide a corrected answer. Corrections are preserved
+//! for the user; an empty response does not restore an unsupported claim.
+//! A model's confirmation is not independent evidence of goal completion.
+//! `FailedOpen` is retained as a legacy telemetry label for unconfirmed audits.
 
 use temm1e_core::types::message::{ChatMessage, MessageContent, Role};
 
@@ -64,7 +38,9 @@ pub fn format_audit_message(prev_assistant_text: &str) -> ChatMessage {
          not call a tool, emit the tool call now. The loop will execute it \
          and continue.\n\
          \n\
-         Do NOT explain. Do NOT apologize. Pick A or B."
+         C) If your previous answer was incorrect, unsupported, or incomplete, \
+         provide the corrected user-facing answer and state what remains unverified.\n\
+         Do not claim a tool ran or a test passed without its recorded result."
     );
     ChatMessage {
         role: Role::User,
@@ -85,9 +61,9 @@ pub enum AuditOutcome {
     /// Model emitted a tool call. The loop should execute it normally
     /// — exactly as if the audit round had been a regular turn.
     ToolCallTriggered,
-    /// Audit response was malformed (no [`AUDIT_DONE_TOKEN`], no tool
-    /// call). Fail-open: the loop should exit with the original text.
-    /// Identical to today's baseline; never a regression.
+    /// No exact confirmation or tool call. The runtime preserves correction
+    /// text, or reports unavailable verification when the response is empty.
+    /// Variant name retained for compatibility with existing telemetry.
     FailedOpen,
 }
 
@@ -113,7 +89,7 @@ pub fn classify_audit_response(text_parts: &[String], had_tool_call: bool) -> Au
         return AuditOutcome::ToolCallTriggered;
     }
     let combined = text_parts.join("\n");
-    if combined.contains(AUDIT_DONE_TOKEN) {
+    if combined.trim() == AUDIT_DONE_TOKEN {
         AuditOutcome::Done
     } else {
         AuditOutcome::FailedOpen
@@ -153,9 +129,12 @@ mod tests {
 
     #[test]
     fn classify_audit_done_token_with_surrounding_text() {
-        // Some weak models won't perfectly emit only [DONE]; tolerate it.
+        // A token embedded in prose is not an unambiguous confirmation.
         let parts = vec!["Yes, I'm done. [DONE]".to_string()];
-        assert_eq!(classify_audit_response(&parts, false), AuditOutcome::Done);
+        assert_eq!(
+            classify_audit_response(&parts, false),
+            AuditOutcome::FailedOpen
+        );
     }
 
     #[test]

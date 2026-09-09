@@ -8,6 +8,9 @@
 //! - [`ResilientMemory`] — Decorator that wraps any backend with automatic
 //!   failover to an in-memory cache and repair logic.
 
+pub mod connections;
+pub use connections::MemoryConnections;
+
 pub mod failover;
 pub mod markdown;
 pub mod search;

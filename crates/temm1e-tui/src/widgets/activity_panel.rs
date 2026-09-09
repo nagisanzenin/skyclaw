@@ -97,7 +97,13 @@ impl ActivityPanel {
         self.output_tokens = status.output_tokens;
         self.cost_usd = status.cost_usd;
 
-        match &status.phase {
+        self.update_phase(&status.phase);
+    }
+
+    /// Apply an ordered lifecycle event without resetting usage counters.
+    pub fn update_phase(&mut self, phase: &AgentTaskPhase) {
+        self.phase = phase.clone();
+        match phase {
             // ── Tool started — push a new entry or reuse the current one ─
             AgentTaskPhase::ExecutingTool {
                 tool_name,

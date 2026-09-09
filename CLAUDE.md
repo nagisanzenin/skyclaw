@@ -6,7 +6,13 @@ TEMM1E is a cloud-native Rust AI agent runtime. It connects to messaging channel
 
 The codebase is a Cargo workspace with 24 crates plus a root `temm1e` binary plus a separate `temm1e-watchdog` supervisor binary (25 crates total).
 
+## Active modernization handoff
+
+While working on `codex/modernize-temm1e-research`, read `AGENT-HANDOFF.md` before continuing. The creator requires every pushed implementation commit to update that handoff, `docs/modernization/IMPLEMENTATION-STATUS.md`, and the relevant implementation document with actual progress, validation, limits, and next steps. Keep secrets outside Git. A checkpoint pass is not release readiness; follow the recorded conditional merge/release gates.
+
 ## Build commands
+
+On storage-constrained local machines, use `python3 scripts/cargo_guard.py -- <build|check|test|clippy> [arguments]` for build/check/test/clippy. It reserves 8 GiB free space, caps target output at 8 GiB, and cleans its disposable cache afterward. Keep logs/evidence outside `target/`. Split package/feature validation if the budget is exceeded; exit 75 is an unfinished check, never a pass. Use `--keep-cache` only to extract a required binary, then clean `target/guarded`. Do not run unmanaged Cargo builds concurrently. See `docs/RELEASE_PROTOCOL.md` for the local disk policy.
 
 ```bash
 # Quick compilation check (fastest feedback loop)
@@ -112,7 +118,7 @@ Channel.start() -> inbound message via mpsc::channel
 ## Code style conventions
 
 - **Edition**: Rust 2021
-- **Minimum Rust version**: 1.82
+- **Minimum Rust version**: 1.91.1
 - **Async traits**: Use `#[async_trait]` from the `async_trait` crate for all async trait definitions and implementations
 - **Error handling**: All fallible operations return `Result<T, Temm1eError>`. The `Temm1eError` enum is in `crates/temm1e-core/src/types/error.rs`. Use the appropriate variant (`Config`, `Provider`, `Channel`, `Memory`, `Tool`, `FileTransfer`, etc.)
 - **Logging**: Use the `tracing` crate (`tracing::info!`, `tracing::debug!`, `tracing::error!`, `tracing::warn!`). Include structured fields (e.g., `tracing::info!(id = %entry.id, "Stored entry")`)

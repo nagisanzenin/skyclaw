@@ -10,7 +10,7 @@
 //!   * `i_eff`          — *derived lazily*: `I` annealed by time-since-use.
 //!   * `tier`           — *derived* from `i_eff` with hysteresis.
 //!
-//! Guarantees that make it bulletproof / timeproof:
+//! Numeric invariants:
 //!   * `I ∈ [0,5]` always (clipped) — no drift or saturation over years.
 //!   * user-pinned ⇒ `i_eff = 5`, never anneals (sacrosanct).
 //!   * the lazy anneal makes forgetting happen with **no LLM** — so demotion
@@ -25,7 +25,11 @@ pub const IMPORTANCE_MAX: f32 = 5.0;
 
 #[inline]
 fn clip(x: f32) -> f32 {
-    x.clamp(IMPORTANCE_MIN, IMPORTANCE_MAX)
+    if x.is_finite() {
+        x.clamp(IMPORTANCE_MIN, IMPORTANCE_MAX)
+    } else {
+        IMPORTANCE_MIN
+    }
 }
 
 /// Tunable parameters for the Engram scorer (defaults from the design doc).
@@ -55,6 +59,15 @@ impl Default for EngramParams {
     }
 }
 
+impl EngramParams {
+    fn thresholds_valid(&self) -> bool {
+        [self.archive_eps, self.theta_down, self.theta_up]
+            .iter()
+            .all(|value| value.is_finite() && (0.0..=5.0).contains(value))
+            && self.theta_down <= self.theta_up
+    }
+}
+
 /// Memory tiers, derived from effective importance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tier {
@@ -77,8 +90,13 @@ pub fn seed(importance_hat: f32) -> f32 {
 /// EMA update: blend the current importance with a new judgment. Smoothing
 /// (plus hysteresis in [`tier`]) prevents turn-to-turn thrash.
 pub fn ema_update(current: f32, importance_hat: f32, eta: f32) -> f32 {
+    let current = clip(current);
+    // A nonfinite judgment or weight is no evidence for changing a valid fact.
+    if !importance_hat.is_finite() || !eta.is_finite() {
+        return current;
+    }
     let eta = eta.clamp(0.0, 1.0);
-    clip((1.0 - eta) * current + eta * importance_hat)
+    clip((1.0 - eta) * current + eta * clip(importance_hat))
 }
 
 /// Effective importance with lazy time-anneal.
@@ -97,8 +115,10 @@ pub fn effective_importance(
         return IMPORTANCE_MAX;
     }
     let dt_days = (now.saturating_sub(last_accessed) as f32) / 86_400.0;
-    let tau = tau_days.max(f32::EPSILON);
-    clip(importance * (-dt_days / tau).exp())
+    if !tau_days.is_finite() || tau_days <= 0.0 {
+        return IMPORTANCE_MIN;
+    }
+    clip(clip(importance) * (-dt_days / tau_days).exp())
 }
 
 /// Derive the tier from effective importance, applying **hysteresis** relative
@@ -108,6 +128,11 @@ pub fn tier(i_eff: f32, current: Tier, pinned_by_user: bool, p: &EngramParams) -
     if pinned_by_user {
         return Tier::Permanent;
     }
+    // Invalid evidence must not promote a fact or authorize archival.
+    if !i_eff.is_finite() || !p.thresholds_valid() {
+        return Tier::Active;
+    }
+    let i_eff = clip(i_eff);
     match current {
         // Sticky: stay Permanent until we fall to the (lower) demote threshold.
         Tier::Permanent => {
@@ -142,7 +167,10 @@ pub fn is_visible_permanent(
     pinned_agent: bool,
     p: &EngramParams,
 ) -> bool {
-    pinned_user || (pinned_agent && i_eff > p.theta_down) || i_eff >= p.theta_up
+    pinned_user
+        || (i_eff.is_finite()
+            && p.thresholds_valid()
+            && ((pinned_agent && clip(i_eff) > p.theta_down) || clip(i_eff) >= p.theta_up))
 }
 
 /// Greedy budget packer for the Permanent block under the `P_max` cap.
@@ -151,18 +179,16 @@ pub fn is_visible_permanent(
 /// `i_eff` first, until `budget` tokens are exhausted. Stable order of the
 /// returned indices follows descending `i_eff`.
 pub fn pack_by_budget(items: &[(f32, usize)], budget: usize) -> Vec<usize> {
-    let mut idx: Vec<usize> = (0..items.len()).collect();
-    idx.sort_by(|&a, &b| {
-        items[b]
-            .0
-            .partial_cmp(&items[a].0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    let mut idx: Vec<usize> = (0..items.len())
+        .filter(|&i| items[i].0.is_finite() && items[i].0 >= 0.0)
+        .collect();
+    // Stable sorting preserves source order for equal finite relevance.
+    idx.sort_by(|&a, &b| items[b].0.total_cmp(&items[a].0));
     let mut used = 0usize;
     let mut out = Vec::new();
     for i in idx {
         let cost = items[i].1;
-        if used + cost <= budget {
+        if cost <= budget.saturating_sub(used) {
             used += cost;
             out.push(i);
         }
@@ -305,5 +331,49 @@ mod tests {
             Tier::Active,
             "i_eff={i_eff}"
         );
+    }
+    #[test]
+    fn nonfinite_values_never_become_automatic_permanent_memories() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(seed(value), 0.0);
+            assert_eq!(ema_update(3.0, value, 0.4), 3.0);
+            assert_eq!(ema_update(3.0, 5.0, value), 3.0);
+            assert_eq!(effective_importance(value, 0, DAY, false, 60.0), 0.0);
+            assert!(!is_visible_permanent(value, false, true, &P));
+            assert!(is_visible_permanent(value, true, false, &P));
+            assert_eq!(effective_importance(value, 0, DAY, true, value), 5.0);
+        }
+        assert_eq!(ema_update(f32::INFINITY, 4.0, 1.0), 4.0);
+        assert_eq!(ema_update(0.0, f32::MAX, 0.4), 2.0);
+        assert_eq!(effective_importance(3.0, 0, DAY, false, f32::INFINITY), 0.0);
+    }
+
+    #[test]
+    fn packing_extreme_costs_never_wrap_or_include_nonfinite_scores() {
+        assert_eq!(
+            pack_by_budget(&[(5.0, 1), (4.0, usize::MAX), (3.0, 2)], 3),
+            vec![0, 2]
+        );
+        assert_eq!(
+            pack_by_budget(&[(5.0, usize::MAX), (4.0, 1)], usize::MAX),
+            vec![0]
+        );
+        assert_eq!(
+            pack_by_budget(&[(f32::NAN, 1), (f32::INFINITY, 1), (4.0, 2), (4.0, 1)], 3),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn invalid_thresholds_do_not_promote_or_destructively_archive() {
+        let invalid = EngramParams {
+            theta_down: 4.0,
+            theta_up: 2.0,
+            ..P
+        };
+        assert!(!is_visible_permanent(5.0, false, true, &invalid));
+        assert_eq!(tier(0.0, Tier::Permanent, false, &invalid), Tier::Active);
+        assert_eq!(tier(f32::NAN, Tier::Permanent, false, &P), Tier::Active);
+        assert_eq!(tier(0.0, Tier::Archived, true, &invalid), Tier::Permanent);
     }
 }

@@ -544,15 +544,14 @@ fn parse_numbered_line(line: &str) -> Option<(u32, String, Vec<u32>)> {
         } else {
             return None;
         }
-    } else if let Some(paren_pos) = trimmed.find(") ") {
+    } else {
+        let paren_pos = trimmed.find(") ")?;
         let candidate = &trimmed[..paren_pos];
         if candidate.chars().all(|c| c.is_ascii_digit()) && !candidate.is_empty() {
             (candidate, &trimmed[paren_pos + 2..])
         } else {
             return None;
         }
-    } else {
-        return None;
     };
 
     let number: u32 = num_str.parse().ok()?;

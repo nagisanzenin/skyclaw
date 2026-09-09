@@ -624,6 +624,9 @@ mod tests {
             arguments: serde_json::json!({}),
         };
         let ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
+            channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),
@@ -641,6 +644,9 @@ mod tests {
             arguments: serde_json::json!({ "action": "rebase" }),
         };
         let ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
+            channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),

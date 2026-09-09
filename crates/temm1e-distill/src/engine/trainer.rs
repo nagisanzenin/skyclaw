@@ -193,7 +193,7 @@ impl TrainerOrchestrator {
         let model_name = format!(
             "eigentune-{}-{}",
             tier.as_str(),
-            &run_id.chars().take(8).collect::<String>()
+            run_id.chars().take(8).collect::<String>()
         );
         match commit_to_ollama(&model_name, &base_model, &artifacts.adapter_path).await {
             Ok(()) => {

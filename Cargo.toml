@@ -30,11 +30,11 @@ members = [
 ]
 
 [workspace.package]
-version = "5.8.1"
+version = "6.0.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/nagisanzenin/temm1e"
-rust-version = "1.82"
+repository = "https://github.com/temm1e-labs/temm1e"
+rust-version = "1.91.1"
 
 [workspace.dependencies]
 # Async runtime
@@ -92,7 +92,8 @@ chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
 htmd = "0.5"
 
 # Object storage
-aws-sdk-s3 = "1"
+# Keep the SDK default HTTPS client; omit its redundant legacy Rustls/Hyper connector.
+aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "default-https-client", "rt-tokio"] }
 aws-config = "1"
 
 # Error handling
@@ -189,6 +190,10 @@ clap.workspace = true
 dirs.workspace = true
 aes-gcm.workspace = true
 hex.workspace = true
+sha2.workspace = true
+semver = "1"
+fs2 = "0.4.3"
+tempfile = "3"
 base64.workspace = true
 rand.workspace = true
 tracing.workspace = true
@@ -226,6 +231,15 @@ tempfile = "3"
 tokio = { workspace = true, features = ["full", "test-util"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# Keep local validation caches small; opt into debug symbols explicitly when needed.
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
 
 [profile.release]
 opt-level = "z"

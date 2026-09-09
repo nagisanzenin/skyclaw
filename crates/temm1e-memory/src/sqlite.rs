@@ -693,6 +693,10 @@ impl Memory for SqliteMemory {
 
     // ── Engram (permanent memory) ─────────────────────────────────
 
+    fn supports_engram(&self) -> bool {
+        true
+    }
+
     async fn engram_store(&self, fact: EngramFact) -> Result<(), Temm1eError> {
         let tags = serde_json::to_string(&fact.tags).unwrap_or_else(|_| "[]".into());
         let links = serde_json::to_string(&fact.links).unwrap_or_else(|_| "[]".into());
@@ -791,6 +795,21 @@ impl Memory for SqliteMemory {
         Ok(())
     }
 
+    async fn engram_forget_scoped(
+        &self,
+        fact: &EngramFact,
+        user_id: &str,
+        chat_id: &str,
+    ) -> Result<bool, Temm1eError> {
+        let deleted = sqlx::query(
+            "DELETE FROM engram_facts WHERE id=? AND scope=? AND content=? AND scope IN ('global',?,?)"
+        ).bind(&fact.id).bind(fact.scope.as_key()).bind(&fact.content)
+            .bind(format!("user:{user_id}")).bind(format!("chat:{chat_id}"))
+            .execute(&self.pool).await
+            .map_err(|e| Temm1eError::Memory(format!("engram_forget_scoped: {e}")))?;
+        Ok(deleted.rows_affected() == 1)
+    }
+
     async fn engram_recall(
         &self,
         query: &str,
@@ -800,13 +819,18 @@ impl Memory for SqliteMemory {
     ) -> Result<Vec<EngramFact>, Temm1eError> {
         let user_key = format!("user:{user_id}");
         let chat_key = format!("chat:{chat_id}");
-        // Sanitize LIKE wildcards from the query, then substring-match.
-        let pat = format!("%{}%", query.replace(['%', '_'], ""));
+        // Escape LIKE syntax while preserving the actual query. Removing '%'
+        // or '_' changes fact identity and can turn a forget query into match-all.
+        let escaped = query
+            .replace('!', "!!")
+            .replace('%', "!%")
+            .replace('_', "!_");
+        let pat = format!("%{escaped}%");
         let rows: Vec<EngramRow> = sqlx::query_as(
             "SELECT id, content, summary, essence, fact_type, scope, pinned_by, subject_key, \
              importance, created_at, last_accessed, tags, links \
              FROM engram_facts WHERE scope IN ('global', ?, ?) \
-             AND (summary LIKE ? OR essence LIKE ? OR content LIKE ? OR tags LIKE ?) \
+             AND (summary LIKE ? ESCAPE '!' OR essence LIKE ? ESCAPE '!' OR content LIKE ? ESCAPE '!' OR tags LIKE ? ESCAPE '!') \
              ORDER BY importance DESC LIMIT ?",
         )
         .bind(&user_key)
@@ -1452,6 +1476,93 @@ mod tests {
         // forget
         mem.engram_forget("g1").await.unwrap();
         assert!(mem.engram_get("g1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn engram_recall_preserves_literal_wildcards_and_caller_scope() {
+        let mem = SqliteMemory::new("sqlite::memory:").await.unwrap();
+        for (id, content, user) in [
+            ("under", "key_1", "alice"),
+            ("plain", "keyX1", "alice"),
+            ("percent", "100% done", "alice"),
+            ("plain-percent", "100 done", "alice"),
+            ("escape", "wow!yes", "alice"),
+            ("foreign", "key_1 100% wow!yes", "bob"),
+        ] {
+            let mut fact = mk_fact(
+                id,
+                MemoryScope::User(user.into()),
+                None,
+                4.0,
+                PinnedBy::Agent,
+            );
+            fact.content = content.into();
+            fact.summary = content.into();
+            fact.essence = content.into();
+            fact.tags.clear();
+            mem.engram_store(fact).await.unwrap();
+        }
+        for (query, expected) in [
+            ("key_1", "under"),
+            ("_", "under"),
+            ("100%", "percent"),
+            ("%", "percent"),
+            ("!", "escape"),
+        ] {
+            let facts = mem.engram_recall(query, "alice", "room", 20).await.unwrap();
+            assert_eq!(facts.len(), 1, "query={query}");
+            assert_eq!(facts[0].id, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn scoped_engram_delete_rejects_foreign_and_changed_snapshots() {
+        let sqlite = SqliteMemory::new("sqlite::memory:").await.unwrap();
+        let memory = crate::ResilientMemory::new(Box::new(sqlite));
+        assert!(memory.supports_engram());
+        let original = mk_fact(
+            "target",
+            MemoryScope::User("alice".into()),
+            None,
+            4.0,
+            PinnedBy::User,
+        );
+        memory.engram_store(original.clone()).await.unwrap();
+        assert!(!memory
+            .engram_forget_scoped(&original, "bob", "room")
+            .await
+            .unwrap());
+        let mut changed = original.clone();
+        changed.content = "updated by another writer".into();
+        memory.engram_store(changed.clone()).await.unwrap();
+        assert!(!memory
+            .engram_forget_scoped(&original, "alice", "room")
+            .await
+            .unwrap());
+        assert_eq!(
+            memory.engram_get("target").await.unwrap().unwrap().content,
+            changed.content
+        );
+        let mut moved = changed.clone();
+        moved.scope = MemoryScope::User("bob".into());
+        memory.engram_store(moved.clone()).await.unwrap();
+        assert!(!memory
+            .engram_forget_scoped(&changed, "alice", "room")
+            .await
+            .unwrap());
+        assert!(!memory
+            .engram_forget_scoped(&moved, "alice", "room")
+            .await
+            .unwrap());
+        assert!(memory
+            .engram_forget_scoped(&moved, "bob", "room")
+            .await
+            .unwrap());
+        assert!(!memory
+            .engram_forget_scoped(&moved, "bob", "room")
+            .await
+            .unwrap());
+        assert!(memory.engram_get("target").await.unwrap().is_none());
     }
 
     #[tokio::test]

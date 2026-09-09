@@ -1,6 +1,7 @@
 ---
 id: bp_prowl_compare
 name: Multi-Site Comparison
+trigger_patterns: ['compare across websites', 'compare online prices']
 semantic_tags: ["web", "compare", "price", "shop", "aggregate", "best", "cheapest"]
 task_signature: "compare {item} across sites"
 success_count: 0
@@ -25,9 +26,9 @@ For each target site:
 4. Format as comparison table
 
 ## Notes
-- When Hive is active, the Queen decomposes this into N independent browse tasks + 1 aggregation
-- Each Tem gets its own browser context (isolated sessions)
-- Progressive delivery: partial results sent as each site completes
+- Use sequential browsing by default. Parallel browsing requires confirmed isolated browser contexts and an available delegation tool.
+- Do not assume separate browser sessions merely because Hive is enabled.
+- Report partial results only through an available delivery mechanism; identify missing sites explicitly.
 - If a site blocks or fails, skip it and note in results (don't block other sites)
 
 ## Failure Recovery

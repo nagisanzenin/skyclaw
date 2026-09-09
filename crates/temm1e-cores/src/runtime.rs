@@ -16,14 +16,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use temm1e_agent::budget::{self, BudgetTracker, ModelPricing};
+use temm1e_agent::budget::{BudgetTracker, ModelPricing};
 use temm1e_agent::executor::execute_tool;
 use temm1e_agent::self_correction::FailureTracker;
 use temm1e_core::types::error::Temm1eError;
 use temm1e_core::types::message::{
     ChatMessage, CompletionRequest, ContentPart, MessageContent, Role, ToolDefinition,
 };
-use temm1e_core::types::session::SessionContext;
 use temm1e_core::{Provider, Tool};
 use tracing::{debug, info};
 
@@ -87,20 +86,27 @@ impl CoreRuntime {
         task: &str,
         workspace_path: PathBuf,
     ) -> Result<CoreResult, Temm1eError> {
-        let session_id = format!("core-{}-{}", self.core_name, uuid::Uuid::new_v4());
-
-        let mut session = SessionContext {
-            session_id: session_id.clone(),
-            channel: "core".to_string(),
-            chat_id: session_id.clone(),
-            user_id: "core".to_string(),
+        // Compatibility entrypoint for an explicitly trusted standalone host.
+        let context = temm1e_core::ToolContext {
+            user_id: "core".into(),
             role: temm1e_core::types::rbac::Role::Admin,
-            history: Vec::new(),
+            channel: "core".into(),
             workspace_path,
-            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
-                std::collections::HashSet::new(),
-            )),
+            session_id: String::new(),
+            chat_id: String::new(),
+            read_tracker: None,
         };
+        self.run_scoped(task, &context).await
+    }
+
+    /// Active tool invocation inherits caller identity, role and workspace.
+    pub async fn run_scoped(
+        &self,
+        task: &str,
+        context: &temm1e_core::ToolContext,
+    ) -> Result<CoreResult, Temm1eError> {
+        let session_id = format!("core-{}-{}", self.core_name, uuid::Uuid::new_v4());
+        let mut session = context.delegated_session("core", session_id);
 
         // Initial user message is the task
         session.history.push(ChatMessage {
@@ -111,6 +117,7 @@ impl CoreRuntime {
         let tool_defs: Vec<ToolDefinition> = self
             .tools
             .iter()
+            .filter(|t| session.role.is_tool_allowed(t.name()))
             .map(|t| ToolDefinition {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
@@ -134,11 +141,19 @@ impl CoreRuntime {
             "TemDOS core started"
         );
 
+        let provider = temm1e_agent::metered_provider::MeteredProvider::with_pricing(
+            self.provider.clone(),
+            self.budget.clone(),
+            self.model.clone(),
+            self.model_pricing,
+        );
         loop {
             // Budget gate — check shared budget before every LLM call
-            self.budget.check_budget().map_err(|e| {
-                Temm1eError::Tool(format!("[{}] Budget exhausted: {}", self.core_name, e))
-            })?;
+            self.budget
+                .check_model_budget(&self.model_pricing)
+                .map_err(|e| {
+                    Temm1eError::Tool(format!("[{}] Budget exhausted: {}", self.core_name, e))
+                })?;
 
             // Build request with pruned history
             let messages = self.prune_history(&session.history);
@@ -153,21 +168,17 @@ impl CoreRuntime {
             };
 
             // Call provider
-            let response = self.provider.complete(request).await.map_err(|e| {
+            let response = provider.complete(request).await.map_err(|e| {
                 Temm1eError::Tool(format!("[{}] Provider error: {}", self.core_name, e))
             })?;
 
-            // Record cost in shared budget
-            let cost = budget::calculate_cost(
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-                &self.model_pricing,
-            );
-            self.budget.record_usage(
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-                cost,
-            );
+            // MeteredProvider already records success, error and dropped calls.
+            // Retain the per-result estimate without charging the owner twice.
+            let cost = self
+                .model_pricing
+                .estimate(&response.usage)
+                .upper_usd()
+                .unwrap_or(0.0);
             total_input_tokens = total_input_tokens.saturating_add(response.usage.input_tokens);
             total_output_tokens = total_output_tokens.saturating_add(response.usage.output_tokens);
             total_cost += cost;
@@ -360,6 +371,123 @@ impl CoreRuntime {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn failed_core_call_is_recorded_as_unknown_by_its_owner() {
+        let owner = Arc::new(BudgetTracker::new(0.0));
+        let runtime = CoreRuntime::new(
+            "fixture".into(),
+            "Follow the task".into(),
+            Arc::new(MockProvider),
+            vec![],
+            owner.clone(),
+            ModelPricing::custom(3.0, 15.0),
+            "fixture".into(),
+            30_000,
+            0.0,
+        );
+        let directory = tempfile::tempdir().unwrap();
+        assert!(runtime
+            .run("Do the task", directory.path().into())
+            .await
+            .is_err());
+        assert_eq!(owner.snapshot().recorded_calls, 1);
+        assert_eq!(owner.snapshot().unpriced_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_core_pricing_is_used_once_and_propagates_to_parent() {
+        let parent = Arc::new(BudgetTracker::new(1.0));
+        let owner = Arc::new(BudgetTracker::child(parent.clone()));
+        let mut raw = temm1e_test_utils::MockProvider::with_text("done");
+        raw.response.usage.totals_reported = Some(true);
+        raw.response.usage.cache_read_tokens = Some(0);
+        raw.response.usage.cache_write_tokens = Some(0);
+        let provider = Arc::new(raw);
+        let runtime = CoreRuntime::new(
+            "fixture".into(),
+            "Follow task".into(),
+            provider.clone(),
+            vec![],
+            owner.clone(),
+            ModelPricing::custom(3.0, 15.0),
+            "unknown-priced-fixture".into(),
+            30_000,
+            0.0,
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let result = runtime
+            .run("Do task", directory.path().into())
+            .await
+            .unwrap();
+        assert_eq!(provider.calls().await, 1);
+        for budget in [owner, parent] {
+            assert_eq!(budget.snapshot().recorded_calls, 1);
+            assert_eq!(budget.snapshot().unpriced_calls, 0);
+            assert!((budget.snapshot().cost_usd - 0.00033).abs() < 1e-12);
+            assert!((budget.snapshot().cost_usd - result.cost_usd).abs() < 1e-12);
+        }
+    }
+
+    struct PendingCore(tokio::sync::Notify);
+    #[async_trait::async_trait]
+    impl Provider for PendingCore {
+        fn name(&self) -> &str {
+            "fixture"
+        }
+        async fn complete(
+            &self,
+            _: CompletionRequest,
+        ) -> Result<temm1e_core::types::message::CompletionResponse, Temm1eError> {
+            self.0.notify_one();
+            std::future::pending().await
+        }
+        async fn stream(
+            &self,
+            _: CompletionRequest,
+        ) -> Result<
+            futures::stream::BoxStream<
+                '_,
+                Result<temm1e_core::types::message::StreamChunk, Temm1eError>,
+            >,
+            Temm1eError,
+        > {
+            Err(Temm1eError::Provider("unused".into()))
+        }
+        async fn health_check(&self) -> Result<bool, Temm1eError> {
+            Ok(true)
+        }
+        async fn list_models(&self) -> Result<Vec<String>, Temm1eError> {
+            Ok(vec![])
+        }
+    }
+    #[tokio::test]
+    async fn dropped_core_attempt_propagates_unknown_once() {
+        let parent = Arc::new(BudgetTracker::new(0.0));
+        let owner = Arc::new(BudgetTracker::child(parent.clone()));
+        let provider = Arc::new(PendingCore(tokio::sync::Notify::new()));
+        let runtime = CoreRuntime::new(
+            "fixture".into(),
+            "Follow task".into(),
+            provider.clone(),
+            vec![],
+            owner.clone(),
+            ModelPricing::custom(3.0, 15.0),
+            "fixture".into(),
+            30_000,
+            0.0,
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let mut task = Box::pin(runtime.run("Do task", directory.path().into()));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::select! { _ = provider.0.notified() => {}, result = &mut task => panic!("must be pending: {result:?}") }
+        }).await.unwrap();
+        drop(task);
+        for budget in [owner, parent] {
+            assert_eq!(budget.snapshot().recorded_calls, 1);
+            assert_eq!(budget.snapshot().unpriced_calls, 1);
+        }
+    }
+
     #[test]
     fn prune_history_keeps_all_when_small() {
         let runtime = CoreRuntime {
@@ -367,10 +495,7 @@ mod tests {
             provider: Arc::new(MockProvider),
             tools: Vec::new(),
             budget: Arc::new(BudgetTracker::new(10.0)),
-            model_pricing: ModelPricing {
-                input_per_million: 3.0,
-                output_per_million: 15.0,
-            },
+            model_pricing: ModelPricing::custom(3.0, 15.0),
             model: "test".to_string(),
             max_context_tokens: 30_000,
             core_name: "test".to_string(),

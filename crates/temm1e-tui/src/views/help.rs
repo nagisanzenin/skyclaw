@@ -94,6 +94,7 @@ pub fn render_help(registry: &CommandRegistry, theme: &Theme, area: Rect, buf: &
     lines.push(Line::from(""));
     for (key, desc) in &[
         ("Ctrl+O", "Toggle activity panel"),
+        ("Ctrl+T", "Expand/collapse transcript tools"),
         ("Esc", "Close any open overlay"),
     ] {
         lines.push(shortcut(theme, key, desc));

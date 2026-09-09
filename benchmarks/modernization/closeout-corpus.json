@@ -1,0 +1,280 @@
+[
+  {
+    "id": "utf8_excerpt",
+    "prompt": "Implement excerpt(text, limit): return the longest Unicode character prefix whose UTF-8 bytes fit nonnegative integer limit; raise ValueError for negative limit. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import excerpt\nassert [excerpt('a猫🙂z',n) for n in [0,1,3,4,7,8,9]]==['','a','a','a猫','a猫','a猫🙂','a猫🙂z']\nassert excerpt('',3)==''\ntry: excerpt('x',-1)\nexcept ValueError: pass\nelse: raise AssertionError('negative accepted')",
+    "protected": []
+  },
+  {
+    "id": "lru_eviction",
+    "prompt": "Implement LRU(capacity), nonnegative integer capacity or ValueError. put(key,value) inserts/replaces and marks most recently used. get(key, default=None) returns value and marks used on hit; misses return default without insertion. keys() lists oldest to newest. Capacity zero retains nothing. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import LRU\nc=LRU(2);c.put('a',1);c.put('b',2);assert c.get('a')==1;c.put('c',3);assert c.keys()==['a','c'];assert c.get('b',9)==9;c.put('a',4);assert c.keys()==['c','a'];assert c.get('a')==4\nz=LRU(0);z.put('x',1);assert z.keys()==[]\ntry: LRU(-1)\nexcept ValueError: pass\nelse: raise AssertionError('negative accepted')",
+    "protected": []
+  },
+  {
+    "id": "ini_layering",
+    "prompt": "Implement load(paths): read INI files in order using ConfigParser with interpolation disabled. Return dict of explicit section names to dicts including inherited DEFAULT values; keys lowercase; later values override earlier values. Missing files raise FileNotFoundError. Percent signs remain literal. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n",
+      "base.ini": "[DEFAULT]\nhost=localhost\n[server]\nport=80\nliteral=50%\n",
+      "override.ini": "[server]\nport=81\ndebug=yes\n"
+    },
+    "check": "from solution import load\nassert load(['base.ini','override.ini'])=={'server':{'host':'localhost','port':'81','literal':'50%','debug':'yes'}}\ntry: load(['absent.ini'])\nexcept FileNotFoundError: pass\nelse: raise AssertionError('missing ignored')",
+    "protected": [
+      "base.ini",
+      "override.ini"
+    ]
+  },
+  {
+    "id": "query_redaction",
+    "prompt": "Implement redact(url, sensitive): parse query pairs with blanks preserved; replace values of keys matching sensitive names case-insensitively with REDACTED. Preserve pair order, repeats, other decoded values and URL fragment/path. Re-encode query using urllib.parse.urlencode. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import redact\nassert redact('https://x/a?Token=abc&x=a%20b&token=&x=2#f',{'token'})=='https://x/a?Token=REDACTED&x=a+b&token=REDACTED&x=2#f'\nassert redact('https://x/a#b',set())=='https://x/a#b'",
+    "protected": []
+  },
+  {
+    "id": "archive_paths",
+    "prompt": "Implement safe_member(name): return bool for a safe relative archive path. Reject empty strings, NUL, backslashes, absolute paths, a first component ending in colon, and any component exactly dot-dot. Allow dot components and repeated forward slashes. Do not access the filesystem. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import safe_member\nfor p in ['', '/', '/x', '../x','a/../b','C:/x','a\\\\b','a\\x00b']: assert not safe_member(p),repr(p)\nfor p in ['a/b','./a','a//b','abc..def','a:b/c']: assert safe_member(p),p",
+    "protected": []
+  },
+  {
+    "id": "sqlite_transfer",
+    "prompt": "Implement transfer(conn, source, destination, amount): accounts(id TEXT PRIMARY KEY,balance INTEGER) exists. Require distinct existing IDs and positive integer amount (bool rejected), sufficient source funds. Invalid requests raise ValueError without any balance change. Valid calls atomically debit/credit and commit. Assume no transaction active on entry. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import transfer\nimport sqlite3\nc=sqlite3.connect(':memory:');c.execute('create table accounts(id text primary key,balance integer)');c.executemany('insert into accounts values(?,?)',[('a',10),('b',2)]);c.commit();transfer(c,'a','b',3);assert c.execute('select * from accounts order by id').fetchall()==[('a',7),('b',5)]\nfor args in [('a','b',8),('a','z',1),('a','a',1),('a','b',True),('a','b',0)]:\n try: transfer(c,*args)\n except ValueError: pass\n else: raise AssertionError(args)\n assert c.execute('select balance from accounts order by id').fetchall()==[(7,),(5,)]",
+    "protected": []
+  },
+  {
+    "id": "atomic_text",
+    "prompt": "Implement write_atomic(path,text): write UTF-8 to a temporary sibling, flush and fsync it, then replace the destination with os.replace. On any failure preserve the old destination and remove the temporary file. Accept pathlib.Path. Directory already exists. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import write_atomic\nfrom pathlib import Path\nfrom unittest.mock import patch\nimport tempfile\nwith tempfile.TemporaryDirectory() as d:\n p=Path(d)/'data';p.write_text('old');write_atomic(p,'猫');assert p.read_text()=='猫'\n with patch('os.replace',side_effect=OSError('blocked')):\n  try: write_atomic(p,'new')\n  except OSError: pass\n  else: raise AssertionError('failure swallowed')\n assert p.read_text()=='猫';assert sorted(x.name for x in Path(d).iterdir())==['data']",
+    "protected": []
+  },
+  {
+    "id": "json_lines_chunks",
+    "prompt": "Implement parse_chunks(chunks): iterable of byte chunks comprising UTF-8 JSON Lines. Decode incrementally across arbitrary byte boundaries; ignore blank lines; parse final non-newline-terminated record. Return list of parsed values; malformed JSON or UTF-8 must raise ValueError (UnicodeDecodeError qualifies). Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import parse_chunks\ns='{\"name\":\"猫\"}\\n\\n[1,2]\\ntrue'.encode();assert parse_chunks([s[i:i+1] for i in range(len(s))])==[{'name':'猫'},[1,2],True]\nassert parse_chunks([])==[]\nfor chunks in [[b'{bad}'],[b'\\xff']]:\n try: parse_chunks(chunks)\n except ValueError: pass\n else: raise AssertionError('invalid accepted')",
+    "protected": []
+  },
+  {
+    "id": "stable_topk",
+    "prompt": "Implement topk(items,k): items are dicts with score. Return up to k original objects sorted by score descending, ties in original input order. Negative k raises ValueError, zero returns []. Do not mutate input. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import topk\na=[{'score':2,'id':'a'},{'score':4,'id':'b'},{'score':4,'id':'c'},{'score':-1,'id':'d'}];assert [x['id'] for x in topk(a,3)]==['b','c','a'];assert topk(a,1)[0] is a[1];assert [x['id'] for x in a]==['a','b','c','d'];assert topk(a,0)==[]\ntry: topk(a,-1)\nexcept ValueError: pass\nelse: raise AssertionError('negative accepted')",
+    "protected": []
+  },
+  {
+    "id": "nested_secrets",
+    "prompt": "Implement scrub(value,keys): recursively copy dict/list containers; replace every dict value whose string key matches keys case-insensitively with [REDACTED]. Other scalar values unchanged. Do not modify or share mutable containers with input. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import scrub\nx={'Token':'abc','nested':[{'password':'x','ok':[1]}]};r=scrub(x,{'token','PASSWORD'});assert r=={'Token':'[REDACTED]','nested':[{'password':'[REDACTED]','ok':[1]}]};r['nested'][0]['ok'].append(2);assert x['nested'][0]['ok']==[1];assert x['Token']=='abc'",
+    "protected": []
+  },
+  {
+    "id": "retry_after",
+    "prompt": "Implement retry_after(value,now): now is timezone-aware datetime. Parse a nonnegative decimal integer seconds string or an RFC HTTP date, returning nonnegative float seconds until it. Past date returns 0. Invalid input returns None; signed numbers and fractional numbers invalid. Strip surrounding whitespace. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import retry_after\nfrom datetime import datetime,timezone\nn=datetime(2015,10,21,7,28,0,tzinfo=timezone.utc);assert retry_after(' 120 ',n)==120;assert retry_after('Wed, 21 Oct 2015 07:29:00 GMT',n)==60;assert retry_after('Wed, 21 Oct 2015 07:27:00 GMT',n)==0\nfor x in ['-1','+1','1.5','junk','']: assert retry_after(x,n) is None",
+    "protected": []
+  },
+  {
+    "id": "rolling_counts",
+    "prompt": "Implement counts(events,width): events is a nondecreasing list of integer timestamps. width must be positive else ValueError. Return a list: for each event t count events seen so far in (t-width,t], including itself and earlier duplicates. Empty events yields []; decreasing timestamps raise ValueError. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import counts\nassert counts([0,0,2,5,5,7],5)==[1,2,3,2,3,3];assert counts([],1)==[]\nfor a,w in [([2,1],2),([],0)]:\n try: counts(a,w)\n except ValueError: pass\n else: raise AssertionError('invalid accepted')",
+    "protected": []
+  },
+  {
+    "id": "bounded_async_map",
+    "prompt": "Implement async amap(fn,items,limit): apply async fn to each item, at most limit calls active at once; return results in input order. limit<=0 raises ValueError. On failure cancel and await all outstanding tasks before re-raising the original exception. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import amap\nimport asyncio\nasync def main():\n active=0;peak=0\n async def f(x):\n  nonlocal active,peak\n  active+=1;peak=max(peak,active)\n  try: await asyncio.sleep(.002*(4-x));return x*x\n  finally: active-=1\n assert await amap(f,[1,2,3],2)==[1,4,9];assert peak<=2 and active==0\n async def bad(x):\n  nonlocal active\n  active+=1\n  try:\n   if x==1: await asyncio.sleep(.01);raise RuntimeError('bad')\n   await asyncio.sleep(2)\n  finally: active-=1\n try: await amap(bad,[0,1,2],2)\n except RuntimeError: pass\n else: raise AssertionError('failure swallowed')\n assert active==0\nasyncio.run(main())",
+    "protected": []
+  },
+  {
+    "id": "csv_projection",
+    "prompt": "Implement project(src,dst,columns): read UTF-8 CSV with header and write UTF-8 CSV selecting columns in requested order, including header. Preserve quoted commas/newlines as cell values. Missing column raises ValueError before opening/writing dst. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n",
+      "input.csv": "name,note,age\n\"Doe, Jane\",\"line1\nline2\",40\n"
+    },
+    "check": "from solution import project\nimport csv,tempfile\nfrom pathlib import Path\nwith tempfile.TemporaryDirectory() as d:\n out=Path(d)/'out';project('input.csv',out,['note','name']);assert list(csv.reader(out.open(newline='')))==[['note','name'],['line1\\nline2','Doe, Jane']]\n out.write_text('keep')\n try: project('input.csv',out,['absent'])\n except ValueError: pass\n else: raise AssertionError('missing accepted')\n assert out.read_text()=='keep'",
+    "protected": [
+      "input.csv"
+    ]
+  },
+  {
+    "id": "sql_literal_search",
+    "prompt": "Implement search(conn,fragment): table documents(id INTEGER,title TEXT). Return (id,title) tuples whose title contains literal fragment using SQLite case-insensitive LIKE semantics, ordered by id. Percent and underscore in fragment are literals, not wildcards. Use SQL parameters. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import search\nimport sqlite3\nc=sqlite3.connect(':memory:');c.execute('create table documents(id integer,title text)');c.executemany('insert into documents values(?,?)',[(3,'x_foo'),(1,'100% done'),(2,'100X done'),(4,\"O'Reilly\")]);assert search(c,'%')==[(1,'100% done')];assert search(c,'_')==[(3,'x_foo')];assert search(c,\"O'Reilly\")==[(4,\"O'Reilly\")];assert search(c,\"' OR 1=1 --\")==[]",
+    "protected": []
+  },
+  {
+    "id": "ttl_cache",
+    "prompt": "Implement Cache(ttl,clock), requiring ttl>=0. put(k,v) sets expiry clock()+ttl. get(k,default=None) returns v only while clock()<expiry; expired entries are removed. A fresh put resets expiry. No sleep or real clock dependency. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import Cache\nt=[0];c=Cache(5,lambda:t[0]);c.put('a',1);t[0]=4;assert c.get('a')==1;t[0]=5;assert c.get('a','miss')=='miss';c.put('a',2);t[0]=9;assert c.get('a')==2;t[0]=10;assert c.get('a') is None\nz=Cache(0,lambda:0);z.put('x',1);assert z.get('x') is None",
+    "protected": []
+  },
+  {
+    "id": "json_pointer",
+    "prompt": "Implement resolve(document,pointer): empty pointer returns document; otherwise pointer starts /. Decode ~1 to slash and ~0 to tilde in each component; other tilde escapes invalid ValueError. Traverse dict keys or list indices. List indices must be canonical nonnegative decimal (0 or nonzero-leading digits); invalid or missing paths raise ValueError. Scalars cannot be traversed. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import resolve\nd={'a/b':{'~key':[10,20]},'':7};assert resolve(d,'/a~1b/~0key/1')==20;assert resolve(d,'/')==7;assert resolve(d,'') is d\nfor p in ['x','/a~2b','/a~1b/~0key/01','/a~1b/~0key/-1','/missing']:\n try: resolve(d,p)\n except ValueError: pass\n else: raise AssertionError(p)",
+    "protected": []
+  },
+  {
+    "id": "event_idempotence",
+    "prompt": "Implement apply(events): each dict contains id, account, delta integer. Return account balances after first occurrence of each id; exact duplicates ignored. A repeated id with different account/delta raises ValueError. Input unchanged. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import apply\ne=[{'id':'1','account':'a','delta':3},{'id':'2','account':'a','delta':-1},{'id':'1','account':'a','delta':3}];assert apply(e)=={'a':2};assert len(e)==3;assert apply([])=={}\ntry: apply(e+[{'id':'1','account':'b','delta':3}])\nexcept ValueError: pass\nelse: raise AssertionError('conflict ignored')",
+    "protected": []
+  },
+  {
+    "id": "pagination_cursor",
+    "prompt": "Implement page(rows,after,limit): rows are dicts with distinct integer id, unsorted. limit must be positive. Select IDs strictly greater than after (None means all), ascending, at most limit. Return (selected,next_cursor); next_cursor is last selected id only if more eligible rows remain, otherwise None. Do not mutate input. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import page\nr=[{'id':5},{'id':1},{'id':3}];a,c=page(r,None,2);assert [x['id'] for x in a]==[1,3] and c==3;assert page(r,c,2)==([{'id':5}],None);assert page(r,5,2)==([],None);assert [x['id'] for x in r]==[5,1,3]",
+    "protected": []
+  },
+  {
+    "id": "histogram_quantile",
+    "prompt": "Implement quantile(values,q): q in [0,1], finite; nonempty finite numeric values required, otherwise ValueError. Sort a copy. Linearly interpolate index (n-1)*q between adjacent values. Return numeric result without mutating input. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import quantile\na=[9,1,3,7];assert quantile(a,.5)==5;assert quantile(a,0)==1;assert quantile(a,1)==9;assert a==[9,1,3,7];assert quantile([3],.2)==3\nfor v,q in [([],0),([1],float('nan')),([float('inf')],.5),([1],-1)]:\n try: quantile(v,q)\n except ValueError: pass\n else: raise AssertionError('invalid accepted')",
+    "protected": []
+  },
+  {
+    "id": "line_endings",
+    "prompt": "Implement normalize(data): input bytes, replace CRLF and lone CR with LF; preserve all other bytes including non-UTF8 bytes. Idempotent. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import normalize\nx=b'a\\r\\nb\\rc\\n\\xff\\r\\r\\n';y=b'a\\nb\\nc\\n\\xff\\n\\n';assert normalize(x)==y;assert normalize(y)==y;assert normalize(b'')==b''",
+    "protected": []
+  },
+  {
+    "id": "shell_free_command",
+    "prompt": "Implement run(args,cwd): args is nonempty list of strings; execute directly with shell=False, cwd supplied, capture UTF-8 stdout/stderr with replacement for invalid bytes. Return dict code/stdout/stderr. Nonzero exit is returned, not raised. Reject empty args with ValueError. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import run\nimport sys,os\nr=run([sys.executable,'-c','import sys; print(sys.argv[1]); print(\"err\",file=sys.stderr);sys.exit(3)','$(touch sentinel)'],os.getcwd());assert r=={'code':3,'stdout':'$(touch sentinel)\\n','stderr':'err\\n'};assert not os.path.exists('sentinel')",
+    "protected": []
+  },
+  {
+    "id": "casefold_groups",
+    "prompt": "Implement groups(words): group strings by Unicode casefold key, preserving first-key encounter order and original word order. Return list of lists; retain duplicates. Do not mutate input. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import groups\nw=['Straße','X','STRASSE','x','猫','Straße'];assert groups(w)==[['Straße','STRASSE','Straße'],['X','x'],['猫']];assert groups([])==[];assert len(w)==6",
+    "protected": []
+  },
+  {
+    "id": "escaped_key_values",
+    "prompt": "Implement parse(text): one key=value per nonblank line, split only first equals. Strip whitespace on keys and values; ignore lines whose stripped form starts #. Keys nonempty, duplicate keys or noncomment lines without equals raise ValueError. Return dict. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import parse\nassert parse(' # comment\\n a = b=c \\n\\nempty=\\n')=={'a':'b=c','empty':''}\nfor x in ['a=1\\na=2','=x','oops']:\n try: parse(x)\n except ValueError: pass\n else: raise AssertionError(x)",
+    "protected": []
+  },
+  {
+    "id": "bounded_decompression",
+    "prompt": "Implement inflate(data,limit): decompress a single gzip byte stream, returning bytes only if uncompressed length<=nonnegative limit, otherwise ValueError. Read at most limit+1 uncompressed bytes rather than decompressing without a bound. Negative limit raises ValueError. Invalid gzip may propagate OSError/EOFError. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import inflate\nimport gzip\nassert inflate(gzip.compress(b'abc'),3)==b'abc';assert inflate(gzip.compress(b''),0)==b''\ntry: inflate(gzip.compress(b'x'*100000),20)\nexcept ValueError: pass\nelse: raise AssertionError('limit exceeded')",
+    "protected": []
+  },
+  {
+    "id": "finite_weighted_mean",
+    "prompt": "Implement mean(pairs): pairs are (value,weight) finite numbers, weights>=0; reject invalid numbers, negative weights, empty input or zero total weight with ValueError. Return weighted arithmetic mean. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import mean\nassert mean([(2,1),(8,3),(99,0)])==6.5\nfor p in [[],[(1,0)],[(1,-1)],[(float('nan'),1)],[(1,float('inf'))]]:\n try: mean(p)\n except ValueError: pass\n else: raise AssertionError('invalid accepted')",
+    "protected": []
+  },
+  {
+    "id": "html_text_extraction",
+    "prompt": "Implement text(html): use HTMLParser; ignore all script/style content, decode entities, collect remaining text nodes and join their whitespace-separated words by one space. No third-party dependencies. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import text\nassert text('<p>Hello &amp; <b>world</b></p><script>bad()</script><style>.x{}</style><p>猫</p>')=='Hello & world 猫';assert text(' a\\n b ' )=='a b'",
+    "protected": []
+  },
+  {
+    "id": "filename_manifest",
+    "prompt": "Implement manifest(root): recursively return sorted relative POSIX paths of regular files under root. Do not follow symlink files or symlink directories. Include hidden files; directories themselves omitted. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import manifest\nfrom pathlib import Path\nimport tempfile\nwith tempfile.TemporaryDirectory() as d:\n p=Path(d);(p/'z').mkdir();(p/'z'/'b').write_text('b');(p/'.hidden').write_text('x');(p/'alias').symlink_to(p/'z',target_is_directory=True);(p/'link').symlink_to(p/'.hidden');assert manifest(p)==['.hidden','z/b']",
+    "protected": []
+  },
+  {
+    "id": "version_comparison",
+    "prompt": "Implement compare(a,b): accept strings of one or more dot-separated nonnegative ASCII integer components; leading zeros allowed. Ignore trailing zero components. Return -1,0,1 numerically lexicographic with missing components zero. Invalid input raises ValueError. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import compare\nassert compare('1.10','1.9')==1;assert compare('01.2.0','1.2')==0;assert compare('0','0.0')==0;assert compare('1','1.0.1')==-1\nfor x in ['', '1..2','-1','1.a','١']:\n try: compare(x,'1')\n except ValueError: pass\n else: raise AssertionError(x)",
+    "protected": []
+  },
+  {
+    "id": "state_transition",
+    "prompt": "Implement transition(state,event): states pending,running,done,failed,cancelled. start:pending->running; succeed:running->done; fail:running->failed; cancel:pending/running->cancelled. Any other pair raises ValueError, including events on terminal states. Pure function. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import transition\nassert transition('pending','start')=='running';assert transition('running','succeed')=='done';assert transition('running','fail')=='failed';assert transition('pending','cancel')=='cancelled';assert transition('running','cancel')=='cancelled'\nfor s,e in [('done','start'),('pending','succeed'),('running','start'),('unknown','cancel')]:\n try: transition(s,e)\n except ValueError: pass\n else: raise AssertionError((s,e))",
+    "protected": []
+  }
+]

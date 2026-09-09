@@ -120,8 +120,21 @@ impl EigenTuneStateMachine {
             return Ok(None);
         }
 
+        if !accuracy.is_finite()
+            || !(0.0..=1.0).contains(&accuracy)
+            || self.config.graduation_accuracy <= 0.0
+            || self.config.graduation_accuracy > 1.0
+            || !self.config.graduation_accuracy.is_finite()
+        {
+            return Err(temm1e_core::types::error::Temm1eError::Config(
+                "Invalid graduation accuracy or recorded evaluation proportion".into(),
+            ));
+        }
         let successes = (accuracy * n as f64).round() as u64;
-        let lower = wilson::wilson_lower(successes, n as u64, self.config.graduation_confidence);
+        let lower =
+            wilson::try_wilson_interval(successes, n as u64, self.config.graduation_confidence)
+                .map_err(|e| temm1e_core::types::error::Temm1eError::Config(e.into()))?
+                .0;
 
         if lower >= self.config.graduation_accuracy {
             tracing::info!(
@@ -178,6 +191,11 @@ impl EigenTuneStateMachine {
                     n = record.sprt_n,
                     "Eigen-Tune: SPRT accepted H0, transition Shadowing → Collecting"
                 );
+                Ok(Some(TierState::Collecting))
+            }
+            SprtDecision::Inconclusive => {
+                tracing::info!(tier = %tier.as_str(), n = record.sprt_n,
+                    "Eigen-Tune: sample cap without sufficient evidence; return to Collecting");
                 Ok(Some(TierState::Collecting))
             }
             SprtDecision::Continue => Ok(None),

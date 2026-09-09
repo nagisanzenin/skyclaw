@@ -31,6 +31,42 @@ use crate::learning;
 use crate::prompt_optimizer::build_tiered_system_prompt;
 use crate::runtime::model_supports_vision;
 
+/// Remove only the exact retired, automatically generated DONE instruction
+/// whose embedded request exists as native User content in the raw transcript.
+/// This edits the provider view, never canonical history, user instructions,
+/// custom system messages or stored compaction source evidence.
+pub fn remove_legacy_done_directives(messages: &mut Vec<ChatMessage>, raw: &[ChatMessage]) {
+    let user_texts: std::collections::HashSet<&str> = raw
+        .iter()
+        .filter(|message| matches!(message.role, Role::User))
+        .flat_map(|message| match &message.content {
+            MessageContent::Text(text) => vec![text.as_str()],
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect(),
+        })
+        .collect();
+    let template = crate::done_criteria::format_done_prompt("");
+    let (prefix, suffix) = template
+        .split_once("\"\"")
+        .expect("legacy template has a quoted request");
+    messages.retain(|message| {
+        let (Role::System, MessageContent::Text(text)) = (&message.role, &message.content) else {
+            return true;
+        };
+        let embedded = text
+            .strip_prefix(prefix)
+            .and_then(|text| text.strip_prefix('"'))
+            .and_then(|text| text.strip_suffix(suffix))
+            .and_then(|text| text.strip_suffix('"'));
+        !embedded.is_some_and(|request| user_texts.contains(request))
+    });
+}
+
 /// Fraction of total context budget allocated to recent conversation history.
 /// Skull-aligned: scales with model context window automatically.
 /// 200K model → 50K tokens, 128K → 32K, 2M → 500K.
@@ -55,9 +91,9 @@ pub(crate) fn estimate_tokens(s: &str) -> usize {
     let non_ascii = s.as_bytes().iter().filter(|&&b| b > 127).count();
     let ratio = non_ascii as f64 / s.len().max(1) as f64;
     if ratio > 0.3 {
-        s.len() / 2
+        s.len().div_ceil(2)
     } else {
-        s.len() / 4
+        s.len().div_ceil(4)
     }
 }
 
@@ -65,7 +101,7 @@ pub(crate) fn estimate_tokens(s: &str) -> usize {
 const IMAGE_TOKEN_ESTIMATE: usize = 1000;
 
 /// Estimate token count for a ChatMessage.
-fn estimate_message_tokens(msg: &ChatMessage) -> usize {
+pub(crate) fn estimate_message_tokens(msg: &ChatMessage) -> usize {
     match &msg.content {
         MessageContent::Text(t) => estimate_tokens(t),
         MessageContent::Parts(parts) => parts
@@ -75,9 +111,122 @@ fn estimate_message_tokens(msg: &ChatMessage) -> usize {
                 ContentPart::ToolUse { input, .. } => estimate_tokens(&input.to_string()),
                 ContentPart::ToolResult { content, .. } => estimate_tokens(content),
                 ContentPart::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+                ContentPart::ProviderState { .. } => {
+                    estimate_tokens(&serde_json::to_string(p).unwrap_or_default())
+                }
             })
             .sum(),
     }
+}
+
+pub(crate) fn check_context_fit(
+    request: &CompletionRequest,
+    configured_input_limit: usize,
+    window: usize,
+) -> Result<(), temm1e_core::types::error::Temm1eError> {
+    let allowance =
+        configured_input_limit.min(window.saturating_sub(request.max_tokens.unwrap_or(0) as usize));
+    let target = allowance.saturating_sub(allowance / 10);
+    let estimated = estimate_request_tokens(request);
+    if estimated > target {
+        return Err(temm1e_core::types::error::Temm1eError::Provider(format!("Context needs approximately {estimated} input tokens; allowance is {target}. Raw history and constraints were retained. Reduce optional context, compact completed work, or increase the configured budget.")));
+    }
+    Ok(())
+}
+
+/// Final request accounting after every runtime injection. This is explicitly
+/// an estimate: provider tokenizers, image resolution and wire envelopes differ.
+/// Include message framing, IDs, names, schemas and both system segments.
+pub(crate) fn estimate_request_tokens(request: &CompletionRequest) -> usize {
+    let mut total = 32usize;
+    for system in [&request.system, &request.system_volatile]
+        .into_iter()
+        .flatten()
+    {
+        total = total.saturating_add(estimate_tokens(system).saturating_add(8));
+    }
+    for tool in &request.tools {
+        total = total.saturating_add(
+            estimate_tokens(&serde_json::to_string(tool).unwrap_or_default()).saturating_add(16),
+        );
+    }
+    for message in &request.messages {
+        total = total.saturating_add(16);
+        match &message.content {
+            MessageContent::Text(text) => total = total.saturating_add(estimate_tokens(text)),
+            MessageContent::Parts(parts) => {
+                for part in parts {
+                    total = total.saturating_add(match part {
+                        ContentPart::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+                        _ => estimate_tokens(&serde_json::to_string(part).unwrap_or_default())
+                            .saturating_add(8),
+                    });
+                }
+            }
+        }
+    }
+    total
+}
+
+/// Fit the fully assembled request to the configured input allowance. Keep the
+/// current user turn, system instructions and complete tool groups intact.
+/// Fail explicitly when protected content itself cannot fit; never silently
+/// truncate the user's request or a tool's JSON arguments.
+pub(crate) fn finalize_context(
+    request: &mut CompletionRequest,
+    configured_input_limit: usize,
+    window: usize,
+) -> Result<(), temm1e_core::types::error::Temm1eError> {
+    let input_limit =
+        configured_input_limit.min(window.saturating_sub(request.max_tokens.unwrap_or(0) as usize));
+    // Leave 10% for tokenizer/wire estimation error. This is not a guarantee
+    // against provider context errors; exact adapter counting remains separate.
+    let target = input_limit.saturating_sub(input_limit / 10);
+    let mut dropped = 0usize;
+    while estimate_request_tokens(request) > target {
+        let current_user = request
+            .messages
+            .iter()
+            .rposition(|message| {
+                matches!(message.role, Role::User)
+                    && match &message.content {
+                        MessageContent::Text(_) => true,
+                        MessageContent::Parts(parts) => parts.iter().any(|p| {
+                            matches!(p, ContentPart::Text { .. } | ContentPart::Image { .. })
+                        }),
+                    }
+            })
+            .unwrap_or(0);
+        let groups = group_into_turns(&request.messages);
+        let removable = groups.iter().find(|group| {
+            group
+                .indices
+                .iter()
+                .all(|&i| i < current_user && !matches!(request.messages[i].role, Role::System))
+        });
+        let Some(group) = removable else {
+            return Err(temm1e_core::types::error::Temm1eError::Provider(format!(
+                "Context budget exceeded: protected current turn and instructions need approximately {} input tokens; allowance is {}. Compact the session or increase its configured context budget.",
+                estimate_request_tokens(request), target
+            )));
+        };
+        for &i in group.indices.iter().rev() {
+            request.messages.remove(i);
+            dropped += 1;
+        }
+        if dropped == group.indices.len() {
+            request.append_system_volatile("[Context notice: older conversation messages were omitted to fit the context budget. Their details are unavailable; do not invent them.]");
+        }
+    }
+    if dropped > 0 {
+        warn!(
+            messages_dropped = dropped,
+            estimated_input = estimate_request_tokens(request),
+            input_limit = target,
+            "Final context pass omitted older history after runtime injections"
+        );
+    }
+    Ok(())
 }
 
 /// Build a CompletionRequest from all available context using priority-based
@@ -184,6 +333,69 @@ pub async fn build_context(
     matched_blueprints: &[crate::blueprint::Blueprint],
     lambda_enabled: bool,
     personality: Option<&temm1e_anima::personality::PersonalityConfig>,
+) -> CompletionRequest {
+    build_context_policy(
+        session,
+        memory,
+        tools,
+        model,
+        system_prompt,
+        max_turns,
+        max_context_tokens,
+        prompt_tier,
+        matched_blueprints,
+        lambda_enabled,
+        personality,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn build_context_preserving_history(
+    session: &SessionContext,
+    memory: &dyn Memory,
+    tools: &[Arc<dyn Tool>],
+    model: &str,
+    system_prompt: Option<&str>,
+    max_turns: usize,
+    max_context_tokens: usize,
+    prompt_tier: Option<PromptTier>,
+    matched_blueprints: &[crate::blueprint::Blueprint],
+    lambda_enabled: bool,
+    personality: Option<&temm1e_anima::personality::PersonalityConfig>,
+) -> CompletionRequest {
+    build_context_policy(
+        session,
+        memory,
+        tools,
+        model,
+        system_prompt,
+        max_turns,
+        max_context_tokens,
+        prompt_tier,
+        matched_blueprints,
+        lambda_enabled,
+        personality,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_context_policy(
+    session: &SessionContext,
+    memory: &dyn Memory,
+    tools: &[Arc<dyn Tool>],
+    model: &str,
+    system_prompt: Option<&str>,
+    max_turns: usize,
+    max_context_tokens: usize,
+    prompt_tier: Option<PromptTier>,
+    matched_blueprints: &[crate::blueprint::Blueprint],
+    lambda_enabled: bool,
+    personality: Option<&temm1e_anima::personality::PersonalityConfig>,
+    preserve_history: bool,
 ) -> CompletionRequest {
     let budget = max_context_tokens;
 
@@ -325,6 +537,10 @@ pub async fn build_context(
         }
         recent_tokens += turn_tokens;
         recent_indices.extend_from_slice(&turn.indices);
+    }
+    if preserve_history {
+        recent_indices = (0..history.len()).collect();
+        recent_tokens = history.iter().map(estimate_message_tokens).sum();
     }
     recent_indices.sort_unstable();
 
@@ -605,22 +821,12 @@ pub async fn build_context(
     let mut kept_older = kept_older;
     strip_tool_messages_from_older(&mut kept_older);
 
-    // ── Chat History Digest ────────────────────────────────────────
-    // Extract a clean User ↔ Assistant conversation thread from the
-    // full history (which is dominated by tool outputs). This is injected
-    // as a System message so the LLM never loses track of what the human
-    // actually said, even when tool outputs consume most of the context.
-    let all_messages_for_digest: Vec<&ChatMessage> =
-        kept_older.iter().chain(recent_messages.iter()).collect();
-    let chat_digest = build_chat_digest(&all_messages_for_digest);
-
-    // ── Assemble final message list ────────────────────────────────
-    // Order: summary → chat digest → blueprint → λ-memory → older history → recent messages
+    // ── Native conversation assembly ──────────────────────────────
+    // Keep native roles instead of duplicating user/assistant prose inside a
+    // System digest. That digest repeated already-retained messages, discarded
+    // provenance and amplified old assistant claims without adding evidence.
     let mut messages: Vec<ChatMessage> = Vec::new();
     messages.extend(summary_messages);
-    if let Some(digest_msg) = chat_digest {
-        messages.push(digest_msg);
-    }
     messages.extend(blueprint_messages);
     messages.extend(lambda_messages);
     messages.extend(kept_older);
@@ -771,95 +977,6 @@ fn strip_tool_messages_from_older(messages: &mut Vec<ChatMessage>) {
             "Stripped stale tool messages from older history"
         );
     }
-}
-
-/// Build a chat history digest that separates human conversation from tool
-/// execution logs. Returns `None` if there are fewer than 2 user messages
-/// (no point summarizing a single exchange).
-///
-/// The digest extracts User and Assistant TEXT messages only, ignoring tool
-/// calls, tool results, system injections, and images. This gives the LLM
-/// a clean "what did the human say and what did I reply" view that doesn't
-/// get buried under shell outputs, browser HTML, and file contents.
-fn build_chat_digest(messages: &[&ChatMessage]) -> Option<ChatMessage> {
-    let mut entries: Vec<String> = Vec::new();
-    let mut user_count = 0;
-
-    for msg in messages {
-        let role_label = match msg.role {
-            Role::User => {
-                user_count += 1;
-                "User"
-            }
-            Role::Assistant => "Assistant",
-            _ => continue, // Skip System, Tool
-        };
-
-        // Extract text content only (skip tool_use, tool_result, images)
-        let text = match &msg.content {
-            MessageContent::Text(t) => t.clone(),
-            MessageContent::Parts(parts) => {
-                let texts: Vec<&str> = parts
-                    .iter()
-                    .filter_map(|p| match p {
-                        ContentPart::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                if texts.is_empty() {
-                    continue; // Skip messages that are pure tool_use / tool_result
-                }
-                texts.join(" ")
-            }
-        };
-
-        // Skip empty or trivial messages
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        // Truncate long assistant replies to keep the digest compact
-        let display = if role_label == "Assistant" && trimmed.len() > 200 {
-            // Find a char boundary at or before byte 200
-            let end = trimmed
-                .char_indices()
-                .map(|(i, _)| i)
-                .take_while(|&i| i <= 200)
-                .last()
-                .unwrap_or(0);
-            format!("{}...", &trimmed[..end])
-        } else {
-            trimmed.to_string()
-        };
-
-        entries.push(format!("{}: {}", role_label, display));
-    }
-
-    // Not worth injecting if the conversation is trivial
-    if user_count < 2 {
-        return None;
-    }
-
-    // Cap digest to last 30 exchanges to keep token cost bounded
-    let max_entries = 30;
-    let start = entries.len().saturating_sub(max_entries);
-    let digest_text = entries[start..].join("\n");
-
-    Some(ChatMessage {
-        role: Role::System,
-        content: MessageContent::Text(format!(
-            "=== CHAT HISTORY (human conversation thread) ===\n\
-             Below is the User ↔ Assistant conversation WITHOUT tool outputs.\n\
-             Use this to stay grounded in what the user asked and what you replied.\n\
-             The full tool execution logs follow in the message history below.\n\
-             \n\
-             {}\n\
-             \n\
-             === END CHAT HISTORY ===",
-            digest_text
-        )),
-    })
 }
 
 /// Format the Resource Budget Dashboard for system prompt injection.
@@ -1021,9 +1138,11 @@ fn build_system_prompt(
              \n\
              DONE criteria:\n\
              For compound tasks (multiple steps), define what DONE looks like before executing:\n\
-             - List specific, verifiable conditions that must ALL be true when complete\n\
-             - After completing all steps, verify each condition before declaring done\n\
-             - Report completion with evidence for each condition\n\
+             - Track requested outcomes and verify each with evidence before declaring done\n\
+             - Scale planning to the task; answer simple questions and recall requests directly\n\
+             - Show a brief plan only when useful for coordination or requested by the user\n\
+             - Respect the requested response format; do not prepend a mandatory checklist\n\
+             - Report verified results, unfinished work and uncertainty separately\n\
              \n\
              Self-correction:\n\
              If an approach fails repeatedly, do NOT retry the same way:\n\
@@ -1041,6 +1160,84 @@ fn build_system_prompt(
 mod tests {
     use super::*;
     use temm1e_test_utils::{make_session, MockMemory, MockTool};
+
+    fn final_request(messages: Vec<ChatMessage>) -> CompletionRequest {
+        CompletionRequest {
+            model: "test-model".into(),
+            messages,
+            tools: vec![],
+            max_tokens: Some(100),
+            temperature: None,
+            system: Some("Preserve these instructions".into()),
+            system_volatile: None,
+        }
+    }
+
+    #[test]
+    fn final_budget_counts_late_injections_and_preserves_current_turn() {
+        let current = ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text("Current request".into()),
+        };
+        let mut request = final_request(vec![
+            ChatMessage {
+                role: Role::User,
+                content: MessageContent::Text("old context ".repeat(200)),
+            },
+            ChatMessage {
+                role: Role::Assistant,
+                content: MessageContent::Text("old reply ".repeat(200)),
+            },
+            current,
+        ]);
+        request.append_system_volatile(&"late runtime instructions ".repeat(20));
+        finalize_context(&mut request, 600, 128_000).unwrap();
+        assert!(estimate_request_tokens(&request) <= 540);
+        assert_eq!(request.messages.len(), 1);
+        assert!(
+            matches!(&request.messages[0].content, MessageContent::Text(t) if t == "Current request")
+        );
+        assert!(request
+            .system_volatile
+            .unwrap()
+            .contains("older conversation messages were omitted"));
+    }
+
+    #[test]
+    fn final_budget_removes_tool_pairs_together_and_rejects_oversize_current_turn() {
+        let mut request = final_request(vec![
+            ChatMessage {
+                role: Role::Assistant,
+                content: MessageContent::Parts(vec![ContentPart::ToolUse {
+                    id: "call".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({}),
+                    thought_signature: None,
+                }]),
+            },
+            ChatMessage {
+                role: Role::Tool,
+                content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                    tool_use_id: "call".into(),
+                    content: "large result".repeat(500),
+                    is_error: false,
+                }]),
+            },
+            ChatMessage {
+                role: Role::User,
+                content: MessageContent::Text("Current".into()),
+            },
+        ]);
+        finalize_context(&mut request, 400, 128_000).unwrap();
+        assert_eq!(request.messages.len(), 1);
+        let mut oversized = final_request(vec![ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text("Do not silently truncate this".repeat(500)),
+        }]);
+        let before = serde_json::to_string(&oversized.messages).unwrap();
+        assert!(finalize_context(&mut oversized, 400, 128_000).is_err());
+        assert_eq!(serde_json::to_string(&oversized.messages).unwrap(), before);
+    }
 
     #[tokio::test]
     async fn context_includes_system_prompt() {
@@ -1269,147 +1466,8 @@ mod tests {
         assert!(summary.contains("0 messages dropped"));
     }
 
-    #[test]
-    fn chat_digest_extracts_user_assistant_only() {
-        let m1 = ChatMessage {
-            role: Role::User,
-            content: MessageContent::Text("Deploy the app".to_string()),
-        };
-        let m2 = ChatMessage {
-            role: Role::Assistant,
-            content: MessageContent::Parts(vec![ContentPart::ToolUse {
-                id: "t1".to_string(),
-                name: "shell".to_string(),
-                input: serde_json::json!({"command": "docker build ."}),
-                thought_signature: None,
-            }]),
-        };
-        let m3 = ChatMessage {
-            role: Role::Tool,
-            content: MessageContent::Parts(vec![ContentPart::ToolResult {
-                tool_use_id: "t1".to_string(),
-                content: "Successfully built image abc123\nStep 1/10 : FROM node:20\n...lots of output...".to_string(),
-                is_error: false,
-            }]),
-        };
-        let m4 = ChatMessage {
-            role: Role::Assistant,
-            content: MessageContent::Text("Done! The app is deployed.".to_string()),
-        };
-        let m5 = ChatMessage {
-            role: Role::User,
-            content: MessageContent::Text("Great, now check the logs".to_string()),
-        };
-
-        let refs: Vec<&ChatMessage> = vec![&m1, &m2, &m3, &m4, &m5];
-        let digest = build_chat_digest(&refs);
-        assert!(digest.is_some());
-
-        let text = match &digest
-            .expect("digest should be Some for multi-message input")
-            .content
-        {
-            MessageContent::Text(t) => t.clone(),
-            _ => panic!("Expected text"),
-        };
-
-        // Should contain user and assistant text
-        assert!(text.contains("User: Deploy the app"));
-        assert!(text.contains("Assistant: Done! The app is deployed."));
-        assert!(text.contains("User: Great, now check the logs"));
-
-        // Should NOT contain tool output
-        assert!(!text.contains("docker build"));
-        assert!(!text.contains("Successfully built"));
-        assert!(!text.contains("abc123"));
-
-        // Should have the section headers
-        assert!(text.contains("CHAT HISTORY"));
-    }
-
-    #[test]
-    fn chat_digest_skips_pure_tool_use_messages() {
-        // An assistant message that is ONLY tool_use (no text) should be skipped
-        let m1 = ChatMessage {
-            role: Role::User,
-            content: MessageContent::Text("Run ls".to_string()),
-        };
-        let m2 = ChatMessage {
-            role: Role::Assistant,
-            content: MessageContent::Parts(vec![ContentPart::ToolUse {
-                id: "t1".to_string(),
-                name: "shell".to_string(),
-                input: serde_json::json!({"command": "ls"}),
-                thought_signature: None,
-            }]),
-        };
-        let m3 = ChatMessage {
-            role: Role::User,
-            content: MessageContent::Text("Now run pwd".to_string()),
-        };
-
-        let refs: Vec<&ChatMessage> = vec![&m1, &m2, &m3];
-        let digest = build_chat_digest(&refs);
-        assert!(digest.is_some());
-
-        let text = match &digest
-            .expect("digest should be Some for multi-message input")
-            .content
-        {
-            MessageContent::Text(t) => t.clone(),
-            _ => panic!("Expected text"),
-        };
-
-        // Should have user messages but no tool_use content
-        assert!(text.contains("User: Run ls"));
-        assert!(text.contains("User: Now run pwd"));
-        assert!(!text.contains("shell"));
-    }
-
-    #[test]
-    fn chat_digest_none_for_single_user_message() {
-        let m1 = ChatMessage {
-            role: Role::User,
-            content: MessageContent::Text("Hello".to_string()),
-        };
-
-        let refs: Vec<&ChatMessage> = vec![&m1];
-        assert!(build_chat_digest(&refs).is_none());
-    }
-
-    #[test]
-    fn chat_digest_truncates_long_assistant_replies() {
-        let long_reply = "A".repeat(500);
-        let m1 = ChatMessage {
-            role: Role::User,
-            content: MessageContent::Text("Question 1".to_string()),
-        };
-        let m2 = ChatMessage {
-            role: Role::Assistant,
-            content: MessageContent::Text(long_reply),
-        };
-        let m3 = ChatMessage {
-            role: Role::User,
-            content: MessageContent::Text("Question 2".to_string()),
-        };
-
-        let refs: Vec<&ChatMessage> = vec![&m1, &m2, &m3];
-        let digest =
-            build_chat_digest(&refs).expect("digest should be Some for multi-message input");
-
-        let text = match &digest.content {
-            MessageContent::Text(t) => t.clone(),
-            _ => panic!("Expected text"),
-        };
-
-        // Assistant reply should be truncated to ~200 chars + "..."
-        assert!(text.contains("..."));
-        // But should NOT contain the full 500-char reply
-        assert!(!text.contains(&"A".repeat(500)));
-    }
-
     #[tokio::test]
-    async fn context_includes_chat_digest_when_enough_messages() {
+    async fn context_preserves_native_conversation_without_a_duplicate_system_digest() {
         let memory = MockMemory::new();
         let tools: Vec<Arc<dyn Tool>> = vec![];
         let mut session = make_session();
@@ -1458,7 +1516,7 @@ mod tests {
         )
         .await;
 
-        // Should have a chat digest in the messages
+        // Human content stays in native role messages, once per original turn.
         let has_digest = req.messages.iter().any(|m| {
             if let MessageContent::Text(t) = &m.content {
                 t.contains("CHAT HISTORY")
@@ -1466,7 +1524,11 @@ mod tests {
                 false
             }
         });
-        assert!(has_digest, "Expected chat digest in context messages");
+        assert!(!has_digest);
+        for index in 0..5 {
+            assert_eq!(req.messages.iter().filter(|message| matches!(message.role, Role::User)
+                && matches!(&message.content, MessageContent::Text(text) if text == &format!("User request {index}"))).count(), 1);
+        }
     }
 
     // ── strip_tool_messages_from_older tests ──────────────────────

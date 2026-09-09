@@ -4,7 +4,7 @@
 //! eviction via `VecDeque<K>` (good enough for our access pattern — we don't
 //! need true LRU semantics for a 256-entry, 5-minute-TTL cache).
 
-use crate::web_search::types::{DispatcherOutput, SearchRequest, TimeRange};
+use crate::web_search::types::{DispatcherOutput, SearchRequest, SortOrder, TimeRange};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -14,6 +14,7 @@ pub struct CacheKey {
     pub query: String,
     pub backends_filter: Option<Vec<String>>,
     pub time_range: TimeRange,
+    pub sort: SortOrder,
     pub max_results: usize,
     pub max_total_chars: usize,
     pub max_snippet_chars: usize,
@@ -30,6 +31,7 @@ impl CacheKey {
             query: req.query.clone(),
             backends_filter: backends_filter.clone(),
             time_range: req.time_range,
+            sort: req.sort,
             max_results: req.max_results,
             max_total_chars: req.max_total_chars,
             max_snippet_chars: req.max_snippet_chars,
@@ -174,6 +176,7 @@ mod tests {
             query: query.into(),
             backends_filter: None,
             time_range: TimeRange::All,
+            sort: SortOrder::Relevance,
             max_results: 10,
             max_total_chars: 8000,
             max_snippet_chars: 200,
@@ -183,6 +186,19 @@ mod tests {
             language: None,
             region: None,
         }
+    }
+
+    #[test]
+    fn different_sort_orders_do_not_share_cached_output() {
+        let c = Cache::new(10, Duration::from_secs(60));
+        let relevance = make_key("same query");
+        c.put(relevance.clone(), make_output("relevance"));
+        for sort in [SortOrder::Date, SortOrder::Score] {
+            let mut key = relevance.clone();
+            key.sort = sort;
+            assert!(c.get(&key).is_none());
+        }
+        assert!(c.get(&relevance).is_some());
     }
 
     #[test]

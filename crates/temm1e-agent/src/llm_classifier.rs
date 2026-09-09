@@ -181,7 +181,8 @@ Blueprint hint (for "order" messages only):
 /// blueprints. When non-empty, the classifier may emit a `blueprint_hint` field
 /// for "order" messages, enabling zero-extra-LLM-call blueprint matching.
 ///
-/// Returns the classification and the raw usage for budget tracking.
+/// Returns the classification and raw usage. Callers must meter the provider
+/// before parsing: an error below can follow a completed, billable response.
 /// Falls back with an error if the provider call or JSON parsing fails —
 /// the caller should use rule-based classification as fallback.
 #[allow(clippy::too_many_arguments)]
@@ -316,7 +317,10 @@ pub async fn classify_message(
         .collect::<Vec<_>>()
         .join("");
 
-    debug!(raw_response = %response_text, "LLM classify: got response");
+    debug!(
+        response_bytes = response_text.len(),
+        "LLM classify: got response"
+    );
 
     let classification = parse_classification(&response_text)?;
 

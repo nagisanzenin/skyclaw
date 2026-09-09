@@ -236,15 +236,17 @@ pub struct WitnessConfig {
     #[serde(default = "default_witness_strictness")]
     pub strictness: String,
     /// When true, runs the Planner LLM (clean-slate) before each `process_message`
-    /// to seal a Root Oath. Adds ~1 LLM call per turn (~$0.001 on Claude 3.5 Sonnet).
+    /// to seal a Root Oath when the turn-selection policy admits it. This call
+    /// is metered separately from model-verification call allowance.
     #[serde(default = "default_true")]
     pub auto_planner_oath: bool,
     /// When true, append a one-line readout (`Witness: 4/5 PASS. Cost: $X. Latency: +Yms.`)
     /// to every reply regardless of strictness. Default false (telemetry-only).
     #[serde(default)]
     pub show_readout: bool,
-    /// Maximum LLM cost overhead allowed (% of base agent cost) before degrading
-    /// to Tier 0 only. Default 15.0 (matches lab theory's 12-14% target with margin).
+    /// Intended USD verification overhead percentage. Until per-goal USD
+    /// reservation is implemented, this policy abstains from model verification.
+    /// An explicit model_verification_max_calls selects call-based admission instead.
     #[serde(default = "default_witness_max_overhead_pct")]
     pub max_overhead_pct: f64,
     /// Enable Tier 1 LLM-backed AspectVerifier. Default true.
@@ -253,6 +255,12 @@ pub struct WitnessConfig {
     /// Enable Tier 2 LLM-backed AdversarialJudge (advisory only). Default true.
     #[serde(default = "default_true")]
     pub tier2_enabled: bool,
+    /// Explicit alternative to USD percentage admission for model verification.
+    /// None preserves Tier-0-only fallback until a USD reservation is available.
+    /// Some(n) permits at most n Tier1+Tier2 attempts per turn (0 disables, max8).
+    /// This bounds calls, not subscription quota or dollars. Planner is separate.
+    #[serde(default)]
+    pub model_verification_max_calls: Option<u32>,
     /// Path to the Witness Ledger SQLite DB. None = ~/.temm1e/witness.db.
     #[serde(default)]
     pub ledger_path: Option<String>,
@@ -268,8 +276,28 @@ impl Default for WitnessConfig {
             max_overhead_pct: default_witness_max_overhead_pct(),
             tier1_enabled: true,
             tier2_enabled: true,
+            model_verification_max_calls: None,
             ledger_path: None,
         }
+    }
+}
+
+impl WitnessConfig {
+    pub fn validate(&self) -> Result<(), crate::types::error::Temm1eError> {
+        if !self.max_overhead_pct.is_finite() || self.max_overhead_pct < 0.0 {
+            return Err(crate::types::error::Temm1eError::Config(
+                "witness.max_overhead_pct must be finite and nonnegative".into(),
+            ));
+        }
+        if self
+            .model_verification_max_calls
+            .is_some_and(|calls| calls > 8)
+        {
+            return Err(crate::types::error::Temm1eError::Config(
+                "witness.model_verification_max_calls must be between 0 and 8".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -618,14 +646,15 @@ fn default_memory_backend() -> String {
     "sqlite".to_string()
 }
 
-/// Engram permanent-memory configuration. **Default-on**; when `enabled=false`,
-/// Engram degrades to a simple capped `MEMORY.md` the agent edits via the tool.
+/// Engram permanent-memory configuration. Default-on. Disablement stops
+/// automatic injection and curation; stored facts and explicit tools remain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngramConfig {
-    /// Master switch (default true). Off ⇒ simple capped MEMORY.md fallback.
+    /// Automatic injection/curation switch (default true).
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Curator cadence: "substantive" | "every:N" | "session-end" | "off".
+    /// Implemented cadence: "substantive" | "off". The design also specifies
+    /// "every:N" and "session-end", which are not yet scheduled by the runtime.
     #[serde(default = "default_engram_curator")]
     pub curator: String,
     /// Permanent-block budget as a fraction of the model window (default 0.10).
@@ -646,6 +675,36 @@ pub struct EngramConfig {
     /// Anneal time constant in days (default 60).
     #[serde(default = "default_engram_tau_days")]
     pub tau_days: f32,
+}
+
+impl EngramConfig {
+    /// Reject invalid numeric policy instead of silently disabling decay or
+    /// allowing an unbounded context fraction. Does not modify stored facts.
+    pub fn validate(&self) -> Result<(), Temm1eError> {
+        for (name, value, maximum) in [
+            ("p_max_frac", self.p_max_frac, 1.0),
+            ("eta", self.eta, 1.0),
+            ("theta_up", self.theta_up, 5.0),
+            ("theta_down", self.theta_down, 5.0),
+        ] {
+            if !value.is_finite() || !(0.0..=maximum).contains(&value) {
+                return Err(Temm1eError::Config(format!(
+                    "memory.engram.{name} must be finite and between 0 and {maximum}"
+                )));
+            }
+        }
+        if !self.tau_days.is_finite() || self.tau_days <= 0.0 {
+            return Err(Temm1eError::Config(
+                "memory.engram.tau_days must be finite and greater than 0".into(),
+            ));
+        }
+        if self.theta_down > self.theta_up {
+            return Err(Temm1eError::Config(
+                "memory.engram.theta_down must not exceed theta_up".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for EngramConfig {

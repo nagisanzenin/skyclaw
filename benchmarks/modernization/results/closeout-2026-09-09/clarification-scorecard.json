@@ -1,0 +1,26 @@
+[
+  {
+    "task": "pagination_cursor_explicit_rows",
+    "version": "B",
+    "process_status": 0,
+    "wall_seconds": 196.8552714169491,
+    "foreground_ms": 86223,
+    "verified": true,
+    "check_exit": 0,
+    "check_stdout": "",
+    "check_stderr": "",
+    "protected_unchanged": true
+  },
+  {
+    "task": "pagination_cursor_explicit_rows",
+    "version": "A",
+    "process_status": 0,
+    "wall_seconds": 113.5685855000047,
+    "foreground_ms": 76776,
+    "verified": true,
+    "check_exit": 0,
+    "check_stdout": "",
+    "check_stderr": "",
+    "protected_unchanged": true
+  }
+]

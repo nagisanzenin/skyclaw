@@ -19,6 +19,8 @@ pub enum AgentTaskPhase {
     Preparing,
     /// Classifying message complexity (V2 optimization).
     Classifying,
+    /// Preparing a validated handoff from retained raw history.
+    Compacting { source_messages: usize },
     /// Building context and sending request to LLM provider.
     CallingProvider { round: u32 },
     /// Executing a tool call.
@@ -96,6 +98,9 @@ impl std::fmt::Display for AgentTaskPhase {
         match self {
             Self::Preparing => write!(f, "Preparing"),
             Self::Classifying => write!(f, "Classifying request"),
+            Self::Compacting { source_messages } => {
+                write!(f, "Compacting {source_messages} earlier messages")
+            }
             Self::CallingProvider { round } => write!(f, "Thinking (round {round})"),
             Self::ExecutingTool {
                 round,
@@ -226,4 +231,19 @@ mod tests {
         assert_eq!(a.tools_executed, b.tools_executed);
         assert!(matches!(a.phase, AgentTaskPhase::Preparing));
     }
+}
+
+/// Ordered tool lifecycle event. Unlike a watch snapshot, every transition is
+/// delivered to the configured observer with an execution identity.
+#[derive(Debug, Clone)]
+pub struct AgentToolEvent {
+    pub execution_id: String,
+    pub phase: AgentTaskPhase,
+}
+
+/// Provisional provider text. Only the final response event commits transcript text.
+#[derive(Debug, Clone)]
+pub enum AgentTextEvent {
+    Begin { id: String },
+    Delta { id: String, text: String },
 }

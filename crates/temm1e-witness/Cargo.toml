@@ -25,5 +25,9 @@ reqwest = { workspace = true, features = ["json"] }
 glob = "0.3"
 
 [dev-dependencies]
+futures.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["full", "test-util"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

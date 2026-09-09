@@ -16,7 +16,7 @@ Additional context: <context>
 1. **Read the diff completely.** Use the file tool to read every modified file.
 2. **Cross-reference the architecture.** Check `docs/lab/cambium/ARCHITECTURE.md` and `docs/lab/cambium/CODING_STANDARDS.md` for the current rules.
 3. **Validate the change against TEMM1E conventions:**
-   - Edition 2021, Rust 1.82+
+   - Edition 2021, Rust 1.91.1+
    - `#[async_trait]` on async traits and impls
    - All fallible operations return `Result<T, Temm1eError>`
    - `tracing::*` for logging with structured fields

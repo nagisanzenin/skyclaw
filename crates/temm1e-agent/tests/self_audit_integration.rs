@@ -101,12 +101,14 @@ async fn audit_done_token_serves_pre_audit_text() {
 }
 
 #[tokio::test]
-async fn audit_failed_open_exits_with_original_text() {
+async fn audit_preserves_correction_instead_of_restoring_original_claim() {
     // Round 1: text answer.
     // Round 2: malformed audit response (no [DONE], no tool call).
     let provider = Arc::new(QueuedMockProvider::with_responses(vec![
-        QueuedMockProvider::text_response("Here is the answer."),
-        QueuedMockProvider::text_response("I dunno what to do here"),
+        QueuedMockProvider::text_response("All tests passed."),
+        QueuedMockProvider::text_response(
+            "Correction: I did not run the tests. Their status is unverified.",
+        ),
     ]));
     let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockTool::new("mock_tool"))];
     let runtime = build_runtime(provider.clone(), tools, true);
@@ -121,8 +123,8 @@ async fn audit_failed_open_exits_with_original_text() {
 
     assert_eq!(provider.calls().await, 2);
     assert_eq!(
-        reply.text, "Here is the answer.",
-        "fail-open should serve the original pre-audit text"
+        reply.text, "Correction: I did not run the tests. Their status is unverified.",
+        "the audit correction must reach the user"
     );
 }
 
@@ -208,8 +210,8 @@ async fn audit_hard_cap_one_per_turn() {
         "audit must be capped at 1 — exactly 2 provider calls total"
     );
     assert_eq!(
-        reply.text, "Let me think",
-        "fail-open serves the original pre-audit text"
+        reply.text, "Still thinking",
+        "the audit text is retained without another audit round"
     );
 }
 

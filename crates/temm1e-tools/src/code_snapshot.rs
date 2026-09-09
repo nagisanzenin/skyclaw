@@ -42,38 +42,77 @@ impl CodeSnapshotTool {
         Self
     }
 
-    /// Run a git command in the workspace with a 30-second timeout.
-    /// Returns stdout on success, or a `Temm1eError::Tool` on failure.
     async fn run_git(workspace: &std::path::Path, args: &[&str]) -> Result<String, Temm1eError> {
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(GIT_TIMEOUT_SECS),
-            tokio::process::Command::new("git")
-                .args(args)
-                .current_dir(workspace)
-                .output(),
-        )
-        .await;
+        Self::run_git_index(workspace, None, args).await
+    }
 
-        match result {
-            Ok(Ok(output)) => {
-                if output.status.success() {
-                    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-                } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    Err(Temm1eError::Tool(format!(
-                        "git {} failed: {}",
-                        args.first().unwrap_or(&""),
-                        stderr.trim()
-                    )))
-                }
-            }
-            Ok(Err(e)) => Err(Temm1eError::Tool(format!("Failed to execute git: {}", e))),
-            Err(_) => Err(Temm1eError::Tool(format!(
-                "git {} timed out after {} seconds",
-                args.first().unwrap_or(&""),
-                GIT_TIMEOUT_SECS
-            ))),
+    async fn run_git_index(
+        workspace: &std::path::Path,
+        index: Option<&std::path::Path>,
+        args: &[&str],
+    ) -> Result<String, Temm1eError> {
+        let mut command = tokio::process::Command::new("git");
+        command
+            .args(args)
+            .current_dir(workspace)
+            .env_remove("GIT_INDEX_FILE");
+        if let Some(index) = index {
+            command.env("GIT_INDEX_FILE", index);
         }
+        let output = temm1e_core::process::run_bounded(
+            &mut command,
+            std::time::Duration::from_secs(GIT_TIMEOUT_SECS),
+            1024 * 1024,
+        )
+        .await
+        .map_err(|e| Temm1eError::Tool(format!("Snapshot git command failed: {e}")))?;
+        if !output.status.success() || output.truncated {
+            return Err(Temm1eError::Tool(format!(
+                "Snapshot git command failed or exceeded output limit: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        String::from_utf8(output.stdout)
+            .map(|s| s.trim().to_owned())
+            .map_err(|_| Temm1eError::Tool("Git returned non-UTF-8 metadata".into()))
+    }
+
+    /// Capture working files through a private index, preserving the user's staged state.
+    /// Seed from the real index so tracked ignored files remain tracked.
+    async fn capture_index(
+        workspace: &std::path::Path,
+        index: &std::path::Path,
+    ) -> Result<String, Temm1eError> {
+        let original = Self::run_git(workspace, &["rev-parse", "--git-path", "index"]).await?;
+        let original = workspace.join(original);
+        match std::fs::copy(&original, index) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Self::run_git_index(workspace, Some(index), &["read-tree", "--empty"]).await?;
+            }
+            Err(e) => return Err(Temm1eError::Tool(format!("Cannot copy index: {e}"))),
+        }
+        Self::run_git_index(
+            workspace,
+            Some(index),
+            &[
+                "rm",
+                "-r",
+                "--cached",
+                "--ignore-unmatch",
+                "-f",
+                "--",
+                ".temm1e",
+            ],
+        )
+        .await?;
+        Self::run_git_index(
+            workspace,
+            Some(index),
+            &["add", "-A", "--", ".", ":(exclude).temm1e"],
+        )
+        .await?;
+        Self::run_git_index(workspace, Some(index), &["write-tree"]).await
     }
 
     /// Path to the snapshot store JSON file.
@@ -104,17 +143,26 @@ impl CodeSnapshotTool {
         }
         let json = serde_json::to_string_pretty(store)
             .map_err(|e| Temm1eError::Tool(format!("Failed to serialize snapshot store: {}", e)))?;
-        std::fs::write(&path, json)
+        temm1e_core::private_file::write_private_atomic(&path, json.as_bytes())
             .map_err(|e| Temm1eError::Tool(format!("Failed to write snapshot store: {}", e)))?;
         Ok(())
     }
 
     /// Find a snapshot entry by ID prefix match.
     fn find_snapshot<'a>(store: &'a SnapshotStore, snapshot_id: &str) -> Option<&'a SnapshotEntry> {
-        store
+        if snapshot_id.len() < 4 || !snapshot_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let mut matches = store
             .snapshots
             .iter()
-            .find(|s| s.id.starts_with(snapshot_id) || snapshot_id.starts_with(&s.id))
+            .filter(|s| s.tree_hash.starts_with(snapshot_id));
+        let first = matches.next()?;
+        if matches.any(|entry| entry.tree_hash != first.tree_hash) {
+            None
+        } else {
+            Some(first)
+        }
     }
 
     /// Format the list of available snapshot IDs for error messages.
@@ -136,11 +184,18 @@ impl CodeSnapshotTool {
         workspace: &std::path::Path,
         name: Option<&str>,
     ) -> Result<ToolOutput, Temm1eError> {
-        // Stage all current changes
-        Self::run_git(workspace, &["add", "-A"]).await?;
-
-        // Write the index as a tree object
-        let tree_hash = Self::run_git(workspace, &["write-tree"]).await?;
+        let temporary = tempfile::tempdir().map_err(|e| Temm1eError::Tool(e.to_string()))?;
+        let tree_hash = Self::capture_index(workspace, &temporary.path().join("index")).await?;
+        // Keep the tree reachable across Git garbage collection.
+        Self::run_git(
+            workspace,
+            &[
+                "update-ref",
+                &format!("refs/temm1e/snapshots/{tree_hash}"),
+                &tree_hash,
+            ],
+        )
+        .await?;
 
         let id = if tree_hash.len() >= 8 {
             tree_hash[..8].to_string()
@@ -152,7 +207,7 @@ impl CodeSnapshotTool {
         let snapshot_name = name
             .filter(|n| !n.is_empty())
             .map(|n| n.to_string())
-            .unwrap_or_else(|| format!("snapshot-{}", &timestamp));
+            .unwrap_or_else(|| format!("snapshot-{}", timestamp));
 
         let entry = SnapshotEntry {
             id: id.clone(),
@@ -182,7 +237,7 @@ impl CodeSnapshotTool {
         workspace: &std::path::Path,
         snapshot_id: &str,
     ) -> Result<ToolOutput, Temm1eError> {
-        let store = Self::load_store(workspace)?;
+        let mut store = Self::load_store(workspace)?;
         let entry = Self::find_snapshot(&store, snapshot_id).ok_or_else(|| {
             Temm1eError::Tool(format!(
                 "Snapshot '{}' not found. {}",
@@ -195,9 +250,64 @@ impl CodeSnapshotTool {
         let name = entry.name.clone();
         let id = entry.id.clone();
 
-        // Restore the tree into the index and check out all files
-        Self::run_git(workspace, &["read-tree", &tree_hash]).await?;
-        Self::run_git(workspace, &["checkout-index", "-a", "-f"]).await?;
+        if !matches!(tree_hash.len(), 40 | 64) || !tree_hash.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(Temm1eError::Tool(
+                "Invalid stored snapshot tree hash".into(),
+            ));
+        }
+        let temporary = tempfile::tempdir().map_err(|e| Temm1eError::Tool(e.to_string()))?;
+        let index = temporary.path().join("index");
+        // Old snapshots may contain the bookkeeping directory. Never restore it
+        // over the live store/lock; derive a clean tree through the private index.
+        Self::run_git_index(workspace, Some(&index), &["read-tree", &tree_hash]).await?;
+        Self::run_git_index(
+            workspace,
+            Some(&index),
+            &[
+                "rm",
+                "-r",
+                "--cached",
+                "--ignore-unmatch",
+                "-f",
+                "--",
+                ".temm1e",
+            ],
+        )
+        .await?;
+        let tree_hash = Self::run_git_index(workspace, Some(&index), &["write-tree"]).await?;
+        std::fs::remove_file(&index).map_err(|e| Temm1eError::Tool(e.to_string()))?;
+        let before = Self::capture_index(workspace, &index).await?;
+        Self::run_git(
+            workspace,
+            &[
+                "update-ref",
+                &format!("refs/temm1e/recovery/{before}"),
+                &before,
+            ],
+        )
+        .await?;
+        store.snapshots.push(SnapshotEntry {
+            id: before[..8].to_owned(),
+            tree_hash: before.clone(),
+            name: format!("before-restore-{id}"),
+            timestamp: Utc::now().to_rfc3339(),
+        });
+        Self::save_store(workspace, &store)?;
+        // Remove files introduced since capture, as well as restoring prior content.
+        // Git's worktree update is not a multi-file crash-atomic transaction.
+        Self::run_git_index(
+            workspace,
+            Some(&index),
+            &[
+                "read-tree",
+                "--reset",
+                "-u",
+                "--no-sparse-checkout",
+                &tree_hash,
+            ],
+        )
+        .await?;
 
         tracing::info!(
             snapshot_id = %id,
@@ -206,7 +316,7 @@ impl CodeSnapshotTool {
         );
 
         Ok(ToolOutput {
-            content: format!("Restored to snapshot '{}' ({})", name, id),
+            content: format!("Restored to snapshot '{}' ({}). Pre-restore files are retained at refs/temm1e/recovery/{}; the staging area is unchanged.", name, id, before),
             is_error: false,
         })
     }
@@ -282,7 +392,9 @@ impl Tool for CodeSnapshotTool {
 
     fn description(&self) -> &str {
         "Create, restore, list, or diff workspace snapshots using git internals. \
-         Snapshots capture the full working tree state without creating commits. \
+         Snapshots capture tracked and non-ignored files at the repository root, \
+         excluding .temm1e metadata, while preserving the staging area. \
+         Restore retains a recovery snapshot and removes newer non-ignored files. \
          Actions: create (save current state), restore (revert to a snapshot), \
          list (show all snapshots), diff (compare snapshot to HEAD)."
     }
@@ -337,6 +449,20 @@ impl Tool for CodeSnapshotTool {
         }
 
         let workspace = &ctx.workspace_path;
+        let root = Self::run_git(workspace, &["rev-parse", "--show-toplevel"]).await?;
+        let canonical = workspace
+            .canonicalize()
+            .map_err(|e| Temm1eError::Tool(e.to_string()))?;
+        let root = std::path::Path::new(&root)
+            .canonicalize()
+            .map_err(|e| Temm1eError::Tool(e.to_string()))?;
+        if root != canonical {
+            return Err(Temm1eError::Tool("Snapshots require the repository root as workspace; refusing to change files outside this workspace".into()));
+        }
+        let lock_path = workspace.join(".temm1e/snapshots.lock");
+        let _lock = temm1e_core::private_file::PrivateFileLock::try_exclusive(&lock_path)
+            .map_err(|e| Temm1eError::Tool(e.to_string()))?
+            .ok_or_else(|| Temm1eError::Tool("Another snapshot operation is running".into()))?;
 
         match action {
             "create" => {
@@ -422,6 +548,9 @@ mod tests {
 
     fn make_ctx(workspace: PathBuf) -> ToolContext {
         ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
+            channel: "cli".into(),
             workspace_path: workspace,
             session_id: "test-session".to_string(),
             chat_id: "test-chat".to_string(),
@@ -457,6 +586,106 @@ mod tests {
         assert!(decl.network_access.is_empty());
         assert_eq!(decl.file_access.len(), 1);
         assert!(matches!(&decl.file_access[0], PathAccess::ReadWrite(p) if p == "."));
+    }
+
+    #[tokio::test]
+    async fn snapshot_preserves_staging_and_restores_created_deleted_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_git_repo(dir).await;
+        std::fs::write(dir.join("staged.txt"), "staged version").unwrap();
+        CodeSnapshotTool::run_git(dir, &["add", "staged.txt"])
+            .await
+            .unwrap();
+        std::fs::write(dir.join("staged.txt"), "unstaged version").unwrap();
+        std::fs::write(dir.join("remove-later.txt"), "keep this").unwrap();
+        std::fs::write(dir.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(dir.join("ignored.txt"), "private ignored file").unwrap();
+        let original_index = std::fs::read(dir.join(".git/index")).unwrap();
+        let tool = CodeSnapshotTool::new();
+        let ctx = make_ctx(dir.to_owned());
+        tool.execute(
+            ToolInput {
+                name: "code_snapshot".into(),
+                arguments: serde_json::json!({"action":"create"}),
+            },
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read(dir.join(".git/index")).unwrap(),
+            original_index
+        );
+        let store = CodeSnapshotTool::load_store(dir).unwrap();
+        let entry = &store.snapshots[0];
+        assert_eq!(
+            CodeSnapshotTool::run_git(
+                dir,
+                &[
+                    "rev-parse",
+                    &format!("refs/temm1e/snapshots/{}", entry.tree_hash)
+                ]
+            )
+            .await
+            .unwrap(),
+            entry.tree_hash
+        );
+        std::fs::remove_file(dir.join("remove-later.txt")).unwrap();
+        std::fs::write(dir.join("new-after-snapshot.txt"), "new").unwrap();
+        std::fs::write(dir.join("staged.txt"), "changed after").unwrap();
+        tool.execute(
+            ToolInput {
+                name: "code_snapshot".into(),
+                arguments: serde_json::json!({"action":"restore", "snapshot_id":entry.id}),
+            },
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read(dir.join(".git/index")).unwrap(),
+            original_index
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("staged.txt")).unwrap(),
+            "unstaged version"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("remove-later.txt")).unwrap(),
+            "keep this"
+        );
+        assert!(!dir.join("new-after-snapshot.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("ignored.txt")).unwrap(),
+            "private ignored file"
+        );
+        assert_eq!(
+            CodeSnapshotTool::load_store(dir).unwrap().snapshots.len(),
+            2
+        );
+        let recovery = CodeSnapshotTool::load_store(dir).unwrap().snapshots[1]
+            .id
+            .clone();
+        tool.execute(
+            ToolInput {
+                name: "code_snapshot".into(),
+                arguments: serde_json::json!({"action":"restore", "snapshot_id":recovery}),
+            },
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("staged.txt")).unwrap(),
+            "changed after"
+        );
+        assert!(dir.join("new-after-snapshot.txt").exists());
+        assert!(!dir.join("remove-later.txt").exists());
+        assert_eq!(
+            std::fs::read(dir.join(".git/index")).unwrap(),
+            original_index
+        );
     }
 
     #[tokio::test]

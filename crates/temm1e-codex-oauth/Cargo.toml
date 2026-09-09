@@ -8,6 +8,7 @@ description = "OpenAI Codex OAuth + Responses API provider for TEMM1E"
 
 [dependencies]
 temm1e-core.workspace = true
+temm1e-providers.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -23,4 +24,5 @@ dirs.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 temm1e-test-utils.workspace = true

@@ -313,10 +313,9 @@ async fn deploy_swap_rollback_on_failed_start() {
 }
 
 #[tokio::test]
+#[ignore = "requires a prebuilt target/release/temm1e binary; run explicitly with --ignored"]
 async fn deploy_validate_finds_real_temm1e() {
-    // Find the real temm1e binary in the workspace target dir if it exists.
-    // If not, skip — this is purely a smoke test that the validate step
-    // works against an actual rust binary, not just shell scripts.
+    // Explicit smoke test against an actual Rust binary, not a shell fixture.
     let workspace = std::env::current_dir()
         .unwrap()
         .ancestors()
@@ -324,10 +323,10 @@ async fn deploy_validate_finds_real_temm1e() {
         .unwrap()
         .to_path_buf();
     let bin = workspace.join("target/release/temm1e");
-    if !bin.exists() {
-        println!("Skipping: target/release/temm1e not built");
-        return;
-    }
+    assert!(
+        bin.exists(),
+        "build target/release/temm1e before running this explicit smoke test"
+    );
 
     let tmp = tempdir().unwrap();
     let config = DeployConfig {

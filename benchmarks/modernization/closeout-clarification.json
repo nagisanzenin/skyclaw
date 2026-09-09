@@ -1,0 +1,25 @@
+{
+  "original_corpus_sha256": "5329da604de5de4d84b46dfb70d5343cfa00ba40ac78494b2431a1764965640f",
+  "original_task": {
+    "id": "pagination_cursor",
+    "prompt": "Implement page(rows,after,limit): rows are dicts with distinct integer id, unsorted. limit must be positive. Select IDs strictly greater than after (None means all), ascending, at most limit. Return (selected,next_cursor); next_cursor is last selected id only if more eligible rows remain, otherwise None. Do not mutate input. Use only Python standard library. Implement in solution.py. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import page\nr=[{'id':5},{'id':1},{'id':3}];a,c=page(r,None,2);assert [x['id'] for x in a]==[1,3] and c==3;assert page(r,c,2)==([{'id':5}],None);assert page(r,5,2)==([],None);assert [x['id'] for x in r]==[5,1,3]",
+    "protected": []
+  },
+  "classification": "ambiguous output contract; original observed failure retained, not rescored",
+  "reason": "Original says Select IDs, then returns selected without defining selected element type; external check requires row dicts. B returned integer IDs and A returned dictionaries. Neither output-type interpretation was explicitly excluded.",
+  "corrected_task": {
+    "id": "pagination_cursor_explicit_rows",
+    "prompt": "Implement page(rows,after,limit) in solution.py: rows are dicts with distinct integer id, unsorted. limit must be positive, otherwise raise ValueError. Select rows whose IDs are strictly greater than after (None means all), sort those rows by id ascending and retain at most limit rows. Return (selected,next_cursor), where selected is a list of the original row DICTIONARIES, not a list of integer IDs. next_cursor is the last selected row id only if more eligible rows remain, otherwise None. Do not mutate input. Use only Python standard library. Inspect the workspace, execute checks and report only observed results. Do not change existing fixture files.",
+    "files": {
+      "solution.py": "# Implement the requested API here.\n"
+    },
+    "check": "from solution import page\nr=[{'id':5},{'id':1},{'id':3}];a,c=page(r,None,2);assert [x['id'] for x in a]==[1,3] and c==3;assert page(r,c,2)==([{'id':5}],None);assert page(r,5,2)==([],None);assert [x['id'] for x in r]==[5,1,3]",
+    "protected": []
+  },
+  "protocol": "Run one new B-first/A-second pair after all original30pairs finish, identical binaries/account/resources. Report original raw30-pair totals unchanged and separately report clarified pair. Do not retry a failing clarified result. No claim that original strict gate passed.",
+  "status": "frozen before clarification requests"
+}

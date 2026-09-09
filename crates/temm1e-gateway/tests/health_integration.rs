@@ -28,7 +28,7 @@ fn make_test_state() -> Arc<AppState> {
 
     Arc::new(AppState {
         channels: vec![],
-        agent,
+        agent: Arc::new(tokio::sync::RwLock::new(Some(agent))),
         config: GatewayConfig::default(),
         sessions: SessionManager::new(),
         identity: None,

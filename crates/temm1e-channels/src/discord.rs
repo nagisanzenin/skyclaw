@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use temm1e_core::message_text::split_message;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -38,25 +39,18 @@ struct AllowlistFile {
 
 /// Return the path to `~/.temm1e/discord_allowlist.toml`.
 fn allowlist_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".temm1e").join("discord_allowlist.toml"))
+    Some(temm1e_core::config::data_dir().join("discord_allowlist.toml"))
 }
 
 /// Load the persisted Discord allowlist from disk.
 /// Returns `None` if the file does not exist or cannot be parsed.
 fn load_allowlist_file() -> Option<AllowlistFile> {
     let path = allowlist_path()?;
-    let content = std::fs::read_to_string(&path).ok()?;
-    match toml::from_str(&content) {
-        Ok(parsed) => Some(parsed),
-        Err(e) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %e,
-                "Failed to parse Discord allowlist file, ignoring"
-            );
-            None
-        }
-    }
+    let file = temm1e_core::types::rbac::read_role_file(&path).ok()??;
+    Some(AllowlistFile {
+        admin: file.admin,
+        users: file.users,
+    })
 }
 
 /// Save the Discord allowlist to disk. Creates `~/.temm1e/` if needed.
@@ -64,16 +58,7 @@ fn save_allowlist_file(data: &AllowlistFile) -> Result<(), Temm1eError> {
     let path = allowlist_path().ok_or_else(|| {
         Temm1eError::Channel("Cannot determine home directory for Discord allowlist".into())
     })?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            Temm1eError::Channel(format!("Failed to create ~/.temm1e directory: {e}"))
-        })?;
-    }
-    let content = toml::to_string_pretty(data)
-        .map_err(|e| Temm1eError::Channel(format!("Failed to serialize Discord allowlist: {e}")))?;
-    std::fs::write(&path, content).map_err(|e| {
-        Temm1eError::Channel(format!("Failed to write Discord allowlist file: {e}"))
-    })?;
+    temm1e_core::types::rbac::save_channel_allowlist(&path, &data.admin, &data.users)?;
     tracing::info!(path = %path.display(), "Discord allowlist saved");
     Ok(())
 }
@@ -162,6 +147,10 @@ impl DiscordChannel {
         let (tx, rx) = mpsc::channel(256);
 
         // Try to load persisted allowlist; fall back to config.
+        // Corruption is not first-user setup. Preserve the file and fail startup.
+        if let Some(path) = allowlist_path() {
+            temm1e_core::types::rbac::read_role_file(&path)?;
+        }
         let (allowlist, admin) = if let Some(file) = load_allowlist_file() {
             tracing::info!(
                 admin = %file.admin,
@@ -342,7 +331,7 @@ impl Channel for DiscordChannel {
         };
 
         // Discord has a 2000 character message limit. Split if needed.
-        let chunks = split_message(&text, 2000);
+        let chunks = split_message(&text, 2000)?;
         for (i, chunk) in chunks.iter().enumerate() {
             let mut builder = CreateMessage::new().content(chunk);
 
@@ -367,6 +356,21 @@ impl Channel for DiscordChannel {
 
     fn file_transfer(&self) -> Option<&dyn FileTransfer> {
         Some(self)
+    }
+
+    fn get_role(&self, user_id: &str) -> Option<temm1e_core::types::rbac::Role> {
+        let owner = self.admin.read().ok()?;
+        let path = temm1e_core::types::rbac::role_file_path(self.name());
+        temm1e_core::types::rbac::resolve_channel_role(
+            path.as_deref(),
+            user_id,
+            self.is_allowed(user_id),
+            owner.as_deref(),
+        )
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, channel = self.name(), "Authorization denied");
+            None
+        })
     }
 
     fn is_allowed(&self, user_id: &str) -> bool {
@@ -972,49 +976,6 @@ fn extract_attachments(msg: &Message) -> Vec<AttachmentRef> {
         .collect()
 }
 
-/// Find the last byte offset that is on a UTF-8 char boundary at or before `max`.
-fn floor_char_boundary(s: &str, max: usize) -> usize {
-    if max >= s.len() {
-        return s.len();
-    }
-    let mut i = max;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// Split a message into chunks that fit within Discord's character limit.
-/// All splits respect UTF-8 char boundaries to prevent panics on multi-byte text.
-fn split_message(text: &str, max_len: usize) -> Vec<String> {
-    if text.len() <= max_len {
-        return vec![text.to_string()];
-    }
-
-    let mut chunks = Vec::new();
-    let mut remaining = text;
-
-    while !remaining.is_empty() {
-        if remaining.len() <= max_len {
-            chunks.push(remaining.to_string());
-            break;
-        }
-
-        let safe_end = floor_char_boundary(remaining, max_len);
-        // Try to split at a newline boundary
-        let split_at = remaining[..safe_end].rfind('\n').unwrap_or_else(|| {
-            // Fall back to splitting at a space
-            remaining[..safe_end].rfind(' ').unwrap_or(safe_end)
-        });
-
-        let (chunk, rest) = remaining.split_at(split_at);
-        chunks.push(chunk.to_string());
-        remaining = rest.trim_start_matches('\n');
-    }
-
-    chunks
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1169,14 +1130,14 @@ mod tests {
 
     #[test]
     fn split_message_short() {
-        let chunks = split_message("hello", 2000);
+        let chunks = split_message("hello", 2000).unwrap();
         assert_eq!(chunks, vec!["hello"]);
     }
 
     #[test]
     fn split_message_at_limit() {
         let text = "a".repeat(2000);
-        let chunks = split_message(&text, 2000);
+        let chunks = split_message(&text, 2000).unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].len(), 2000);
     }
@@ -1184,7 +1145,7 @@ mod tests {
     #[test]
     fn split_message_over_limit() {
         let text = "a".repeat(2500);
-        let chunks = split_message(&text, 2000);
+        let chunks = split_message(&text, 2000).unwrap();
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].len(), 2000);
         assert_eq!(chunks[1].len(), 500);
@@ -1195,17 +1156,14 @@ mod tests {
         let mut text = "a".repeat(1900);
         text.push('\n');
         text.push_str(&"b".repeat(500));
-        let chunks = split_message(&text, 2000);
+        let chunks = split_message(&text, 2000).unwrap();
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].len(), 1900);
+        assert_eq!(chunks[0].len(), 1901);
     }
 
     #[test]
     fn extract_attachments_empty() {
-        // We cannot easily construct a serenity Message in tests without
-        // the full Discord API, so we test the split_message helper instead.
-        // The extract_attachments function is a trivial mapping and will be
-        // validated by integration tests.
+        assert!(extract_attachments(&Message::default()).is_empty());
     }
 
     // ── delete_message trait method existence ─────────────────────────

@@ -1,16 +1,17 @@
 //! Slack channel — uses the Slack Web API with poll-based message retrieval.
 //!
 //! This channel polls Slack conversations for new messages and sends responses
-//! via the `chat.postMessage` API. File transfer is supported via `files.upload`
+//! via the `chat.postMessage` API. File transfer is supported via Slack’s external-upload workflow
 //! (sending) and authenticated downloads from `url_private` (receiving).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use temm1e_core::message_text::split_message;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures::stream::BoxStream;
+use futures::{stream::BoxStream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -132,15 +133,18 @@ struct AllowlistFile {
 
 /// Return the path to `~/.temm1e/slack_allowlist.toml`.
 fn allowlist_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".temm1e").join("slack_allowlist.toml"))
+    Some(temm1e_core::config::data_dir().join("slack_allowlist.toml"))
 }
 
 /// Load the persisted Slack allowlist from disk.
 /// Returns `None` if the file does not exist or cannot be parsed.
 fn load_allowlist_file() -> Option<AllowlistFile> {
     let path = allowlist_path()?;
-    let content = std::fs::read_to_string(&path).ok()?;
-    toml::from_str(&content).ok()
+    let file = temm1e_core::types::rbac::read_role_file(&path).ok()??;
+    Some(AllowlistFile {
+        admin: file.admin,
+        users: file.users,
+    })
 }
 
 /// Save the Slack allowlist to disk. Creates `~/.temm1e/` if needed.
@@ -148,15 +152,7 @@ fn save_allowlist_file(data: &AllowlistFile) -> Result<(), Temm1eError> {
     let path = allowlist_path().ok_or_else(|| {
         Temm1eError::Channel("Cannot determine home directory for Slack allowlist".into())
     })?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            Temm1eError::Channel(format!("Failed to create ~/.temm1e directory: {e}"))
-        })?;
-    }
-    let content = toml::to_string_pretty(data)
-        .map_err(|e| Temm1eError::Channel(format!("Failed to serialize Slack allowlist: {e}")))?;
-    std::fs::write(&path, content)
-        .map_err(|e| Temm1eError::Channel(format!("Failed to write Slack allowlist file: {e}")))?;
+    temm1e_core::types::rbac::save_channel_allowlist(&path, &data.admin, &data.users)?;
     tracing::info!(path = %path.display(), "Slack allowlist saved");
     Ok(())
 }
@@ -194,7 +190,7 @@ fn persist_allowlist(
 /// Implements the `Channel` and `FileTransfer` traits for Slack bot
 /// integration via the Slack Web API. Uses poll-based message retrieval
 /// with `conversations.history`, sending via `chat.postMessage`, and
-/// file transfer via `files.upload` / authenticated `url_private` downloads.
+/// file transfer via Slack’s external-upload workflow / authenticated `url_private` downloads.
 pub struct SlackChannel {
     /// Bot OAuth token for API calls.
     token: String,
@@ -253,6 +249,10 @@ impl SlackChannel {
         let (tx, rx) = mpsc::channel(256);
 
         // Try to load persisted allowlist; fall back to config.
+        // Corruption is not first-user setup. Preserve the file and fail startup.
+        if let Some(path) = allowlist_path() {
+            temm1e_core::types::rbac::read_role_file(&path)?;
+        }
         let (allowlist, admin) = if let Some(file) = load_allowlist_file() {
             tracing::info!(
                 admin = %file.admin,
@@ -377,7 +377,7 @@ impl Channel for SlackChannel {
     }
 
     async fn send_message(&self, msg: OutboundMessage) -> Result<(), Temm1eError> {
-        let chunks = split_message(&msg.text, SLACK_MESSAGE_LIMIT);
+        let chunks = split_message(&msg.text, SLACK_MESSAGE_LIMIT)?;
 
         for chunk in chunks {
             let mut body = serde_json::json!({
@@ -422,6 +422,21 @@ impl Channel for SlackChannel {
 
     fn file_transfer(&self) -> Option<&dyn FileTransfer> {
         Some(self)
+    }
+
+    fn get_role(&self, user_id: &str) -> Option<temm1e_core::types::rbac::Role> {
+        let owner = self.admin.read().ok()?;
+        let path = temm1e_core::types::rbac::role_file_path(self.name());
+        temm1e_core::types::rbac::resolve_channel_role(
+            path.as_deref(),
+            user_id,
+            self.is_allowed(user_id),
+            owner.as_deref(),
+        )
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, channel = self.name(), "Authorization denied");
+            None
+        })
     }
 
     fn is_allowed(&self, user_id: &str) -> bool {
@@ -516,61 +531,55 @@ impl FileTransfer for SlackChannel {
     }
 
     async fn send_file(&self, chat_id: &str, file: OutboundFile) -> Result<(), Temm1eError> {
+        let too_large = || {
+            Temm1eError::FileTransfer("Slack upload exceeds the configured 100 MiB limit".into())
+        };
         let data = match &file.data {
-            FileData::Bytes(b) => b.to_vec(),
+            FileData::Bytes(bytes) => {
+                if bytes.len() > SLACK_UPLOAD_LIMIT {
+                    return Err(too_large());
+                }
+                bytes.to_vec()
+            }
             FileData::Url(url) => {
-                let response = reqwest::get(url).await.map_err(|e| {
-                    Temm1eError::FileTransfer(format!("Failed to download file from URL: {e}"))
-                })?;
-                response
-                    .bytes()
+                let response = self
+                    .client
+                    .get(url)
+                    .timeout(std::time::Duration::from_secs(120))
+                    .send()
                     .await
-                    .map_err(|e| {
-                        Temm1eError::FileTransfer(format!("Failed to read file bytes: {e}"))
-                    })?
-                    .to_vec()
+                    .map_err(|e| Temm1eError::FileTransfer(e.without_url().to_string()))?
+                    .error_for_status()
+                    .map_err(|e| Temm1eError::FileTransfer(e.without_url().to_string()))?;
+                if response
+                    .content_length()
+                    .is_some_and(|n| n > SLACK_UPLOAD_LIMIT as u64)
+                {
+                    return Err(too_large());
+                }
+                let mut stream = response.bytes_stream();
+                let mut data = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk
+                        .map_err(|e| Temm1eError::FileTransfer(e.without_url().to_string()))?;
+                    if chunk.len() > SLACK_UPLOAD_LIMIT.saturating_sub(data.len()) {
+                        return Err(too_large());
+                    }
+                    data.extend_from_slice(&chunk);
+                }
+                data
             }
         };
 
-        // Use files.upload API (v1) for simplicity.
-        let mut form = reqwest::multipart::Form::new()
-            .text("channels", chat_id.to_string())
-            .text("filename", file.name.clone());
-
-        if let Some(ref caption) = file.caption {
-            form = form.text("initial_comment", caption.clone());
-        }
-
-        let part = reqwest::multipart::Part::bytes(data)
-            .file_name(file.name.clone())
-            .mime_str(&file.mime_type)
-            .map_err(|e| Temm1eError::FileTransfer(format!("Invalid MIME type: {e}")))?;
-
-        form = form.part("file", part);
-
-        let response = self
-            .client
-            .post(format!("{SLACK_API_BASE}/files.upload"))
-            .bearer_auth(&self.token)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| {
-                Temm1eError::FileTransfer(format!("Failed to upload file to Slack: {e}"))
-            })?;
-
-        let result: SlackApiResponse<serde_json::Value> = response.json().await.map_err(|e| {
-            Temm1eError::FileTransfer(format!("Failed to parse Slack files.upload response: {e}"))
-        })?;
-
-        if !result.ok {
-            return Err(Temm1eError::FileTransfer(format!(
-                "Slack files.upload failed: {}",
-                result.error.unwrap_or_else(|| "unknown error".into())
-            )));
-        }
-
-        Ok(())
+        upload_slack_file(
+            &self.client,
+            &self.token,
+            SLACK_API_BASE,
+            chat_id,
+            &file,
+            data,
+        )
+        .await
     }
 
     async fn send_file_stream(
@@ -591,6 +600,103 @@ impl FileTransfer for SlackChannel {
     fn max_file_size(&self) -> usize {
         SLACK_UPLOAD_LIMIT
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct SlackUploadTarget {
+    upload_url: String,
+    file_id: String,
+}
+
+/// Slack's three-stage external upload protocol. Only API calls carry the bot
+/// token; the returned upload URL receives raw file bytes without credentials.
+async fn upload_slack_file(
+    client: &reqwest::Client,
+    token: &str,
+    api_base: &str,
+    chat_id: &str,
+    file: &OutboundFile,
+    data: Vec<u8>,
+) -> Result<(), Temm1eError> {
+    let failure = |error: reqwest::Error| {
+        Temm1eError::FileTransfer(format!(
+            "Slack upload request failed: {}",
+            error.without_url()
+        ))
+    };
+    if data.len() > SLACK_UPLOAD_LIMIT {
+        return Err(Temm1eError::FileTransfer(
+            "Slack upload exceeds the configured 100 MiB limit".into(),
+        ));
+    }
+    let response: SlackApiResponse<SlackUploadTarget> = client
+        .post(format!("{api_base}/files.getUploadURLExternal"))
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(30))
+        .json(&serde_json::json!({"filename": file.name, "length": data.len()}))
+        .send()
+        .await
+        .map_err(failure)?
+        .error_for_status()
+        .map_err(failure)?
+        .json()
+        .await
+        .map_err(failure)?;
+    if !response.ok {
+        return Err(Temm1eError::FileTransfer(format!(
+            "Slack upload allocation failed: {}",
+            response.error.unwrap_or_else(|| "unknown error".into())
+        )));
+    }
+    let target = response
+        .data
+        .ok_or_else(|| Temm1eError::FileTransfer("Slack returned no upload target".into()))?;
+    let url = reqwest::Url::parse(&target.upload_url)
+        .map_err(|_| Temm1eError::FileTransfer("Slack returned an invalid upload URL".into()))?;
+    let local_fixture = cfg!(test)
+        && api_base.starts_with("http://127.0.0.1:")
+        && url.host_str() == Some("127.0.0.1");
+    if url.scheme() != "https" && !local_fixture {
+        return Err(Temm1eError::FileTransfer(
+            "Slack upload URL must use HTTPS".into(),
+        ));
+    }
+    client
+        .post(url)
+        .timeout(std::time::Duration::from_secs(120))
+        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+        .body(data)
+        .send()
+        .await
+        .map_err(failure)?
+        .error_for_status()
+        .map_err(failure)?;
+    let mut completion = serde_json::json!({
+        "files": [{"id": target.file_id, "title": file.name}], "channel_id": chat_id,
+    });
+    if let Some(caption) = &file.caption {
+        completion["initial_comment"] = caption.clone().into();
+    }
+    let result: SlackApiResponse<serde_json::Value> = client
+        .post(format!("{api_base}/files.completeUploadExternal"))
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(30))
+        .json(&completion)
+        .send()
+        .await
+        .map_err(failure)?
+        .error_for_status()
+        .map_err(failure)?
+        .json()
+        .await
+        .map_err(failure)?;
+    if !result.ok {
+        return Err(Temm1eError::FileTransfer(format!(
+            "Slack upload completion failed: {}",
+            result.error.unwrap_or_else(|| "unknown error".into())
+        )));
+    }
+    Ok(())
 }
 
 // ── Polling loop ──────────────────────────────────────────────────
@@ -902,52 +1008,6 @@ fn extract_slack_attachments(msg: &SlackMessage) -> Vec<AttachmentRef> {
         .collect()
 }
 
-/// Split a message into chunks that fit within Slack's character limit.
-/// Tries to split at newline boundaries first, then at spaces, then at
-/// the hard limit.
-/// Find the last byte offset that is on a UTF-8 char boundary at or before `max`.
-fn floor_char_boundary(s: &str, max: usize) -> usize {
-    if max >= s.len() {
-        return s.len();
-    }
-    let mut i = max;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// Split a message into chunks that fit within Slack's character limit.
-/// All splits respect UTF-8 char boundaries to prevent panics on multi-byte text.
-fn split_message(text: &str, max_len: usize) -> Vec<String> {
-    if text.len() <= max_len {
-        return vec![text.to_string()];
-    }
-
-    let mut chunks = Vec::new();
-    let mut remaining = text;
-
-    while !remaining.is_empty() {
-        if remaining.len() <= max_len {
-            chunks.push(remaining.to_string());
-            break;
-        }
-
-        let safe_end = floor_char_boundary(remaining, max_len);
-        // Try to split at a newline boundary.
-        let split_at = remaining[..safe_end].rfind('\n').unwrap_or_else(|| {
-            // Fall back to splitting at a space.
-            remaining[..safe_end].rfind(' ').unwrap_or(safe_end)
-        });
-
-        let (chunk, rest) = remaining.split_at(split_at);
-        chunks.push(chunk.to_string());
-        remaining = rest.trim_start_matches('\n');
-    }
-
-    chunks
-}
-
 /// Sanitize a file name to prevent path traversal.
 /// Strips all directory components and ensures the name is safe.
 fn sanitize_filename(name: &str) -> String {
@@ -959,6 +1019,111 @@ fn sanitize_filename(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    async fn external_upload_fixture(fail_upload: bool) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let upload_url = format!("{base}/upload");
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for step in 0..if fail_upload { 2 } else { 3 } {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let (header_end, length) = loop {
+                    let mut bytes = [0u8; 1024];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&bytes[..n]);
+                    if let Some(index) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&request[..index]).to_lowercase();
+                        let length: usize = header
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        break (index + 4, length);
+                    }
+                };
+                while request.len() < header_end + length {
+                    let mut bytes = [0u8; 1024];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&bytes[..n]);
+                }
+                let header = String::from_utf8_lossy(&request[..header_end]).to_string();
+                requests.push((header, request[header_end..header_end + length].to_vec()));
+                let body = match step {
+                    0 => serde_json::json!({"ok": true, "upload_url": upload_url, "file_id": "Ffixture"}).to_string(),
+                    1 => "uploaded".into(),
+                    _ => serde_json::json!({"ok": true, "files": [{"id": "Ffixture"}]}).to_string(),
+                };
+                let status = if step == 1 && fail_upload {
+                    "500 Internal Server Error"
+                } else {
+                    "200 OK"
+                };
+                let response = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        let file = super::OutboundFile {
+            name: "report.txt".into(),
+            mime_type: "text/plain".into(),
+            caption: Some("fixture caption".into()),
+            data: super::FileData::Bytes(super::Bytes::from_static(b"proof")),
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            super::upload_slack_file(
+                &reqwest::Client::new(),
+                "fixture-token",
+                &base,
+                "Cfixture",
+                &file,
+                b"proof".to_vec(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_err(), fail_upload);
+        let requests = server.await.unwrap();
+        assert!(requests[0]
+            .0
+            .starts_with("POST /files.getUploadURLExternal "));
+        assert!(requests[0]
+            .0
+            .to_lowercase()
+            .contains("authorization: bearer fixture-token"));
+        let allocation: serde_json::Value = serde_json::from_slice(&requests[0].1).unwrap();
+        assert_eq!(allocation["length"], 5);
+        assert_eq!(allocation["filename"], "report.txt");
+        assert!(requests[1].0.starts_with("POST /upload "));
+        assert!(!requests[1].0.to_lowercase().contains("authorization:"));
+        assert_eq!(requests[1].1, b"proof");
+        if !fail_upload {
+            assert!(requests[2]
+                .0
+                .starts_with("POST /files.completeUploadExternal "));
+            let completion: serde_json::Value = serde_json::from_slice(&requests[2].1).unwrap();
+            assert_eq!(completion["channel_id"], "Cfixture");
+            assert_eq!(completion["files"][0]["id"], "Ffixture");
+            assert_eq!(completion["initial_comment"], "fixture caption");
+        }
+    }
+
+    #[tokio::test]
+    async fn external_upload_preserves_file_caption_and_keeps_token_off_upload_host() {
+        external_upload_fixture(false).await;
+    }
+
+    #[tokio::test]
+    async fn failed_byte_upload_never_calls_complete() {
+        external_upload_fixture(true).await;
+    }
     use super::*;
 
     fn test_config(token: Option<&str>, allowlist: Vec<String>) -> ChannelConfig {
@@ -1066,14 +1231,14 @@ mod tests {
 
     #[test]
     fn split_message_short() {
-        let chunks = split_message("hello", SLACK_MESSAGE_LIMIT);
+        let chunks = split_message("hello", SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks, vec!["hello"]);
     }
 
     #[test]
     fn split_message_at_limit() {
         let text = "a".repeat(SLACK_MESSAGE_LIMIT);
-        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT);
+        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].len(), SLACK_MESSAGE_LIMIT);
     }
@@ -1081,7 +1246,7 @@ mod tests {
     #[test]
     fn split_message_over_limit() {
         let text = "a".repeat(5000);
-        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT);
+        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].len(), SLACK_MESSAGE_LIMIT);
         assert_eq!(chunks[1].len(), 1000);
@@ -1092,14 +1257,14 @@ mod tests {
         let mut text = "a".repeat(3900);
         text.push('\n');
         text.push_str(&"b".repeat(500));
-        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT);
+        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].len(), 3900);
+        assert_eq!(chunks[0].len(), 3901);
     }
 
     #[test]
     fn split_message_empty() {
-        let chunks = split_message("", SLACK_MESSAGE_LIMIT);
+        let chunks = split_message("", SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks, vec![""]);
     }
 
@@ -1107,7 +1272,7 @@ mod tests {
     fn split_message_multiple_chunks() {
         // Create a message that will split into 3 chunks.
         let text = "a".repeat(SLACK_MESSAGE_LIMIT * 2 + 500);
-        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT);
+        let chunks = split_message(&text, SLACK_MESSAGE_LIMIT).unwrap();
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].len(), SLACK_MESSAGE_LIMIT);
         assert_eq!(chunks[1].len(), SLACK_MESSAGE_LIMIT);

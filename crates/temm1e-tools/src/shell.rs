@@ -114,11 +114,15 @@ impl Tool for ShellTool {
         let mut cmd = build_shell_command(command);
         cmd.current_dir(&ctx.workspace_path);
 
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await;
+        let result = temm1e_core::process::run_bounded(
+            &mut cmd,
+            std::time::Duration::from_secs(timeout_secs),
+            MAX_OUTPUT_SIZE,
+        )
+        .await;
 
         match result {
-            Ok(Ok(output)) => {
+            Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -151,14 +155,17 @@ impl Tool for ShellTool {
                     content.push_str("\n... [output truncated]");
                 }
 
+                if output.truncated && !content.ends_with("... [output truncated]") {
+                    content.push_str("\n... [output truncated]");
+                }
                 let is_error = !output.status.success();
                 Ok(ToolOutput { content, is_error })
             }
-            Ok(Err(e)) => Ok(ToolOutput {
+            Err(temm1e_core::process::ProcessError::Io(e)) => Ok(ToolOutput {
                 content: format!("Failed to execute command: {}", e),
                 is_error: true,
             }),
-            Err(_) => Ok(ToolOutput {
+            Err(temm1e_core::process::ProcessError::TimedOut) => Ok(ToolOutput {
                 content: format!("Command timed out after {} seconds", timeout_secs),
                 is_error: true,
             }),
@@ -174,6 +181,9 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
+            channel: "cli".into(),
             workspace_path: PathBuf::from("."),
             session_id: "test".into(),
             chat_id: "test".into(),

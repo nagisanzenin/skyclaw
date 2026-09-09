@@ -46,6 +46,8 @@ pub enum WitnessInitError {
     },
     #[error("invalid strictness '{0}' (expected: observe|warn|block|block_with_retry)")]
     InvalidStrictness(String),
+    #[error("invalid Witness configuration: {0}")]
+    Config(#[from] temm1e_core::types::error::Temm1eError),
     #[error("workspace path resolution failed: {0}")]
     Workspace(#[from] std::io::Error),
 }
@@ -54,6 +56,7 @@ pub enum WitnessInitError {
 pub async fn build_witness_attachments(
     cfg: &WitnessConfig,
 ) -> Result<Option<WitnessAttachments>, WitnessInitError> {
+    cfg.validate()?;
     if !cfg.enabled {
         return Ok(None);
     }
@@ -71,7 +74,14 @@ pub async fn build_witness_attachments(
             })?;
 
     let workspace = std::env::current_dir()?;
-    let witness = Arc::new(Witness::new(ledger, workspace));
+    let witness = Arc::new(Witness::new(ledger, workspace).with_configured_tiers(
+        cfg.tier1_enabled,
+        cfg.tier2_enabled,
+        cfg.model_verification_max_calls,
+    ));
+    if (cfg.tier1_enabled || cfg.tier2_enabled) && cfg.model_verification_max_calls.is_none() {
+        tracing::info!("Witness model tiers abstain: USD-overhead reservation unavailable; an explicit model_verification_max_calls policy is required for bounded-call verification");
+    }
     let trust = Arc::new(Mutex::new(TrustEngine::new(TrustState::default(), None)));
 
     Ok(Some(WitnessAttachments {
@@ -135,10 +145,7 @@ fn resolve_ledger_path(override_path: Option<&str>) -> PathBuf {
     if let Some(p) = override_path {
         return PathBuf::from(p);
     }
-    let mut home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.push(".temm1e");
-    home.push("witness.db");
-    home
+    temm1e_core::config::data_dir().join("witness.db")
 }
 
 #[cfg(test)]

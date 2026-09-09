@@ -9,8 +9,8 @@
 //!   cargo run --example tui_smoke --features tui --release
 //!
 //! Expected stdout: registration logs for every feature wired into TUI.
-//! The harness exits after 5 s so async init (Hive, Perpetuum, etc.) has
-//! time to complete and emit its logs.
+//! The harness drives a prompt through the real bridge and checks its final
+//! response and shutdown. It does not exercise ratatui rendering or keyboard IO.
 
 use std::time::Duration;
 
@@ -39,37 +39,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("=== TUI smoke: spawn_agent() direct-call (no ratatui) ===");
 
     // Load the same config TUI would use at launch.
-    let config_dir = dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".temm1e");
+    let config_dir = temm1e_core::config::data_dir();
     let config_path = config_dir.join("config.toml");
-    let config_str = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let config: Temm1eConfig = if config_str.is_empty() {
-        Temm1eConfig::default()
-    } else {
-        toml::from_str(&config_str).unwrap_or_default()
+    let config: Temm1eConfig = match std::fs::read_to_string(&config_path) {
+        Ok(text) => toml::from_str(&text)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Temm1eConfig::default(),
+        Err(error) => return Err(error.into()),
     };
 
-    // Resolve credentials from saved creds (mirrors TUI onboarding's fallback).
-    let (provider_name, api_key, model) = match credentials::load_saved_credentials() {
-        Some(t) => t,
-        None => {
-            eprintln!("[SMOKE FAIL] No saved credentials at ~/.temm1e/credentials.toml");
-            std::process::exit(2);
-        }
-    };
-
-    let setup = AgentSetup {
-        provider_name: provider_name.clone(),
-        api_key,
-        model: model.clone(),
-        base_url: None,
-        config,
-        mode: None,
-    };
+    let saved = credentials::load_credentials_file();
+    let setup = AgentSetup::resolve(&config, saved.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("No configured connection in selected profile"))?;
+    let provider_name = setup.provider_name.clone();
+    let model = setup.model.clone();
 
     // Event channel — spawn_agent pushes AgentResponseEvent via this.
-    // We read them here to drive the exhaustive end-to-end test.
+    // Read bridge events here; rendering and keyboard behavior need separate tests.
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
 
     eprintln!(
@@ -93,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[SMOKE] waiting 3s for async init logs to drain...");
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // ── EXHAUSTIVE TEST: drive a real user message through the agent ──
+    // ── Drive one real user message through the agent ──
     // Prompt: defaults to "what can you do in 1 sentence?" but accepts a
     // --prompt "..." CLI arg so the harness can be driven through a UX
     // study or a regression battery.
@@ -109,10 +94,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_send = std::time::Instant::now();
     let msg = InboundMessage {
         id: uuid::Uuid::new_v4().to_string(),
-        chat_id: "tui-smoke".into(),
-        user_id: "smoke-test".into(),
+        chat_id: "tui".into(),
+        user_id: "local".into(),
         username: Some("smoke".into()),
-        channel: "tui-smoke".into(),
+        channel: "tui".into(),
         text: Some(prompt_text.clone()),
         attachments: vec![],
         reply_to: None,
@@ -130,21 +115,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timeout = Duration::from_secs(180);
     let deadline = tokio::time::Instant::now() + timeout;
     let mut got_response = false;
+    let mut streamed_deltas = 0usize;
     let mut response_text = String::new();
     while tokio::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Some(Event::TextLifecycle(
+                temm1e_agent::agent_task_status::AgentTextEvent::Delta { .. },
+            ))) => {
+                streamed_deltas += 1;
+            }
             Ok(Some(Event::AgentResponse(resp))) => {
+                if resp.kind == temm1e_tui::event::ResponseKind::Failed {
+                    eprintln!("[SMOKE FAIL] agent reported failure");
+                    std::process::exit(5);
+                }
+                if resp.kind != temm1e_tui::event::ResponseKind::Final {
+                    continue;
+                }
                 got_response = true;
                 response_text = resp.message.text;
                 let elapsed = t_send.elapsed();
+                let billing =
+                    if matches!(provider_name.as_str(), "zai-coding-plan" | "openai-codex") {
+                        "subscription; charge/quota unknown".to_owned()
+                    } else if resp.cost_usd > 0.0 {
+                        format!("known token estimate ${:.4}", resp.cost_usd)
+                    } else {
+                        "USD estimate unavailable".to_owned()
+                    };
                 eprintln!(
-                    "[SMOKE] wall={}.{}s usage: in={} out={} cost=${:.4}",
+                    "[SMOKE] wall={}.{}s usage: in={} out={} billing={}",
                     elapsed.as_secs(),
                     elapsed.subsec_millis() / 100,
                     resp.input_tokens,
                     resp.output_tokens,
-                    resp.cost_usd
+                    billing
                 );
                 break;
             }
@@ -153,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let tag = match &other {
                     Event::Terminal(_) => "Terminal",
                     Event::AgentStatus(_) => "AgentStatus",
-                    Event::StreamChunk(_) => "StreamChunk",
+                    Event::TextLifecycle(_) => "TextLifecycle",
                     Event::UserSubmit(_) => "UserSubmit",
                     Event::AgentResponse(_) => "AgentResponse",
                     _ => "Other",
@@ -166,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(4);
             }
             Err(_) => {
-                eprintln!("[SMOKE FAIL] timeout waiting for agent response (90s)");
+                eprintln!("[SMOKE FAIL] timeout waiting for final agent response (180s)");
                 std::process::exit(4);
             }
         }
@@ -184,6 +190,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("[SMOKE] AGENT RESPONDED ({} chars):", response_text.len());
     println!("{response_text}");
-    eprintln!("[SMOKE] DONE — all checks passed");
+    let shutdown = handle.shutdown(Duration::from_secs(6)).await;
+    if !shutdown.loop_joined {
+        eprintln!("[SMOKE FAIL] bridge did not finish its processing loop");
+        std::process::exit(8);
+    }
+    if !prompt_text.trim_start().starts_with('/') {
+        let journal = temm1e_agent::execution_journal::ExecutionJournal::open_profile().await?;
+        let scope = temm1e_agent::conversation::ConversationScope::new(
+            &config_dir.join("workspace"),
+            "tui",
+            "tui",
+            "local-owner",
+        )?;
+        let records = journal.delivery_records(&scope).await?;
+        if !records
+            .first()
+            .is_some_and(|record| record.state == "accepted_by_sink")
+        {
+            eprintln!("[SMOKE FAIL] final UI event acceptance was not durably recorded");
+            std::process::exit(9);
+        }
+    }
+    eprintln!("[SMOKE] processing_loop_joined={} background_drained={} (canceled hooks do not establish known usage/effects)", shutdown.loop_joined, shutdown.background_drained);
+    if args.iter().any(|arg| arg == "--require-stream") && streamed_deltas == 0 {
+        eprintln!("[SMOKE FAIL] no actual text deltas reached the TUI event channel");
+        std::process::exit(6);
+    }
+    if let Some(expected) = args
+        .iter()
+        .position(|a| a == "--expect-exact")
+        .and_then(|i| args.get(i + 1))
+    {
+        if response_text.trim() != expected {
+            eprintln!(
+                "[SMOKE FAIL] final response did not exactly match the expected fixture text"
+            );
+            std::process::exit(9);
+        }
+    }
+    if let Some(expected) = args
+        .iter()
+        .position(|a| a == "--expect")
+        .and_then(|i| args.get(i + 1))
+    {
+        if !response_text.contains(expected) {
+            eprintln!("[SMOKE FAIL] final response did not contain the expected fixture value");
+            std::process::exit(7);
+        }
+    }
+    eprintln!("[SMOKE] DONE — final response received; streamed_deltas={streamed_deltas}");
     Ok(())
 }

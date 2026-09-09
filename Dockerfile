@@ -5,7 +5,7 @@
 # ============================================================================
 
 # ---- Builder stage ----
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.91.1-bookworm AS builder
 
 ARG GIT_HASH=unknown
 ARG BUILD_DATE=unknown
@@ -21,21 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 1) Copy manifests + build.rs for dependency caching.
-#    Create stub main/lib files so cargo can resolve the dep graph and
-#    cache compiled dependencies before copying real source.
+# Use the locked dependency graph and the workspace minimum Rust version.
+# Build once with real sources: a best-effort stub build hid dependency errors
+# and stored a second set of artifacts in the image layer cache.
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY crates/ crates/
-RUN mkdir -p src && echo 'fn main() {}' > src/main.rs
-
-# 2) Build dependencies only (cached layer — survives source changes).
+COPY src/ src/
 ENV GIT_HASH=${GIT_HASH}
 ENV BUILD_DATE=${BUILD_DATE}
-RUN cargo build --release --features "${FEATURES}" 2>/dev/null || true
-
-# 3) Copy real source and build the binary.
-COPY src/ src/
-RUN touch src/main.rs && cargo build --release --features "${FEATURES}"
+RUN cargo build --locked --release --features "${FEATURES}"
 
 # ---- Runtime stage ----
 FROM debian:bookworm-slim
@@ -63,18 +57,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxcb-randr0 \
         libxcb-shm0 \
         libxkbcommon0 \
+        libxdo3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Chromium path for chromiumoxide (Prowl browser engine)
 ENV CHROME_PATH=/usr/bin/chromium
 
 # Default config directory (mount a volume here for persistence)
-ENV TEMM1E_HOME=/data
-RUN mkdir -p /data
+ENV TEMM1E_DATA_DIR=/var/lib/temm1e
+RUN mkdir -p /var/lib/temm1e
 
 WORKDIR /app
 
 COPY --from=builder /app/target/release/temm1e ./temm1e
+
+# A successful link in the builder does not prove runtime libraries exist.
+RUN ldd ./temm1e && ./temm1e --version
 
 # Gateway port
 EXPOSE 8080
@@ -87,4 +85,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
 # Default command: start the gateway. Override with "chat" or "tui" for
 # interactive modes: docker run -it temm1e chat
 ENTRYPOINT ["tini", "--", "./temm1e"]
-CMD ["start"]
+CMD ["start", "--host", "0.0.0.0"]

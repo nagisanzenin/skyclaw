@@ -2,12 +2,17 @@
 
 #[cfg(feature = "browser")]
 mod browser;
+#[cfg(any(feature = "browser", test))]
+mod browser_auth;
 #[cfg(feature = "browser")]
 pub mod browser_observation;
 #[cfg(feature = "browser")]
 pub mod browser_pool;
 #[cfg(feature = "browser")]
+mod browser_profile;
+#[cfg(feature = "browser")]
 pub mod browser_session;
+mod channel_target;
 mod check_messages;
 mod code_edit;
 mod code_glob;
@@ -40,7 +45,7 @@ pub mod web_search;
 pub use browser::BrowserTool;
 #[cfg(feature = "browser")]
 pub use browser_pool::BrowserPool;
-pub use check_messages::{CheckMessagesTool, PendingMessages};
+pub use check_messages::{format_pending, CheckMessagesTool, PendingMessages};
 pub use code_edit::CodeEditTool;
 pub use code_glob::CodeGlobTool;
 pub use code_grep::CodeGrepTool;

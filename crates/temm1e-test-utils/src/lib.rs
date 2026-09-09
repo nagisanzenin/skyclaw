@@ -47,6 +47,7 @@ impl MockProvider {
                     input_tokens: 10,
                     output_tokens: 20,
                     cost_usd: 0.0,
+                    ..Usage::default()
                 },
             },
             call_count: Arc::new(Mutex::new(0)),
@@ -70,6 +71,7 @@ impl MockProvider {
                     input_tokens: 10,
                     output_tokens: 30,
                     cost_usd: 0.0,
+                    ..Usage::default()
                 },
             },
             call_count: Arc::new(Mutex::new(0)),
@@ -106,11 +108,17 @@ impl Provider for MockProvider {
     ) -> Result<BoxStream<'_, Result<StreamChunk, Temm1eError>>, Temm1eError> {
         let chunks = vec![
             Ok(StreamChunk {
+                provider_state: None,
+                usage: None,
+                response_id: None,
                 delta: Some("mock stream".to_string()),
                 tool_use: None,
                 stop_reason: None,
             }),
             Ok(StreamChunk {
+                provider_state: None,
+                usage: None,
+                response_id: None,
                 delta: None,
                 tool_use: None,
                 stop_reason: Some("end_turn".to_string()),
@@ -167,6 +175,7 @@ impl QueuedMockProvider {
                 input_tokens: 10,
                 output_tokens: 20,
                 cost_usd: 0.0,
+                ..Usage::default()
             },
         }
     }
@@ -190,6 +199,7 @@ impl QueuedMockProvider {
                 input_tokens: 10,
                 output_tokens: 30,
                 cost_usd: 0.0,
+                ..Usage::default()
             },
         }
     }

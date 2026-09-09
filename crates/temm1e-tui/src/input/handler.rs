@@ -20,6 +20,8 @@ pub enum InputResult {
     Redraw,
     /// Toggle observability panel (Ctrl+O).
     ToggleActivityPanel,
+    /// Expand/collapse transcript tool details (Ctrl+T).
+    ToggleToolDetails,
     /// Scroll message history.
     ScrollUp,
     ScrollDown,
@@ -124,6 +126,7 @@ pub fn handle_input_event(
         Action::TabComplete => InputResult::TabComplete,
         Action::Redraw => InputResult::Redraw,
         Action::ToggleActivityPanel => InputResult::ToggleActivityPanel,
+        Action::ToggleToolDetails => InputResult::ToggleToolDetails,
         Action::ScrollUp => InputResult::ScrollUp,
         Action::ScrollDown => InputResult::ScrollDown,
         Action::PageUp => InputResult::PageUp,

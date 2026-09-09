@@ -2,7 +2,8 @@
 //! This allows the agent to send intermediate messages (progress updates,
 //! periodic outputs, etc.) without waiting for the final reply.
 
-use std::sync::Arc;
+use crate::channel_target::ChannelTarget;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use temm1e_core::types::error::Temm1eError;
@@ -10,12 +11,28 @@ use temm1e_core::types::message::OutboundMessage;
 use temm1e_core::{Channel, Tool, ToolContext, ToolDeclarations, ToolInput, ToolOutput};
 
 pub struct SendMessageTool {
-    channel: Arc<dyn Channel>,
+    channel: ChannelTarget,
 }
 
 impl SendMessageTool {
     pub fn new(channel: Arc<dyn Channel>) -> Self {
-        Self { channel }
+        Self {
+            channel: ChannelTarget::Single(channel),
+        }
+    }
+
+    /// Server tools resolve from the active session's transport, preserving
+    /// the configured heartbeat destination as the only explicit fallback.
+    pub fn routed(
+        channels: HashMap<String, Arc<dyn Channel>>,
+        heartbeat: Option<Arc<dyn Channel>>,
+    ) -> Self {
+        Self {
+            channel: ChannelTarget::Routed {
+                channels,
+                heartbeat,
+            },
+        }
     }
 }
 
@@ -81,9 +98,14 @@ impl Tool for SendMessageTool {
             parse_mode: None,
         };
 
-        match self.channel.send_message(outbound).await {
+        match self
+            .channel
+            .resolve(&ctx.channel)?
+            .send_message(outbound)
+            .await
+        {
             Ok(()) => Ok(ToolOutput {
-                content: "Message sent".to_string(),
+                content: "Channel accepted the message; user receipt is unconfirmed".to_string(),
                 is_error: false,
             }),
             Err(e) => Ok(ToolOutput {
@@ -91,5 +113,55 @@ impl Tool for SendMessageTool {
                 is_error: true,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use temm1e_test_utils::MockChannel;
+
+    #[tokio::test]
+    async fn routes_equal_chat_ids_by_session_and_never_falls_back_for_unknown_transport() {
+        let first = Arc::new(MockChannel::new("telegram"));
+        let second = Arc::new(MockChannel::new("discord"));
+        let channels: HashMap<String, Arc<dyn Channel>> = HashMap::from([
+            ("telegram".into(), first.clone() as Arc<dyn Channel>),
+            ("discord".into(), second.clone() as Arc<dyn Channel>),
+        ]);
+        let tool = SendMessageTool::routed(channels.clone(), Some(first.clone()));
+        let mut ctx = ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
+            channel: "discord".into(),
+            chat_id: "42".into(),
+            session_id: "epoch".into(),
+            workspace_path: std::env::temp_dir(),
+            read_tracker: None,
+        };
+        let input = || ToolInput {
+            name: "send_message".into(),
+            arguments: serde_json::json!({"text": "only discord"}),
+        };
+        assert!(!tool.execute(input(), &ctx).await.unwrap().is_error);
+        assert_eq!(first.sent_count().await, 0);
+        assert_eq!(second.sent_count().await, 1);
+        assert_eq!(second.sent_messages.lock().await[0].chat_id, "42");
+        ctx.channel = "unconfigured".into();
+        assert!(tool.execute(input(), &ctx).await.is_err());
+        assert_eq!(first.sent_count().await, 0);
+        assert_eq!(second.sent_count().await, 1);
+        // File sends use the identical resolver and reject unsupported routing
+        // before reading a local file or falling back to another platform.
+        let files = crate::SendFileTool::routed(channels, Some(first.clone()));
+        let file_input = ToolInput {
+            name: "send_file".into(),
+            arguments: serde_json::json!({"path": "does-not-exist"}),
+        };
+        assert!(files.execute(file_input, &ctx).await.is_err());
+        ctx.channel = "heartbeat".into();
+        assert!(!tool.execute(input(), &ctx).await.unwrap().is_error);
+        assert_eq!(first.sent_count().await, 1);
+        assert_eq!(second.sent_count().await, 1);
     }
 }

@@ -160,8 +160,7 @@ impl McpServerConfig {
 
 /// Path to `~/.temm1e/mcp.toml`.
 pub fn mcp_config_path() -> PathBuf {
-    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join(".temm1e").join("mcp.toml")
+    temm1e_core::config::data_dir().join("mcp.toml")
 }
 
 /// Load MCP config from `~/.temm1e/mcp.toml`.

@@ -54,22 +54,40 @@ pub async fn status_handler(
         .map(|c| c.name().to_string())
         .collect();
 
-    let tool_names: Vec<String> = state
-        .agent
-        .tools()
-        .iter()
-        .map(|t| t.name().to_string())
-        .collect();
-
+    let agent = state.agent.read().await.clone();
     let resp = StatusResponse {
-        status: "ok",
+        status: if agent.is_some() { "ok" } else { "onboarding" },
         version: env!("CARGO_PKG_VERSION"),
-        provider: state.agent.provider().name().to_string(),
+        provider: agent
+            .as_ref()
+            .map(|a| a.provider().name().to_owned())
+            .unwrap_or_default(),
         channels: channel_names,
-        tools: tool_names,
-        memory_backend: state.agent.memory().backend_name().to_string(),
+        tools: agent
+            .as_ref()
+            .map(|a| a.tools().iter().map(|t| t.name().to_owned()).collect())
+            .unwrap_or_default(),
+        memory_backend: agent
+            .as_ref()
+            .map(|a| a.memory().backend_name().to_owned())
+            .unwrap_or_default(),
     };
     (StatusCode::OK, Json(resp))
+}
+
+/// Runtime readiness, distinct from process liveness. Does not probe provider connectivity.
+pub async fn ready_handler(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::server::AppState>>,
+) -> impl IntoResponse {
+    let ready = state.agent.read().await.is_some();
+    (
+        if ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(serde_json::json!({"status": if ready {"ready"} else {"onboarding"}})),
+    )
 }
 
 #[cfg(test)]

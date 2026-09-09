@@ -16,6 +16,46 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
         handler: Box::new(|_, _| CommandResult::ClearChat),
     });
 
+    for (name, description) in [
+        ("history", "Show the latest saved transcript page"),
+        ("history-more", "Load the preceding saved transcript page"),
+        ("delivery-status", "Inspect saved reply delivery states"),
+        ("goal-assessment", "Inspect recorded checks by goal ID"),
+        (
+            "goal-status",
+            "Inspect saved goals and unverified achievement",
+        ),
+        (
+            "delivery-show",
+            "Review a saved reply without changing its delivery state",
+        ),
+        (
+            "delivery-resume",
+            "Send a never-attempted saved reply by ID",
+        ),
+        ("delivery-ack", "Record that you received a saved reply"),
+        (
+            "session-recover",
+            "Inspect interrupted work before explicitly restoring its evidence",
+        ),
+        (
+            "session-new",
+            "Start a new conversation; preserve previous history",
+        ),
+        (
+            "history-import",
+            "Preview or explicitly import preserved legacy history",
+        ),
+    ] {
+        registry.register(CommandDef {
+            name,
+            description,
+            handler: Box::new(move |args, _| {
+                CommandResult::SessionCommand(format!("/{name} {args}"))
+            }),
+        });
+    }
+
     registry.register(CommandDef {
         name: "model",
         description: "Show models (no arg) or hot-swap to a new model",

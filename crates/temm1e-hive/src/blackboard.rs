@@ -220,37 +220,60 @@ impl Blackboard {
     ) -> Result<Vec<String>, Temm1eError> {
         let now = chrono::Utc::now().timestamp_millis();
 
-        // Mark task complete
-        sqlx::query(
+        // The task transition and order accounting commit together. A repeated
+        // completion must never overwrite evidence or increment totals again.
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            Temm1eError::Internal(format!("Blackboard completion transaction: {e}"))
+        })?;
+        let order: Option<(String,)> = sqlx::query_as(
             "UPDATE hive_tasks SET status = 'complete', result_summary = ?1, \
-             actual_tokens = ?2, completed_at = ?3 WHERE id = ?4",
+             actual_tokens = ?2, completed_at = ?3 WHERE id = ?4 AND status = 'active' \
+             RETURNING order_id",
         )
         .bind(result_summary)
         .bind(actual_tokens as i64)
         .bind(now)
         .bind(task_id)
-        .execute(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| Temm1eError::Internal(format!("Blackboard complete_task: {e}")))?;
-
-        // Get the order_id for this task
-        let (order_id,): (String,) =
-            sqlx::query_as("SELECT order_id FROM hive_tasks WHERE id = ?1")
-                .bind(task_id)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| Temm1eError::Internal(format!("Blackboard get order_id: {e}")))?;
-
-        // Increment completed_count and add tokens
-        sqlx::query(
-            "UPDATE hive_orders SET completed_count = completed_count + 1, \
-             total_tokens = total_tokens + ?1 WHERE id = ?2",
-        )
-        .bind(actual_tokens as i64)
-        .bind(&order_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| Temm1eError::Internal(format!("Blackboard update order: {e}")))?;
+        let order_id = if let Some((order_id,)) = order {
+            let changed = sqlx::query(
+                "UPDATE hive_orders SET completed_count = completed_count + 1, \
+                 total_tokens = total_tokens + ?1 WHERE id = ?2",
+            )
+            .bind(actual_tokens as i64)
+            .bind(&order_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Temm1eError::Internal(format!("Blackboard update order: {e}")))?;
+            if changed.rows_affected() != 1 {
+                return Err(Temm1eError::Internal(
+                    "Blackboard completion has no order".into(),
+                ));
+            }
+            order_id
+        } else {
+            let existing: Option<(String, String)> =
+                sqlx::query_as("SELECT order_id, status FROM hive_tasks WHERE id = ?1")
+                    .bind(task_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        Temm1eError::Internal(format!("Blackboard completion state: {e}"))
+                    })?;
+            match existing {
+                Some((order_id, status)) if status == "complete" => order_id,
+                _ => {
+                    return Err(Temm1eError::Internal(
+                        "Blackboard completion requires an active task".into(),
+                    ))
+                }
+            }
+        };
+        tx.commit()
+            .await
+            .map_err(|e| Temm1eError::Internal(format!("Blackboard completion commit: {e}")))?;
 
         // Find tasks that should transition from PENDING to READY
         let newly_ready = self.resolve_dependencies(&order_id).await?;
@@ -311,6 +334,9 @@ impl Blackboard {
 
     /// Get all READY tasks for an order.
     pub async fn get_ready_tasks(&self, order_id: &str) -> Result<Vec<HiveTask>, Temm1eError> {
+        // Repair publication if a process exited after completion commit but
+        // before resolving its dependents. Terminal dependency states persist.
+        self.resolve_dependencies(order_id).await?;
         let rows: Vec<TaskRow> = sqlx::query_as(
             "SELECT id, order_id, description, status, claimed_by, dependencies, \
              context_tags, estimated_tokens, actual_tokens, result_summary, artifacts, \
@@ -403,6 +429,19 @@ impl Blackboard {
     // Internal helpers
     // -----------------------------------------------------------------------
 
+    /// A resolver's pending-task snapshot can be stale by the time it writes.
+    /// Do not reset a task already claimed/completed by another worker.
+    async fn publish_ready(&self, task_id: &str) -> Result<bool, Temm1eError> {
+        let result = sqlx::query(
+            "UPDATE hive_tasks SET status = 'ready' WHERE id = ?1 AND status = 'pending'",
+        )
+        .bind(task_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Temm1eError::Internal(format!("Blackboard resolve update: {e}")))?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Check PENDING tasks and transition to READY if all deps are COMPLETE.
     async fn resolve_dependencies(&self, order_id: &str) -> Result<Vec<String>, Temm1eError> {
         let pending: Vec<TaskRow> = sqlx::query_as(
@@ -438,14 +477,7 @@ impl Blackboard {
                 }
             }
 
-            if all_deps_met {
-                sqlx::query("UPDATE hive_tasks SET status = 'ready' WHERE id = ?1")
-                    .bind(&task.id)
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| {
-                        Temm1eError::Internal(format!("Blackboard resolve update: {e}"))
-                    })?;
+            if all_deps_met && self.publish_ready(&task.id).await? {
                 newly_ready.push(task.id.clone());
             }
         }
@@ -769,5 +801,118 @@ mod tests {
         // Ordered by completed_at ASC
         assert_eq!(results[0].result_summary.as_deref(), Some("first"));
         assert_eq!(results[1].result_summary.as_deref(), Some("second"));
+    }
+    #[tokio::test]
+    async fn stale_resolver_cannot_republish_active_or_completed_task() {
+        let bb = make_bb().await;
+        bb.create_order(&make_order("o1")).await.unwrap();
+        bb.create_tasks(&[make_task("t1", "o1", &[]), make_task("t2", "o1", &["t1"])])
+            .await
+            .unwrap();
+        let stale = bb.get_task("t2").await.unwrap().unwrap();
+        assert!(bb.claim_task("t1", "w1").await.unwrap());
+        bb.complete_task("t1", "first", 10).await.unwrap();
+        assert!(bb.claim_task("t2", "w2").await.unwrap());
+        // A second resolver resumes after another resolver published readiness
+        // and a worker has already claimed the same pending snapshot.
+        assert!(!bb.publish_ready(&stale.id).await.unwrap());
+        assert!(!bb.claim_task("t2", "duplicate").await.unwrap());
+        assert_eq!(
+            bb.get_task("t2")
+                .await
+                .unwrap()
+                .unwrap()
+                .claimed_by
+                .as_deref(),
+            Some("w2")
+        );
+        bb.complete_task("t2", "second", 20).await.unwrap();
+        assert!(!bb.publish_ready(&stale.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn concurrent_duplicate_completion_accounts_once_and_preserves_evidence() {
+        let bb = make_bb().await;
+        bb.create_order(&make_order("o1")).await.unwrap();
+        bb.create_tasks(&[make_task("t1", "o1", &[])])
+            .await
+            .unwrap();
+        assert!(bb.claim_task("t1", "w1").await.unwrap());
+        let (a, b) = tokio::join!(
+            bb.complete_task("t1", "original", 10),
+            bb.complete_task("t1", "original", 10)
+        );
+        a.unwrap();
+        b.unwrap();
+        bb.complete_task("t1", "different late result", 999)
+            .await
+            .unwrap();
+        let order = bb.get_order("o1").await.unwrap().unwrap();
+        assert_eq!(order.completed_count, 1);
+        assert_eq!(order.total_tokens, 10);
+        assert_eq!(
+            bb.get_task("t1")
+                .await
+                .unwrap()
+                .unwrap()
+                .result_summary
+                .as_deref(),
+            Some("original")
+        );
+    }
+
+    #[tokio::test]
+    async fn accounting_failure_rolls_back_task_completion() {
+        let bb = make_bb().await;
+        bb.create_order(&make_order("o1")).await.unwrap();
+        bb.create_tasks(&[make_task("t1", "o1", &[])])
+            .await
+            .unwrap();
+        bb.claim_task("t1", "w1").await.unwrap();
+        sqlx::query("CREATE TRIGGER reject_accounting BEFORE UPDATE OF completed_count ON hive_orders BEGIN SELECT RAISE(ABORT, 'fixture accounting failure'); END").execute(&bb.pool).await.unwrap();
+        assert!(bb.complete_task("t1", "result", 10).await.is_err());
+        let task = bb.get_task("t1").await.unwrap().unwrap();
+        assert_eq!(task.status, HiveTaskStatus::Active);
+        assert!(task.result_summary.is_none());
+        assert_eq!(
+            bb.get_order("o1").await.unwrap().unwrap().completed_count,
+            0
+        );
+        sqlx::query("DROP TRIGGER reject_accounting")
+            .execute(&bb.pool)
+            .await
+            .unwrap();
+        bb.complete_task("t1", "result", 10).await.unwrap();
+        assert_eq!(
+            bb.get_order("o1").await.unwrap().unwrap().completed_count,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn ready_poll_repairs_interrupted_dependency_publication() {
+        let bb = make_bb().await;
+        bb.create_order(&make_order("o1")).await.unwrap();
+        bb.create_tasks(&[make_task("t1", "o1", &[]), make_task("t2", "o1", &["t1"])])
+            .await
+            .unwrap();
+        bb.claim_task("t1", "w1").await.unwrap();
+        sqlx::query("CREATE TRIGGER reject_ready BEFORE UPDATE OF status ON hive_tasks WHEN NEW.status = 'ready' BEGIN SELECT RAISE(ABORT, 'fixture publication interruption'); END").execute(&bb.pool).await.unwrap();
+        assert!(bb.complete_task("t1", "result", 10).await.is_err());
+        assert_eq!(
+            bb.get_task("t1").await.unwrap().unwrap().status,
+            HiveTaskStatus::Complete
+        );
+        sqlx::query("DROP TRIGGER reject_ready")
+            .execute(&bb.pool)
+            .await
+            .unwrap();
+        let ready = bb.get_ready_tasks("o1").await.unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, "t2");
+        assert_eq!(
+            bb.get_order("o1").await.unwrap().unwrap().completed_count,
+            1
+        );
     }
 }

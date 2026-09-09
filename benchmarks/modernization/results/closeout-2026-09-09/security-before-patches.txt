@@ -1,0 +1,402 @@
+﻿2026-09-09T11:44:54.2368827Z ##[group]Run cargo audit || echo "::warning::cargo audit found advisories (see above). These are in upstream transitive dependencies — review and update when patches are available."
+2026-09-09T11:44:54.2371137Z cargo audit || echo "::warning::cargo audit found advisories (see above). These are in upstream transitive dependencies — review and update when patches are available."
+2026-09-09T11:44:54.2393849Z shell: /usr/bin/bash -e {0}
+2026-09-09T11:44:54.2394129Z env:
+2026-09-09T11:44:54.2394332Z   CARGO_TERM_COLOR: always
+2026-09-09T11:44:54.2394567Z   RUST_BACKTRACE: 1
+2026-09-09T11:44:54.2394792Z   CARGO_HOME: /home/runner/.cargo
+2026-09-09T11:44:54.2395058Z   CARGO_INCREMENTAL: 0
+2026-09-09T11:44:54.2395287Z   CACHE_ON_FAILURE: false
+2026-09-09T11:44:54.2395507Z ##[endgroup]
+2026-09-09T11:44:54.2585409Z     Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+2026-09-09T11:44:58.6038633Z       Loaded 1243 security advisories (from /home/runner/.cargo/advisory-db)
+2026-09-09T11:44:58.6039798Z     Updating crates.io index
+2026-09-09T11:44:58.6206462Z     Scanning Cargo.lock for vulnerabilities (885 crate dependencies)
+2026-09-09T11:44:59.0425305Z Crate:     aws-lc-sys
+2026-09-09T11:44:59.0425993Z Version:   0.38.0
+2026-09-09T11:44:59.0426735Z Title:     CRL Distribution Point Scope Check Logic Error in AWS-LC
+2026-09-09T11:44:59.0427258Z Date:      2026-03-19
+2026-09-09T11:44:59.0427774Z ID:        RUSTSEC-2026-0048
+2026-09-09T11:44:59.0428473Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0048
+2026-09-09T11:44:59.0428936Z Severity:  7.4 (high)
+2026-09-09T11:44:59.0430436Z Solution:  Upgrade to >=0.39.0
+2026-09-09T11:44:59.0430822Z 
+2026-09-09T11:44:59.0431213Z Crate:     aws-lc-sys
+2026-09-09T11:44:59.0431806Z Version:   0.38.0
+2026-09-09T11:44:59.0432558Z Title:     AWS-LC X.509 Name Constraints Bypass via Wildcard/Unicode CN
+2026-09-09T11:44:59.0433320Z Date:      2026-03-19
+2026-09-09T11:44:59.0433829Z ID:        RUSTSEC-2026-0044
+2026-09-09T11:44:59.0434271Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0044
+2026-09-09T11:44:59.0434687Z Solution:  Upgrade to >=0.39.0
+2026-09-09T11:44:59.0434885Z 
+2026-09-09T11:44:59.0435033Z Crate:     crossbeam-epoch
+2026-09-09T11:44:59.0435356Z Version:   0.9.18
+2026-09-09T11:44:59.0441079Z Title:     Invalid pointer dereference in `fmt::Pointer` impl for `Atomic` and `Shared` when the underlying pointer is invalid
+2026-09-09T11:44:59.0442104Z Date:      2026-07-06
+2026-09-09T11:44:59.0442657Z ID:        RUSTSEC-2026-0204
+2026-09-09T11:44:59.0443179Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0204
+2026-09-09T11:44:59.0443605Z Solution:  Upgrade to >=0.9.20
+2026-09-09T11:44:59.0443796Z 
+2026-09-09T11:44:59.0443931Z Crate:     diesel
+2026-09-09T11:44:59.0444223Z Version:   2.3.7
+2026-09-09T11:44:59.0444694Z Title:     Command injection in Diesel's implementation of `COPY FROM`/`COPY TO`
+2026-09-09T11:44:59.0445218Z Date:      2026-04-24
+2026-09-09T11:44:59.0445631Z ID:        RUSTSEC-2026-0136
+2026-09-09T11:44:59.0446049Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0136
+2026-09-09T11:44:59.0446457Z Solution:  Upgrade to >=2.3.8
+2026-09-09T11:44:59.0446653Z 
+2026-09-09T11:44:59.0446778Z Crate:     diesel
+2026-09-09T11:44:59.0447070Z Version:   2.3.7
+2026-09-09T11:44:59.0447554Z Title:     Possible unaligned data access for implementations of `SqliteAggregate`
+2026-09-09T11:44:59.0448445Z Date:      2026-04-24
+2026-09-09T11:44:59.0448770Z ID:        RUSTSEC-2026-0137
+2026-09-09T11:44:59.0449193Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0137
+2026-09-09T11:44:59.0449599Z Solution:  Upgrade to >=2.3.8
+2026-09-09T11:44:59.0449796Z 
+2026-09-09T11:44:59.0449918Z Crate:     h2
+2026-09-09T11:44:59.0450203Z Version:   0.3.27
+2026-09-09T11:44:59.0450552Z Title:     h2 unbounded empty DATA frames
+2026-09-09T11:44:59.0461341Z Date:      2026-08-17
+2026-09-09T11:44:59.0462133Z ID:        RUSTSEC-2026-0258
+2026-09-09T11:44:59.0462951Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0258
+2026-09-09T11:44:59.0463721Z Solution:  Upgrade to >=0.4.16
+2026-09-09T11:44:59.0464113Z 
+2026-09-09T11:44:59.0464339Z Crate:     h2
+2026-09-09T11:44:59.0464845Z Version:   0.4.13
+2026-09-09T11:44:59.0465477Z Title:     h2 unbounded empty DATA frames
+2026-09-09T11:44:59.0466117Z Date:      2026-08-17
+2026-09-09T11:44:59.0466691Z ID:        RUSTSEC-2026-0258
+2026-09-09T11:44:59.0467458Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0258
+2026-09-09T11:44:59.0468090Z Solution:  Upgrade to >=0.4.16
+2026-09-09T11:44:59.0468453Z 
+2026-09-09T11:44:59.0468659Z Crate:     quick-xml
+2026-09-09T11:44:59.0469249Z Version:   0.30.0
+2026-09-09T11:44:59.0470171Z Title:     Quadratic run time when checking a start tag for duplicate attribute names
+2026-09-09T11:44:59.0471087Z Date:      2026-06-29
+2026-09-09T11:44:59.0471572Z ID:        RUSTSEC-2026-0194
+2026-09-09T11:44:59.0472231Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0194
+2026-09-09T11:44:59.0472863Z Severity:  7.5 (high)
+2026-09-09T11:44:59.0473433Z Solution:  Upgrade to >=0.41.0
+2026-09-09T11:44:59.0473809Z 
+2026-09-09T11:44:59.0474051Z Crate:     quick-xml
+2026-09-09T11:44:59.0474604Z Version:   0.30.0
+2026-09-09T11:44:59.0475802Z Title:     Unbounded namespace-declaration allocation in `NsReader` enables memory-exhaustion denial of service
+2026-09-09T11:44:59.0476933Z Date:      2026-06-29
+2026-09-09T11:44:59.0477530Z ID:        RUSTSEC-2026-0195
+2026-09-09T11:44:59.0478333Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0195
+2026-09-09T11:44:59.0479117Z Severity:  7.5 (high)
+2026-09-09T11:44:59.0479752Z Solution:  Upgrade to >=0.41.0
+2026-09-09T11:44:59.0480118Z 
+2026-09-09T11:44:59.0480344Z Crate:     quick-xml
+2026-09-09T11:44:59.0480943Z Version:   0.38.4
+2026-09-09T11:44:59.0481834Z Title:     Quadratic run time when checking a start tag for duplicate attribute names
+2026-09-09T11:44:59.0482701Z Date:      2026-06-29
+2026-09-09T11:44:59.0483263Z ID:        RUSTSEC-2026-0194
+2026-09-09T11:44:59.0484033Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0194
+2026-09-09T11:44:59.0484756Z Severity:  7.5 (high)
+2026-09-09T11:44:59.0485357Z Solution:  Upgrade to >=0.41.0
+2026-09-09T11:44:59.0485718Z 
+2026-09-09T11:44:59.0485956Z Crate:     quick-xml
+2026-09-09T11:44:59.0486499Z Version:   0.38.4
+2026-09-09T11:44:59.0487661Z Title:     Unbounded namespace-declaration allocation in `NsReader` enables memory-exhaustion denial of service
+2026-09-09T11:44:59.0489119Z Date:      2026-06-29
+2026-09-09T11:44:59.0489702Z ID:        RUSTSEC-2026-0195
+2026-09-09T11:44:59.0490486Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0195
+2026-09-09T11:44:59.0491316Z Severity:  7.5 (high)
+2026-09-09T11:44:59.0491918Z Solution:  Upgrade to >=0.41.0
+2026-09-09T11:44:59.0492273Z 
+2026-09-09T11:44:59.0492507Z Crate:     quick-xml
+2026-09-09T11:44:59.0493044Z Version:   0.39.2
+2026-09-09T11:44:59.0493958Z Title:     Quadratic run time when checking a start tag for duplicate attribute names
+2026-09-09T11:44:59.0494885Z Date:      2026-06-29
+2026-09-09T11:44:59.0495488Z ID:        RUSTSEC-2026-0194
+2026-09-09T11:44:59.0496284Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0194
+2026-09-09T11:44:59.0497053Z Severity:  7.5 (high)
+2026-09-09T11:44:59.0497673Z Solution:  Upgrade to >=0.41.0
+2026-09-09T11:44:59.0498044Z 
+2026-09-09T11:44:59.0498288Z Crate:     quick-xml
+2026-09-09T11:44:59.0498846Z Version:   0.39.2
+2026-09-09T11:44:59.0500034Z Title:     Unbounded namespace-declaration allocation in `NsReader` enables memory-exhaustion denial of service
+2026-09-09T11:44:59.0501304Z Date:      2026-06-29
+2026-09-09T11:44:59.0501810Z ID:        RUSTSEC-2026-0195
+2026-09-09T11:44:59.0502639Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0195
+2026-09-09T11:44:59.0503390Z Severity:  7.5 (high)
+2026-09-09T11:44:59.0503993Z Solution:  Upgrade to >=0.41.0
+2026-09-09T11:44:59.0504363Z 
+2026-09-09T11:44:59.0504604Z Crate:     quinn-proto
+2026-09-09T11:44:59.0505175Z Version:   0.11.14
+2026-09-09T11:44:59.0506233Z Title:      Remote memory exhaustion in quinn-proto from unbounded out-of-order stream reassembly
+2026-09-09T11:44:59.0507203Z Date:      2026-06-22
+2026-09-09T11:44:59.0507789Z ID:        RUSTSEC-2026-0185
+2026-09-09T11:44:59.0508574Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0185
+2026-09-09T11:44:59.0509321Z Severity:  7.5 (high)
+2026-09-09T11:44:59.0509922Z Solution:  Upgrade to >=0.11.15
+2026-09-09T11:44:59.0510288Z 
+2026-09-09T11:44:59.0510484Z Crate:     rsa
+2026-09-09T11:44:59.0510962Z Version:   0.9.10
+2026-09-09T11:44:59.0511656Z Title:     Marvin Attack: potential key recovery through timing sidechannels
+2026-09-09T11:44:59.0512390Z Date:      2023-11-22
+2026-09-09T11:44:59.0512969Z ID:        RUSTSEC-2023-0071
+2026-09-09T11:44:59.0513776Z URL:       https://rustsec.org/advisories/RUSTSEC-2023-0071
+2026-09-09T11:44:59.0514526Z Severity:  5.9 (medium)
+2026-09-09T11:44:59.0515196Z Solution:  No fixed upgrade is available!
+2026-09-09T11:44:59.0515574Z 
+2026-09-09T11:44:59.0515765Z Crate:     rustls-webpki
+2026-09-09T11:44:59.0516195Z Version:   0.101.7
+2026-09-09T11:44:59.0516882Z Title:     Name constraints for URI names were incorrectly accepted
+2026-09-09T11:44:59.0517662Z Date:      2026-04-14
+2026-09-09T11:44:59.0518243Z ID:        RUSTSEC-2026-0098
+2026-09-09T11:44:59.0518998Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0098
+2026-09-09T11:44:59.0519980Z Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
+2026-09-09T11:44:59.0520555Z 
+2026-09-09T11:44:59.0521197Z Crate:     rustls-webpki
+2026-09-09T11:44:59.0521954Z error: 26 vulnerabilities found!
+2026-09-09T11:44:59.0522646Z warning: 22 allowed warnings found
+2026-09-09T11:44:59.0523273Z Version:   0.101.7
+2026-09-09T11:44:59.0524099Z Title:     Reachable panic in certificate revocation list parsing
+2026-09-09T11:44:59.0524903Z Date:      2026-04-22
+2026-09-09T11:44:59.0525454Z ID:        RUSTSEC-2026-0104
+2026-09-09T11:44:59.0526087Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0104
+2026-09-09T11:44:59.0526913Z Solution:  Upgrade to >=0.103.13, <0.104.0-alpha.1 OR >=0.104.0-alpha.7
+2026-09-09T11:44:59.0527366Z 
+2026-09-09T11:44:59.0527598Z Crate:     rustls-webpki
+2026-09-09T11:44:59.0528148Z Version:   0.101.7
+2026-09-09T11:44:59.0529017Z Title:     Name constraints were accepted for certificates asserting a wildcard name
+2026-09-09T11:44:59.0529960Z Date:      2026-04-14
+2026-09-09T11:44:59.0530543Z ID:        RUSTSEC-2026-0099
+2026-09-09T11:44:59.0531434Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0099
+2026-09-09T11:44:59.0532450Z Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
+2026-09-09T11:44:59.0533026Z 
+2026-09-09T11:44:59.0533285Z Crate:     rustls-webpki
+2026-09-09T11:44:59.0533853Z Version:   0.102.8
+2026-09-09T11:44:59.0534886Z Title:     CRLs not considered authoritative by Distribution Point due to faulty matching logic
+2026-09-09T11:44:59.0535918Z Date:      2026-03-20
+2026-09-09T11:44:59.0536504Z ID:        RUSTSEC-2026-0049
+2026-09-09T11:44:59.0537288Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0049
+2026-09-09T11:44:59.0538094Z Solution:  Upgrade to >=0.103.10
+2026-09-09T11:44:59.0538472Z 
+2026-09-09T11:44:59.0538733Z Crate:     rustls-webpki
+2026-09-09T11:44:59.0539319Z Version:   0.102.8
+2026-09-09T11:44:59.0539998Z Title:     Name constraints for URI names were incorrectly accepted
+2026-09-09T11:44:59.0540713Z Date:      2026-04-14
+2026-09-09T11:44:59.0541397Z ID:        RUSTSEC-2026-0098
+2026-09-09T11:44:59.0542169Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0098
+2026-09-09T11:44:59.0543132Z Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
+2026-09-09T11:44:59.0543615Z 
+2026-09-09T11:44:59.0543810Z Crate:     rustls-webpki
+2026-09-09T11:44:59.0544252Z Version:   0.102.8
+2026-09-09T11:44:59.0544921Z Title:     Reachable panic in certificate revocation list parsing
+2026-09-09T11:44:59.0545697Z Date:      2026-04-22
+2026-09-09T11:44:59.0546236Z ID:        RUSTSEC-2026-0104
+2026-09-09T11:44:59.0546876Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0104
+2026-09-09T11:44:59.0547402Z Solution:  Upgrade to >=0.103.13, <0.104.0-alpha.1 OR >=0.104.0-alpha.7
+2026-09-09T11:44:59.0547691Z 
+2026-09-09T11:44:59.0547829Z Crate:     rustls-webpki
+2026-09-09T11:44:59.0548303Z Version:   0.102.8
+2026-09-09T11:44:59.0549131Z Title:     Name constraints were accepted for certificates asserting a wildcard name
+2026-09-09T11:44:59.0550051Z Date:      2026-04-14
+2026-09-09T11:44:59.0550642Z ID:        RUSTSEC-2026-0099
+2026-09-09T11:44:59.0551460Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0099
+2026-09-09T11:44:59.0552163Z Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
+2026-09-09T11:44:59.0552525Z 
+2026-09-09T11:44:59.0552674Z Crate:     rustls-webpki
+2026-09-09T11:44:59.0552983Z Version:   0.103.9
+2026-09-09T11:44:59.0553542Z Title:     CRLs not considered authoritative by Distribution Point due to faulty matching logic
+2026-09-09T11:44:59.0554049Z Date:      2026-03-20
+2026-09-09T11:44:59.0554371Z ID:        RUSTSEC-2026-0049
+2026-09-09T11:44:59.0554790Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0049
+2026-09-09T11:44:59.0555218Z Solution:  Upgrade to >=0.103.10
+2026-09-09T11:44:59.0555409Z 
+2026-09-09T11:44:59.0555554Z Crate:     rustls-webpki
+2026-09-09T11:44:59.0555864Z Version:   0.103.9
+2026-09-09T11:44:59.0556278Z Title:     Name constraints for URI names were incorrectly accepted
+2026-09-09T11:44:59.0556713Z Date:      2026-04-14
+2026-09-09T11:44:59.0557029Z ID:        RUSTSEC-2026-0098
+2026-09-09T11:44:59.0557436Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0098
+2026-09-09T11:44:59.0557956Z Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
+2026-09-09T11:44:59.0558245Z 
+2026-09-09T11:44:59.0558393Z Crate:     rustls-webpki
+2026-09-09T11:44:59.0558853Z Version:   0.103.9
+2026-09-09T11:44:59.0570231Z Title:     Reachable panic in certificate revocation list parsing
+2026-09-09T11:44:59.0570718Z Date:      2026-04-22
+2026-09-09T11:44:59.0571333Z ID:        RUSTSEC-2026-0104
+2026-09-09T11:44:59.0571778Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0104
+2026-09-09T11:44:59.0572333Z Solution:  Upgrade to >=0.103.13, <0.104.0-alpha.1 OR >=0.104.0-alpha.7
+2026-09-09T11:44:59.0572650Z 
+2026-09-09T11:44:59.0572801Z Crate:     rustls-webpki
+2026-09-09T11:44:59.0573134Z Version:   0.103.9
+2026-09-09T11:44:59.0573622Z Title:     Name constraints were accepted for certificates asserting a wildcard name
+2026-09-09T11:44:59.0574095Z Date:      2026-04-14
+2026-09-09T11:44:59.0574416Z ID:        RUSTSEC-2026-0099
+2026-09-09T11:44:59.0574839Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0099
+2026-09-09T11:44:59.0575365Z Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
+2026-09-09T11:44:59.0575657Z 
+2026-09-09T11:44:59.0575786Z Crate:     async-std
+2026-09-09T11:44:59.0576089Z Version:   1.13.2
+2026-09-09T11:44:59.0576395Z Warning:   unmaintained
+2026-09-09T11:44:59.0576763Z Title:     async-std has been discontinued
+2026-09-09T11:44:59.0577124Z Date:      2025-08-24
+2026-09-09T11:44:59.0577446Z ID:        RUSTSEC-2025-0052
+2026-09-09T11:44:59.0577873Z URL:       https://rustsec.org/advisories/RUSTSEC-2025-0052
+2026-09-09T11:44:59.0578127Z 
+2026-09-09T11:44:59.0578263Z Crate:     bincode
+2026-09-09T11:44:59.0578558Z Version:   1.3.3
+2026-09-09T11:44:59.0578871Z Warning:   unmaintained
+2026-09-09T11:44:59.0579210Z Title:     Bincode is unmaintained
+2026-09-09T11:44:59.0579543Z Date:      2025-12-16
+2026-09-09T11:44:59.0579858Z ID:        RUSTSEC-2025-0141
+2026-09-09T11:44:59.0580267Z URL:       https://rustsec.org/advisories/RUSTSEC-2025-0141
+2026-09-09T11:44:59.0580522Z 
+2026-09-09T11:44:59.0580653Z Crate:     bincode
+2026-09-09T11:44:59.0581335Z Version:   2.0.1
+2026-09-09T11:44:59.0581640Z Warning:   unmaintained
+2026-09-09T11:44:59.0581999Z Title:     Bincode is unmaintained
+2026-09-09T11:44:59.0582329Z Date:      2025-12-16
+2026-09-09T11:44:59.0582646Z ID:        RUSTSEC-2025-0141
+2026-09-09T11:44:59.0583060Z URL:       https://rustsec.org/advisories/RUSTSEC-2025-0141
+2026-09-09T11:44:59.0583334Z 
+2026-09-09T11:44:59.0583488Z Crate:     derivative
+2026-09-09T11:44:59.0583792Z Version:   2.2.0
+2026-09-09T11:44:59.0584095Z Warning:   unmaintained
+2026-09-09T11:44:59.0584541Z Title:     `derivative` is unmaintained; consider using an alternative
+2026-09-09T11:44:59.0584979Z Date:      2024-06-26
+2026-09-09T11:44:59.0585294Z ID:        RUSTSEC-2024-0388
+2026-09-09T11:44:59.0585705Z URL:       https://rustsec.org/advisories/RUSTSEC-2024-0388
+2026-09-09T11:44:59.0585968Z 
+2026-09-09T11:44:59.0586091Z Crate:     fxhash
+2026-09-09T11:44:59.0586383Z Version:   0.2.1
+2026-09-09T11:44:59.0586678Z Warning:   unmaintained
+2026-09-09T11:44:59.0587039Z Title:     fxhash - no longer maintained
+2026-09-09T11:44:59.0587383Z Date:      2025-09-05
+2026-09-09T11:44:59.0587701Z ID:        RUSTSEC-2025-0057
+2026-09-09T11:44:59.0588105Z URL:       https://rustsec.org/advisories/RUSTSEC-2025-0057
+2026-09-09T11:44:59.0588356Z 
+2026-09-09T11:44:59.0588486Z Crate:     paste
+2026-09-09T11:44:59.0588770Z Version:   1.0.15
+2026-09-09T11:44:59.0589069Z Warning:   unmaintained
+2026-09-09T11:44:59.0589417Z Title:     paste - no longer maintained
+2026-09-09T11:44:59.0589757Z Date:      2024-10-07
+2026-09-09T11:44:59.0590076Z ID:        RUSTSEC-2024-0436
+2026-09-09T11:44:59.0590486Z URL:       https://rustsec.org/advisories/RUSTSEC-2024-0436
+2026-09-09T11:44:59.0590740Z 
+2026-09-09T11:44:59.0591082Z Crate:     proc-macro-error2
+2026-09-09T11:44:59.0591406Z Version:   2.0.1
+2026-09-09T11:44:59.0591704Z Warning:   unmaintained
+2026-09-09T11:44:59.0592078Z Title:     proc-macro-error2 is unmaintained
+2026-09-09T11:44:59.0592432Z Date:      2026-06-07
+2026-09-09T11:44:59.0592746Z ID:        RUSTSEC-2026-0173
+2026-09-09T11:44:59.0593152Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0173
+2026-09-09T11:44:59.0593411Z 
+2026-09-09T11:44:59.0593546Z Crate:     yaml-rust
+2026-09-09T11:44:59.0593844Z Version:   0.4.5
+2026-09-09T11:44:59.0594148Z Warning:   unmaintained
+2026-09-09T11:44:59.0594500Z Title:     yaml-rust is unmaintained.
+2026-09-09T11:44:59.0594842Z Date:      2024-03-20
+2026-09-09T11:44:59.0595156Z ID:        RUSTSEC-2024-0320
+2026-09-09T11:44:59.0595564Z URL:       https://rustsec.org/advisories/RUSTSEC-2024-0320
+2026-09-09T11:44:59.0595823Z 
+2026-09-09T11:44:59.0595949Z Crate:     anyhow
+2026-09-09T11:44:59.0596247Z Version:   1.0.102
+2026-09-09T11:44:59.0596532Z Warning:   unsound
+2026-09-09T11:44:59.0597036Z Title:     Unsoundness in `Error::downcast_mut()`
+2026-09-09T11:44:59.0597408Z Date:      2026-06-25
+2026-09-09T11:44:59.0597729Z ID:        RUSTSEC-2026-0190
+2026-09-09T11:44:59.0598152Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0190
+2026-09-09T11:44:59.0598520Z 
+2026-09-09T11:44:59.0598720Z Crate:     diesel
+2026-09-09T11:44:59.0599096Z Version:   2.3.7
+2026-09-09T11:44:59.0599384Z Warning:   unsound
+2026-09-09T11:44:59.0599969Z Title:     Unsound transmute while debug/display printing batch Insert statements in Diesel's SQLite backend
+2026-09-09T11:44:59.0600519Z Date:      2026-04-24
+2026-09-09T11:44:59.0600951Z ID:        RUSTSEC-2026-0135
+2026-09-09T11:44:59.0601616Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0135
+2026-09-09T11:44:59.0601867Z 
+2026-09-09T11:44:59.0602000Z Crate:     diesel
+2026-09-09T11:44:59.0602288Z Version:   2.3.7
+2026-09-09T11:44:59.0602577Z Warning:   unsound
+2026-09-09T11:44:59.0603005Z Title:     Possible UTF-8 corruption in Diesels SQLite backend
+2026-09-09T11:44:59.0603402Z Date:      2026-04-24
+2026-09-09T11:44:59.0603723Z ID:        RUSTSEC-2026-0111
+2026-09-09T11:44:59.0604135Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0111
+2026-09-09T11:44:59.0604382Z 
+2026-09-09T11:44:59.0604510Z Crate:     diesel
+2026-09-09T11:44:59.0604796Z Version:   2.3.7
+2026-09-09T11:44:59.0605075Z Warning:   unsound
+2026-09-09T11:44:59.0605624Z Title:     Unsound access to padding bytes while serializing date/time values using the Mysql backend
+2026-09-09T11:44:59.0606139Z Date:      2026-04-24
+2026-09-09T11:44:59.0606459Z ID:        RUSTSEC-2026-0134
+2026-09-09T11:44:59.0606872Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0134
+2026-09-09T11:44:59.0607129Z 
+2026-09-09T11:44:59.0607262Z Crate:     diesel
+2026-09-09T11:44:59.0607549Z Version:   2.3.7
+2026-09-09T11:44:59.0607837Z Warning:   unsound
+2026-09-09T11:44:59.0608558Z Title:     Possible use after free when deserializing a SQLite database via `SqliteConnection::deserialize_readonly_database`
+2026-09-09T11:44:59.0609166Z Date:      2026-06-05
+2026-09-09T11:44:59.0609480Z ID:        RUSTSEC-2026-0172
+2026-09-09T11:44:59.0609890Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0172
+2026-09-09T11:44:59.0610148Z 
+2026-09-09T11:44:59.0610293Z Crate:     event-listener
+2026-09-09T11:44:59.0610613Z Version:   5.4.1
+2026-09-09T11:44:59.0611033Z Warning:   unsound
+2026-09-09T11:44:59.0611553Z Title:     `event-listener` allows `!Send` tags to cross thread boundaries via `StackSlot`
+2026-09-09T11:44:59.0612047Z Date:      2026-07-13
+2026-09-09T11:44:59.0612376Z ID:        RUSTSEC-2026-0221
+2026-09-09T11:44:59.0612798Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0221
+2026-09-09T11:44:59.0613063Z 
+2026-09-09T11:44:59.0613189Z Crate:     lru
+2026-09-09T11:44:59.0613488Z Version:   0.12.5
+2026-09-09T11:44:59.0613801Z Warning:   unsound
+2026-09-09T11:44:59.0614357Z Title:     Potential use-after-free due to lack of panic safety in `LruCache::pop()`
+2026-09-09T11:44:59.0614834Z Date:      2026-05-12
+2026-09-09T11:44:59.0615154Z ID:        RUSTSEC-2026-0253
+2026-09-09T11:44:59.0615568Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0253
+2026-09-09T11:44:59.0615816Z 
+2026-09-09T11:44:59.0615944Z Crate:     lru
+2026-09-09T11:44:59.0616232Z Version:   0.12.5
+2026-09-09T11:44:59.0616522Z Warning:   unsound
+2026-09-09T11:44:59.0616980Z Title:     `IterMut` violates Stacked Borrows by invalidating internal pointer
+2026-09-09T11:44:59.0617622Z Date:      2026-01-07
+2026-09-09T11:44:59.0617940Z ID:        RUSTSEC-2026-0002
+2026-09-09T11:44:59.0618355Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0002
+2026-09-09T11:44:59.0618611Z 
+2026-09-09T11:44:59.0618744Z Crate:     memmap2
+2026-09-09T11:44:59.0619035Z Version:   0.9.10
+2026-09-09T11:44:59.0619322Z Warning:   unsound
+2026-09-09T11:44:59.0619716Z Title:     Unchecked pointer offset in crate `memmap2`
+2026-09-09T11:44:59.0620099Z Date:      2026-06-20
+2026-09-09T11:44:59.0620413Z ID:        RUSTSEC-2026-0186
+2026-09-09T11:44:59.0620815Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0186
+2026-09-09T11:44:59.0621228Z 
+2026-09-09T11:44:59.0621366Z Crate:     rand
+2026-09-09T11:44:59.0621662Z Version:   0.8.5
+2026-09-09T11:44:59.0621947Z Warning:   unsound
+2026-09-09T11:44:59.0622422Z Title:     Rand is unsound with a custom logger using `rand::rng()`
+2026-09-09T11:44:59.0622853Z Date:      2026-04-09
+2026-09-09T11:44:59.0623170Z ID:        RUSTSEC-2026-0097
+2026-09-09T11:44:59.0623584Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0097
+2026-09-09T11:44:59.0623846Z 
+2026-09-09T11:44:59.0623972Z Crate:     rand
+2026-09-09T11:44:59.0624263Z Version:   0.9.2
+2026-09-09T11:44:59.0624551Z Warning:   unsound
+2026-09-09T11:44:59.0625002Z Title:     Rand is unsound with a custom logger using `rand::rng()`
+2026-09-09T11:44:59.0625427Z Date:      2026-04-09
+2026-09-09T11:44:59.0625748Z ID:        RUSTSEC-2026-0097
+2026-09-09T11:44:59.0626164Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0097
+2026-09-09T11:44:59.0626425Z 
+2026-09-09T11:44:59.0626552Z Crate:     rand
+2026-09-09T11:44:59.0626839Z Version:   0.10.0
+2026-09-09T11:44:59.0627127Z Warning:   unsound
+2026-09-09T11:44:59.0627569Z Title:     Rand is unsound with a custom logger using `rand::rng()`
+2026-09-09T11:44:59.0627986Z Date:      2026-04-09
+2026-09-09T11:44:59.0628298Z ID:        RUSTSEC-2026-0097
+2026-09-09T11:44:59.0628706Z URL:       https://rustsec.org/advisories/RUSTSEC-2026-0097
+2026-09-09T11:44:59.0628961Z 
+2026-09-09T11:44:59.0629087Z Crate:     chacha20
+2026-09-09T11:44:59.0629392Z Version:   0.10.0
+2026-09-09T11:44:59.0629673Z Warning:   yanked
+2026-09-09T11:44:59.0629830Z 
+2026-09-09T11:44:59.0629963Z Crate:     spin
+2026-09-09T11:44:59.0630242Z Version:   0.9.8
+2026-09-09T11:44:59.0630525Z Warning:   yanked
+2026-09-09T11:44:59.0630680Z 
+2026-09-09T11:44:59.0648713Z ##[warning]cargo audit found advisories (see above). These are in upstream transitive dependencies — review and update when patches are available.

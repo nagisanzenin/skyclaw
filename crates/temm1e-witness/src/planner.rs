@@ -11,7 +11,7 @@
 
 use crate::auto_detect::detect_active_sets;
 use crate::error::WitnessError;
-use crate::types::{Oath, Predicate};
+use crate::types::{EvidenceSpec, Oath, Predicate};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -25,13 +25,23 @@ Rules for a valid Oath (the Spec Reviewer will reject violations):
 1. At least ONE postcondition must be a deterministic Tier 0 predicate
    (FileExists, GrepPresent, CommandExits, etc.) — not AspectVerifier
    or AdversarialJudge.
-2. For code-producing tasks, include:
-   - A wiring check: GrepCountAtLeast with n >= 2 over the touched files.
-   - An anti-stub check: GrepAbsent with a pattern like
-     "todo!|unimplemented!|NotImplementedError|pass\\s*#.*TODO".
-3. Keep the postcondition count between 2 and 8 for the Root Oath.
-4. Reference real file paths, real commands, real patterns — not placeholders.
-5. Reply ONLY as JSON matching the schema below. No prose, no markdown fences.
+2. For code-producing tasks, prefer a CommandExits check that imports/runs the
+   actual implementation and asserts the user-requested behavior. A command
+   that merely exits successfully is not a meaningful behavioral test.
+   Add a wiring check only when the user requested integration into an existing
+   call path; symbol occurrence counts alone do not prove integration.
+   Use an anti-stub check when relevant, as supplementary evidence.
+3. Use only postconditions entailed by the user's request. Do not invent layout
+   requirements: tests may live in a separate file or an inline command unless
+   the user explicitly required tests inside the implementation file.
+4. Use 1 to 8 relevant predicates. Commands with cwd=null run in the task
+   workspace. Reference real paths and commands, never placeholders.
+5. For a semantic file review, add an AspectVerifier with explicit evidence_refs
+   and matching evidence_required file declarations. Use at most 8 references;
+   each UTF-8 file must fit 16 KiB and each verifier bundle 32 KiB. Evidence is
+   captured after execution. Missing, outside-workspace or unsupported sources
+   cannot be verified. Do not use command-output references as a way to run commands.
+6. Reply ONLY as JSON matching the schema below. No prose, no markdown fences.
 
 Schema:
 {
@@ -43,8 +53,14 @@ Schema:
     { "kind": "grep_count_at_least", "pattern": "...", "path_glob": "...", "n": 2 },
     { "kind": "command_exits", "cmd": "...", "args": ["..."], "expected_code": 0, "cwd": null, "timeout_ms": 30000 },
     ...
+  ],
+  "evidence_required": [
+    { "id": "artifact-review", "kind": { "kind": "file", "path": "relative/path" }, "description": "file to review" }
   ]
 }
+The evidence_required list is optional. An optional model postcondition uses
+{ "kind": "aspect_verifier", "rubric": "the requested review criterion", "evidence_refs": ["artifact-review"], "advisory": false }.
+Never invent a review requirement just to add a model verifier.
 
 You will be told which predicate sets are active for this project (e.g.
 "rust", "python", "javascript") so you can use the appropriate command
@@ -57,6 +73,8 @@ primitives only.
 pub struct PlannerOathDraft {
     pub goal: String,
     pub postconditions: Vec<Predicate>,
+    #[serde(default)]
+    pub evidence_required: Vec<EvidenceSpec>,
 }
 
 /// Parse a Planner LLM response into a `PlannerOathDraft`.
@@ -103,6 +121,7 @@ pub fn oath_from_draft(
     let mut oath = Oath::draft(subtask_id, root_goal_id, session_id, draft.goal);
     oath.active_predicate_sets = active_sets;
     oath.postconditions = draft.postconditions;
+    oath.evidence_required = draft.evidence_required;
     oath
 }
 
@@ -169,8 +188,8 @@ pub async fn seal_oath_via_planner(
         // dormant on every code turn. Per project rule (feedback_no_max_tokens),
         // we set None — the provider adapter falls back to the model's
         // declared output limit (Anthropic: model_registry; OpenAI-compat:
-        // field omitted, model default applies). Planner output is bounded
-        // naturally by the JSON structure, typically 500-1500 tokens.
+        // field omitted, model default applies). JSON syntax is not an output
+        // bound; provider response limits and the caller's deadline still apply.
         max_tokens: None,
         temperature: Some(0.0),
         system: Some(OATH_GENERATION_PROMPT.to_string()),
@@ -194,7 +213,11 @@ pub async fn seal_oath_via_planner(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let draft = parse_planner_oath(&text)?;
+    let mut draft = parse_planner_oath(&text)?;
+    // The model proposes postconditions, not a replacement user objective.
+    // Review and seal against the exact request so renaming it cannot weaken
+    // the required rigor or lose a user requirement from the audit record.
+    draft.goal = req.user_request.to_owned();
     let oath = oath_from_draft(
         draft,
         req.subtask_id,
@@ -250,6 +273,7 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname=\"x\"").unwrap();
 
         let draft = PlannerOathDraft {
+            evidence_required: vec![],
             goal: "add fn foo".into(),
             postconditions: vec![Predicate::FileExists {
                 path: PathBuf::from("src/foo.rs"),

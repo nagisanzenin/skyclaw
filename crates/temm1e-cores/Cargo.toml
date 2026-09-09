@@ -21,4 +21,5 @@ chrono.workspace = true
 dirs.workspace = true
 
 [dev-dependencies]
+temm1e-test-utils.workspace = true
 tempfile = "3"

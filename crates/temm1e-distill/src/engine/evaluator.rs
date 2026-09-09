@@ -42,6 +42,16 @@ impl EvaluatorOrchestrator {
     }
 
     pub async fn run(&self, tier: EigenTier, run_id: &str) -> Result<EvalReport, Temm1eError> {
+        wilson::try_wilson_interval(1, 1, self.config.graduation_confidence)
+            .map_err(|e| Temm1eError::Config(e.into()))?;
+        if !self.config.graduation_accuracy.is_finite()
+            || self.config.graduation_accuracy <= 0.0
+            || self.config.graduation_accuracy > 1.0
+        {
+            return Err(Temm1eError::Config(
+                "Graduation accuracy must be in (0,1]".into(),
+            ));
+        }
         // Look up the run record to get the ollama model name
         let run = self
             .store
@@ -107,7 +117,9 @@ impl EvaluatorOrchestrator {
 
         let accuracy = if n > 0 { passed as f64 / n as f64 } else { 0.0 };
         let wilson_lower =
-            wilson::wilson_lower(passed, n as u64, self.config.graduation_confidence);
+            wilson::try_wilson_interval(passed, n as u64, self.config.graduation_confidence)
+                .map_err(|e| temm1e_core::types::error::Temm1eError::Config(e.into()))?
+                .0;
 
         // Write back to the tier record
         let mut tier_record = self.store.get_tier(tier.as_str()).await?;
@@ -115,7 +127,9 @@ impl EvaluatorOrchestrator {
         tier_record.eval_n = Some(n);
         self.store.update_tier(&tier_record).await?;
 
-        let passed_gate = wilson_lower >= self.config.graduation_accuracy;
+        let passed_gate = self.config.graduation_accuracy > 0.0
+            && self.config.graduation_accuracy <= 1.0
+            && wilson_lower >= self.config.graduation_accuracy;
         tracing::info!(
             tier = %tier.as_str(),
             run_id,

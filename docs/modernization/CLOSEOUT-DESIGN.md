@@ -1,0 +1,19 @@
+# Frozen closeout A/B design
+
+September 9, 2026. Frozen before any paid closeout requests. Candidate production source15734b7; immutable baseline da503c09ca5c0f41c308c99e42d4736aa3611f8a. Existing pilot results are development data, excluded from this study.
+
+## Scope and resources
+
+30 distinct standard-library coding scenarios, one attempt per version: encoding, caching, config, redaction, filesystem boundaries, transactional storage, atomic replacement, streaming input, ordering, HTTP parsing, rolling events, async cancellation, CSV, SQL, JSON pointers, idempotence, pagination, numeric validation, subprocess invocation, text extraction and state transitions. Exact prompts/checks/fixtures are in `benchmarks/modernization/closeout-corpus.json`. No claim of random representative sampling of every Tem feature. These are broader core regression exercises, supplemented by actual CLI/TUI/server, recovery, identity and subscription acceptance.
+
+The identical Rust core instrumentation used for pilot02 is retained on both versions. GLM5.3Flash, Z.ai coding-plan endpoint/account, temperature1,4096output,30000input,8tool rounds,40logical requests,240second runtime deadline,245second outer deadline,125second bounded background observation and380second process deadline. Each version gets an isolated task workspace and in-memory memory DB. Provider cache is uncontrolled; 15A-first/15B-first pairs shuffled with seed60909. Serial runs avoid contention. Core harness excludes streaming, optional classifier and configured Witness; those require separate product-path checks. Request cap includes auxiliary calls. Subscription token counts are not dollar cost.
+
+## Fixed decision and reporting
+
+Run every scenario once per version, without early stopping on favorable results, best-of retries, removing failures or changing check expectations after outcomes. Infrastructure errors remain visible; any rerun is separately labelled and does not replace the original. Invalid test oracles invalidate their pair and must be documented, not silently rescored as success. Save corpus/instrumentation/binary hashes before first request, full responses/calls and external check output.
+
+Primary observed regression gate: zero A-pass/B-fail pairs, B total success at least A, no B corruption of protected files. Any discordance triggers investigation and blocks declaring this run clean. This is an observed regression rule, not statistical equivalence. With zero losses in30independent Bernoulli observations, the one-sided95% upper bound on loss probability is 1-0.05^(1/30)=9.50%; these deliberately selected tasks additionally limit generalization. Do not claim a5percentage-point population noninferiority result. The prior80x3proposal was not mandatory;30distinct cases conserve the creator's time/account quota while increasing coverage over4pilot tasks, at a clearly disclosed cost in precision.
+
+Report all paired outcomes, successes/losses/gains/ties, foreground and drained latency, request counts and unfinished/error/cancelled outcomes, input/output/cache knownness, and inspect unsupported completion claims against actual tool logs. Efficiency is descriptive, not the release objective; latency/token changes require explanation but do not automatically outweigh architecture/readiness. No known severe authority, data-loss, false-success, cancellation or accounting regression may be excused by aggregate task success.
+
+This study alone cannot authorize release. Final CI/MSRV/Windows/build checks, actual interface/migration/update acceptance and truthful feature/limitation documentation remain required. Preserve creator defaults for unresolved product choices. Final code affecting the tested path requires renewed affected evidence; documentation alone does not require paid reruns.

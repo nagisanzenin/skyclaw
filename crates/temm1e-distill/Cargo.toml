@@ -22,6 +22,9 @@ sha2 = { workspace = true }
 toml = { workspace = true }
 reqwest = { workspace = true }
 
+# 0.18 preserves the declared Rust baseline; only scalar distribution math is needed.
+statrs = { version = "0.18.0", default-features = false }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"

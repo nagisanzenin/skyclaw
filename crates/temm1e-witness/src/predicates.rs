@@ -123,7 +123,11 @@ pub async fn check_tier0(
                 cmd,
                 args,
                 *expected_code,
-                cwd.as_deref().map(|p| resolve(p, ctx)).as_deref(),
+                Some(
+                    &cwd.as_deref()
+                        .map(|p| resolve(p, ctx))
+                        .unwrap_or_else(|| ctx.workspace_root.clone()),
+                ),
                 *timeout_ms,
             )
             .await
@@ -141,7 +145,11 @@ pub async fn check_tier0(
                 args,
                 regex,
                 *stream,
-                cwd.as_deref().map(|p| resolve(p, ctx)).as_deref(),
+                Some(
+                    &cwd.as_deref()
+                        .map(|p| resolve(p, ctx))
+                        .unwrap_or_else(|| ctx.workspace_root.clone()),
+                ),
                 *timeout_ms,
             )
             .await
@@ -159,7 +167,11 @@ pub async fn check_tier0(
                 args,
                 regex,
                 *stream,
-                cwd.as_deref().map(|p| resolve(p, ctx)).as_deref(),
+                Some(
+                    &cwd.as_deref()
+                        .map(|p| resolve(p, ctx))
+                        .unwrap_or_else(|| ctx.workspace_root.clone()),
+                ),
                 *timeout_ms,
             )
             .await
@@ -174,7 +186,11 @@ pub async fn check_tier0(
                 cmd,
                 args,
                 *max_ms,
-                cwd.as_deref().map(|p| resolve(p, ctx)).as_deref(),
+                Some(
+                    &cwd.as_deref()
+                        .map(|p| resolve(p, ctx))
+                        .unwrap_or_else(|| ctx.workspace_root.clone()),
+                ),
             )
             .await
         }
@@ -1211,14 +1227,30 @@ async fn check_all_of(
     predicates: &[Predicate],
     ctx: &CheckContext,
 ) -> Result<PredicateCheckResult, WitnessError> {
+    if predicates.is_empty() {
+        return Ok(PredicateCheckResult::inconclusive("AllOf has no checks", 0));
+    }
+    let mut unknown = None;
     for p in predicates {
         let r = Box::pin(check_tier0(p, ctx)).await?;
-        if r.outcome != VerdictOutcome::Pass {
-            return Ok(PredicateCheckResult::fail(
-                format!("AllOf failed at sub-predicate: {}", r.detail),
-                0,
-            ));
+        match r.outcome {
+            VerdictOutcome::Fail => {
+                return Ok(PredicateCheckResult::fail(
+                    format!("AllOf failed at sub-predicate: {}", r.detail),
+                    0,
+                ))
+            }
+            VerdictOutcome::Inconclusive => {
+                unknown = Some(r.detail);
+            }
+            VerdictOutcome::Pass => {}
         }
+    }
+    if let Some(detail) = unknown {
+        return Ok(PredicateCheckResult::inconclusive(
+            format!("AllOf is unverified: {detail}"),
+            0,
+        ));
     }
     Ok(PredicateCheckResult::pass(
         format!("all {} sub-predicates passed", predicates.len()),
@@ -1230,16 +1262,32 @@ async fn check_any_of(
     predicates: &[Predicate],
     ctx: &CheckContext,
 ) -> Result<PredicateCheckResult, WitnessError> {
+    if predicates.is_empty() {
+        return Ok(PredicateCheckResult::inconclusive("AnyOf has no checks", 0));
+    }
     let mut last_detail = String::new();
+    let mut unknown = None;
     for p in predicates {
         let r = Box::pin(check_tier0(p, ctx)).await?;
-        if r.outcome == VerdictOutcome::Pass {
-            return Ok(PredicateCheckResult::pass(
-                format!("AnyOf satisfied by: {}", r.detail),
-                0,
-            ));
+        match r.outcome {
+            VerdictOutcome::Pass => {
+                return Ok(PredicateCheckResult::pass(
+                    format!("AnyOf satisfied by: {}", r.detail),
+                    0,
+                ))
+            }
+            VerdictOutcome::Inconclusive => {
+                unknown = Some(r.detail.clone());
+            }
+            VerdictOutcome::Fail => {}
         }
         last_detail = r.detail;
+    }
+    if let Some(detail) = unknown {
+        return Ok(PredicateCheckResult::inconclusive(
+            format!("AnyOf is unverified: {detail}"),
+            0,
+        ));
     }
     Ok(PredicateCheckResult::fail(
         format!(

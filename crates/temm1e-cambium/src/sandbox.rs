@@ -37,7 +37,11 @@ use temm1e_core::types::error::Temm1eError;
 
 /// Default location for the cambium sandbox.
 pub fn default_sandbox_root() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".temm1e").join("cambium").join("sandbox"))
+    Some(
+        temm1e_core::config::data_dir()
+            .join("cambium")
+            .join("sandbox"),
+    )
 }
 
 /// Manages the lifecycle of a cambium sandbox: a dedicated git clone
@@ -534,10 +538,12 @@ mod tests {
     #[tokio::test]
     async fn default_sandbox_root_is_under_temm1e() {
         if let Some(root) = default_sandbox_root() {
-            let s = root.to_string_lossy();
-            assert!(s.contains(".temm1e"));
-            assert!(s.contains("cambium"));
-            assert!(s.contains("sandbox"));
+            assert_eq!(
+                root,
+                temm1e_core::config::data_dir()
+                    .join("cambium")
+                    .join("sandbox")
+            );
         }
     }
 }

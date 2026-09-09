@@ -9,7 +9,7 @@
 ## Language and Toolchain
 
 - **Edition:** Rust 2021
-- **Minimum Rust version:** 1.82
+- **Minimum Rust version:** 1.91.1
 - **Profile:** `panic = "unwind"` in release. NEVER change to `"abort"`.
 - **Formatter:** `cargo fmt --all` (rustfmt defaults)
 - **Linter:** `cargo clippy --workspace --all-targets --all-features -- -D warnings` (zero warnings)

@@ -8,6 +8,44 @@ use crate::conscience::SelfWorkKind;
 use crate::log_scanner;
 use crate::store::Store;
 
+/// Outcome of a maintenance attempt. Skipped work must not be recorded as completed.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", content = "detail", rename_all = "snake_case")]
+pub enum SelfWorkOutcome {
+    Completed(String),
+    Skipped(String),
+}
+
+impl std::fmt::Display for SelfWorkOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Completed(detail) => write!(f, "{detail}"),
+            Self::Skipped(reason) => write!(f, "Skipped: {reason}"),
+        }
+    }
+}
+
+pub async fn execute_self_work_outcome(
+    kind: &SelfWorkKind,
+    store: &Arc<Store>,
+    caller: Option<&Arc<dyn LlmCaller>>,
+) -> Result<SelfWorkOutcome, Temm1eError> {
+    match kind {
+        SelfWorkKind::SessionCleanup => Ok(SelfWorkOutcome::Skipped(
+            "session cleanup handler is not implemented".into(),
+        )),
+        SelfWorkKind::BlueprintRefinement => Ok(SelfWorkOutcome::Skipped(
+            "blueprint refinement handler is not implemented".into(),
+        )),
+        _ if kind.uses_llm() && caller.is_none() => {
+            Ok(SelfWorkOutcome::Skipped("no LLM caller available".into()))
+        }
+        _ => execute_self_work(kind, store, caller)
+            .await
+            .map(SelfWorkOutcome::Completed),
+    }
+}
+
 /// Execute a self-work activity during Sleep state.
 pub async fn execute_self_work(
     kind: &SelfWorkKind,
@@ -60,14 +98,14 @@ async fn consolidate_memory(store: &Arc<Store>) -> Result<String, Temm1eError> {
 
 /// Session cleanup: no-op for now (placeholder for future session pruning).
 async fn cleanup_sessions(_store: &Arc<Store>) -> Result<String, Temm1eError> {
-    tracing::info!(target: "perpetuum", work = "session_cleanup", "Session cleanup complete");
-    Ok("Session cleanup complete".to_string())
+    tracing::info!(target: "perpetuum", work = "session_cleanup", "Skipped: session cleanup handler is not implemented");
+    Ok("Skipped: session cleanup handler is not implemented".to_string())
 }
 
 /// Blueprint refinement: no-op for now (placeholder for future blueprint weight updates).
 async fn refine_blueprints(_store: &Arc<Store>) -> Result<String, Temm1eError> {
-    tracing::info!(target: "perpetuum", work = "blueprint_refinement", "Blueprint refinement complete");
-    Ok("Blueprint refinement complete".to_string())
+    tracing::info!(target: "perpetuum", work = "blueprint_refinement", "Skipped: blueprint refinement handler is not implemented");
+    Ok("Skipped: blueprint refinement handler is not implemented".to_string())
 }
 
 /// Failure analysis: LLM reviews recent errors from volition notes and transition logs.
@@ -134,10 +172,7 @@ fn load_github_token() -> Option<String> {
 
 /// Check if bug reporting consent has been given.
 fn is_consent_given() -> bool {
-    let path = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".temm1e")
-        .join("vigil.toml");
+    let path = temm1e_core::config::data_dir().join("vigil.toml");
     std::fs::read_to_string(&path)
         .unwrap_or_default()
         .contains("consent_given = true")
@@ -391,12 +426,7 @@ async fn grow_skills(
     let skills_dir = if let Ok(override_path) = std::env::var("TEMM1E_CAMBIUM_SKILLS_DIR") {
         std::path::PathBuf::from(override_path)
     } else {
-        match dirs::home_dir() {
-            Some(home) => home.join(".temm1e").join("skills"),
-            None => {
-                return Ok("Skill grow: cannot resolve home directory".to_string());
-            }
-        }
+        temm1e_core::config::data_dir().join("skills")
     };
 
     if let Err(e) = tokio::fs::create_dir_all(&skills_dir).await {
@@ -501,10 +531,7 @@ fn extract_json_array(response: &str) -> &str {
 /// Wire 2: check if the Vigil -> Cambium bridge is enabled.
 /// Reads ~/.temm1e/cambium.toml for the master switch. Defaults to enabled.
 fn cambium_vigil_bridge_enabled() -> bool {
-    let path = match dirs::home_dir() {
-        Some(h) => h.join(".temm1e").join("cambium.toml"),
-        None => return false,
-    };
+    let path = temm1e_core::config::data_dir().join("cambium.toml");
     match std::fs::read_to_string(&path) {
         Ok(s) => {
             // Default: enabled if file missing or empty.
@@ -526,10 +553,7 @@ async fn write_cambium_inbox_entry(
     message: &str,
     count: u32,
 ) -> Result<(), Temm1eError> {
-    let inbox_dir = match dirs::home_dir() {
-        Some(h) => h.join(".temm1e").join("cambium"),
-        None => return Err(Temm1eError::Tool("cannot resolve home directory".into())),
-    };
+    let inbox_dir = temm1e_core::config::data_dir().join("cambium");
     tokio::fs::create_dir_all(&inbox_dir)
         .await
         .map_err(|e| Temm1eError::Tool(format!("create cambium dir: {e}")))?;
@@ -641,5 +665,31 @@ mod tests {
     fn extract_json_array_no_brackets_returns_input() {
         let input = "no json here";
         assert_eq!(extract_json_array(input), "no json here");
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    #[tokio::test]
+    async fn absent_maintenance_handlers_never_report_completed() {
+        let store = Arc::new(Store::new("sqlite::memory:").await.unwrap());
+        for kind in [
+            SelfWorkKind::SessionCleanup,
+            SelfWorkKind::BlueprintRefinement,
+        ] {
+            assert!(matches!(
+                execute_self_work_outcome(&kind, &store, None)
+                    .await
+                    .unwrap(),
+                SelfWorkOutcome::Skipped(_)
+            ));
+        }
+        assert!(matches!(
+            execute_self_work_outcome(&SelfWorkKind::MemoryConsolidation, &store, None)
+                .await
+                .unwrap(),
+            SelfWorkOutcome::Completed(_)
+        ));
     }
 }

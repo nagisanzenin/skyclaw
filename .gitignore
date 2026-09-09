@@ -17,3 +17,7 @@ tems_lab/swarm/AB_RESULTS_*.json
 tems_lab/swarm/ab_*_results.json
 tems_lab/swarm/results/
 tems_lab/swarm/transcripts/
+
+# Stable lock for bounded local build jobs
+.cargo-build.lock
+scripts/__pycache__/

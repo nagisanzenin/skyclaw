@@ -4,7 +4,7 @@
 //! in-process. No external dependencies are needed — data lives in
 //! `std::sync::atomic` integers and `std::sync::RwLock`-guarded vectors.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::RwLock;
 
@@ -12,11 +12,17 @@ use async_trait::async_trait;
 use temm1e_core::traits::{ComponentHealth, HealthState, HealthStatus, Observable};
 use temm1e_core::types::error::Temm1eError;
 
-/// In-process metrics collector backed by atomics and RwLock-guarded vecs.
+/// Maximum retained series per metric kind; excess new series return an error.
+const MAX_SERIES: usize = 1024;
+/// Percentiles describe this recent observation window, not lifetime history.
+const HISTOGRAM_WINDOW: usize = 1024;
+const MAX_KEY_BYTES: usize = 1024;
+
+/// In-process metrics with bounded series cardinality and recent histograms.
 pub struct MetricsCollector {
     counters: RwLock<HashMap<String, AtomicU64>>,
     gauges: RwLock<HashMap<String, AtomicI64>>,
-    histograms: RwLock<HashMap<String, Vec<f64>>>,
+    histograms: RwLock<HashMap<String, VecDeque<f64>>>,
 }
 
 impl MetricsCollector {
@@ -36,11 +42,56 @@ impl MetricsCollector {
     /// Example: `("latency", &[("provider", "anthropic")])` →
     /// `"latency{provider=anthropic}"`.
     fn qualified_name(name: &str, labels: &[(&str, &str)]) -> String {
-        if labels.is_empty() {
-            return name.to_string();
+        fn escape(value: &str) -> String {
+            value
+                .replace('%', "%25")
+                .replace('{', "%7B")
+                .replace('}', "%7D")
+                .replace(',', "%2C")
+                .replace('=', "%3D")
         }
-        let pairs: Vec<String> = labels.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let name = escape(name);
+        if labels.is_empty() {
+            return name;
+        }
+        let mut labels = labels.to_vec();
+        labels.sort_unstable();
+        let pairs: Vec<String> = labels
+            .iter()
+            .map(|(k, v)| format!("{}={}", escape(k), escape(v)))
+            .collect();
         format!("{name}{{{}}}", pairs.join(","))
+    }
+
+    fn checked_key(name: &str, labels: &[(&str, &str)]) -> Result<String, Temm1eError> {
+        if labels.len() > 16
+            || name.len().saturating_add(
+                labels
+                    .iter()
+                    .map(|(k, v)| k.len().saturating_add(v.len()))
+                    .sum::<usize>(),
+            ) > MAX_KEY_BYTES
+        {
+            return Err(Temm1eError::Internal(
+                "metric name/labels exceed bounded capacity".into(),
+            ));
+        }
+        let key = Self::qualified_name(name, labels);
+        if key.len() > MAX_KEY_BYTES {
+            return Err(Temm1eError::Internal(
+                "encoded metric key exceeds bounded capacity".into(),
+            ));
+        }
+        Ok(key)
+    }
+
+    fn check_capacity<T>(map: &HashMap<String, T>, key: &str) -> Result<(), Temm1eError> {
+        if map.len() >= MAX_SERIES && !map.contains_key(key) {
+            return Err(Temm1eError::Internal(
+                "metric series capacity reached".into(),
+            ));
+        }
+        Ok(())
     }
 
     // ── Public read accessors (for tests & OtelExporter) ───────────────
@@ -57,13 +108,13 @@ impl MetricsCollector {
         map.get(key).map(|v| v.load(Ordering::Relaxed))
     }
 
-    /// Read a snapshot of histogram observations.
+    /// Read up to the most recent 1,024 histogram observations.
     pub fn histogram_values(&self, key: &str) -> Option<Vec<f64>> {
         let map = self.histograms.read().unwrap_or_else(|e| e.into_inner());
-        map.get(key).cloned()
+        map.get(key).map(|values| values.iter().copied().collect())
     }
 
-    /// Compute percentiles from a histogram's recorded values.
+    /// Compute percentiles over the most recent 1,024 observations.
     ///
     /// Returns `None` if the histogram does not exist or has no observations.
     /// `percentile` must be in `[0.0, 100.0]`.
@@ -76,7 +127,7 @@ impl MetricsCollector {
         if values.is_empty() {
             return None;
         }
-        let mut sorted = values.clone();
+        let mut sorted: Vec<f64> = values.iter().copied().collect();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let idx = ((percentile / 100.0) * (sorted.len() as f64 - 1.0))
             .round()
@@ -101,7 +152,12 @@ impl Observable for MetricsCollector {
         value: f64,
         labels: &[(&str, &str)],
     ) -> Result<(), Temm1eError> {
-        let key = Self::qualified_name(name, labels);
+        let key = Self::checked_key(name, labels)?;
+        if !value.is_finite() || (value * 1000.0).abs() >= i64::MAX as f64 {
+            return Err(Temm1eError::Internal(
+                "gauge value is nonfinite or out of range".into(),
+            ));
+        }
         let encoded = (value * 1000.0) as i64;
 
         let mut map = self
@@ -109,6 +165,7 @@ impl Observable for MetricsCollector {
             .write()
             .map_err(|e| Temm1eError::Internal(format!("gauges lock poisoned: {e}")))?;
 
+        Self::check_capacity(&map, &key)?;
         map.entry(key)
             .and_modify(|v| v.store(encoded, Ordering::Relaxed))
             .or_insert_with(|| AtomicI64::new(encoded));
@@ -123,7 +180,7 @@ impl Observable for MetricsCollector {
         name: &str,
         labels: &[(&str, &str)],
     ) -> Result<(), Temm1eError> {
-        let key = Self::qualified_name(name, labels);
+        let key = Self::checked_key(name, labels)?;
 
         let map = self
             .counters
@@ -131,7 +188,9 @@ impl Observable for MetricsCollector {
             .map_err(|e| Temm1eError::Internal(format!("counters lock poisoned: {e}")))?;
 
         if let Some(counter) = map.get(&key) {
-            counter.fetch_add(1, Ordering::Relaxed);
+            let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                Some(n.saturating_add(1))
+            });
             tracing::debug!(metric = name, "counter incremented (existing)");
             return Ok(());
         }
@@ -143,9 +202,12 @@ impl Observable for MetricsCollector {
             .map_err(|e| Temm1eError::Internal(format!("counters lock poisoned: {e}")))?;
 
         // Double-check after acquiring write lock.
+        Self::check_capacity(&map, &key)?;
         map.entry(key)
             .and_modify(|v| {
-                v.fetch_add(1, Ordering::Relaxed);
+                let _ = v.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                    Some(n.saturating_add(1))
+                });
             })
             .or_insert_with(|| AtomicU64::new(1));
 
@@ -160,14 +222,24 @@ impl Observable for MetricsCollector {
         value: f64,
         labels: &[(&str, &str)],
     ) -> Result<(), Temm1eError> {
-        let key = Self::qualified_name(name, labels);
+        let key = Self::checked_key(name, labels)?;
+        if !value.is_finite() {
+            return Err(Temm1eError::Internal(
+                "histogram value must be finite".into(),
+            ));
+        }
 
         let mut map = self
             .histograms
             .write()
             .map_err(|e| Temm1eError::Internal(format!("histograms lock poisoned: {e}")))?;
 
-        map.entry(key).or_default().push(value);
+        Self::check_capacity(&map, &key)?;
+        let values = map.entry(key).or_default();
+        if values.len() == HISTOGRAM_WINDOW {
+            values.pop_front();
+        }
+        values.push_back(value);
 
         tracing::debug!(metric = name, value, "histogram observation recorded");
         Ok(())
@@ -189,6 +261,59 @@ impl Observable for MetricsCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bounded_metrics_retain_recent_values_and_keep_existing_series_updatable() {
+        let mc = MetricsCollector::new();
+        for i in 0..(HISTOGRAM_WINDOW + 17) {
+            mc.observe_histogram("window", i as f64, &[]).await.unwrap();
+        }
+        let values = mc.histogram_values("window").unwrap();
+        assert_eq!(values.len(), HISTOGRAM_WINDOW);
+        assert_eq!(values[0], 17.0);
+        assert_eq!(mc.histogram_percentile("window", 0.0), Some(17.0));
+        for i in 0..MAX_SERIES {
+            let name = format!("series_{i}");
+            mc.increment_counter(&name, &[]).await.unwrap();
+            mc.record_metric(&name, 1.0, &[]).await.unwrap();
+            if i + 1 < MAX_SERIES {
+                mc.observe_histogram(&name, 1.0, &[]).await.unwrap();
+            }
+        }
+        assert!(mc.increment_counter("overflow", &[]).await.is_err());
+        assert!(mc.record_metric("overflow", 1.0, &[]).await.is_err());
+        assert!(mc.observe_histogram("overflow", 1.0, &[]).await.is_err());
+        mc.increment_counter("series_0", &[]).await.unwrap();
+        mc.record_metric("series_0", 2.0, &[]).await.unwrap();
+        mc.observe_histogram("window", 3.0, &[]).await.unwrap();
+        assert_eq!(mc.counter_value("series_0"), Some(2));
+        assert_eq!(mc.gauge_value("series_0"), Some(2000));
+    }
+
+    #[tokio::test]
+    async fn labels_are_order_independent_unambiguous_and_bounded() {
+        let mc = MetricsCollector::new();
+        mc.increment_counter("n", &[("z", "2"), ("a", "1")])
+            .await
+            .unwrap();
+        mc.increment_counter("n", &[("a", "1"), ("z", "2")])
+            .await
+            .unwrap();
+        assert_eq!(mc.counter_value("n{a=1,z=2}"), Some(2));
+        assert_ne!(
+            MetricsCollector::qualified_name("n", &[("a", "1,z=2")]),
+            MetricsCollector::qualified_name("n", &[("a", "1"), ("z", "2")])
+        );
+        assert!(mc
+            .increment_counter(&"x".repeat(MAX_KEY_BYTES + 1), &[])
+            .await
+            .is_err());
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(mc.observe_histogram("bad", invalid, &[]).await.is_err());
+            assert!(mc.record_metric("bad", invalid, &[]).await.is_err());
+        }
+        assert!(mc.histogram_values("bad").is_none());
+    }
 
     #[tokio::test]
     async fn increment_counter_creates_and_increments() {

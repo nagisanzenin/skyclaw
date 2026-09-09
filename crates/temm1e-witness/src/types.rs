@@ -182,6 +182,23 @@ pub enum Predicate {
 }
 
 impl Predicate {
+    /// Arbitrary-program checks require the caller's shell capability, even
+    /// when nested inside a logical composite. Check before evaluating NotOf
+    /// so a denied check cannot be inverted into a passing verdict.
+    pub fn requires_command_execution(&self) -> bool {
+        match self {
+            Self::CommandExits { .. }
+            | Self::CommandOutputContains { .. }
+            | Self::CommandOutputAbsent { .. }
+            | Self::CommandDurationUnder { .. } => true,
+            Self::AllOf { predicates } | Self::AnyOf { predicates } => {
+                predicates.iter().any(Self::requires_command_execution)
+            }
+            Self::NotOf { predicate } => predicate.requires_command_execution(),
+            _ => false,
+        }
+    }
+
     /// Returns true if this predicate can be checked without any LLM call.
     pub fn is_tier0(&self) -> bool {
         !matches!(
@@ -361,11 +378,18 @@ pub struct Verdict {
     pub per_predicate: Vec<PredicateResult>,
     pub tier_usage: TierUsage,
     pub reason: String,
+    /// Legacy scalar retained for ledger compatibility; zero is not proof of free model usage.
     pub cost_usd: f64,
     pub latency_ms: u64,
 }
 
 impl Verdict {
+    /// No attributable model price is carried by this legacy verdict schema.
+    /// Zero is only known for verifier calls when neither model tier ran.
+    pub fn attributable_verifier_cost_usd(&self) -> Option<f64> {
+        (self.tier_usage.tier1_calls == 0 && self.tier_usage.tier2_calls == 0).then_some(0.0)
+    }
+
     pub fn pass_count(&self) -> u32 {
         self.per_predicate
             .iter()

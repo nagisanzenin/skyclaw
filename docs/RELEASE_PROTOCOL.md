@@ -1,6 +1,17 @@
 # TEMM1E Release Protocol
 
-**MANDATORY checklist before pushing any release to `main`.** Claude MUST execute every step and verify results before committing.
+## Local disk budget (modernization requirement)
+
+On storage-constrained development machines, run build/test/check/clippy through `python3 scripts/cargo_guard.py -- <build|check|test|clippy> [arguments]`. It reserves 8 GiB of free space, caps total repository `target/` size at 8 GiB, and uses a disposable `target/guarded` directory. It stops a running command when a sampled limit is crossed (exit 75, **not a passing validation**) and removes guarded outputs afterward. Sampling is once per second; this is a practical guard, not a filesystem quota. Unmanaged Cargo invocations are outside its process lock and must not run alongside it.
+
+Use package/feature batches rather than retaining many build variants. Keep test logs and benchmark evidence outside `target/`. The dev/test profiles disable debug symbols and incremental caching by default; opt into debugging only when needed and clean that build afterward.
+
+For a local release build, use `--keep-cache` only long enough to copy and verify the intended release binary; then run `cargo clean --target-dir target/guarded`. Retain final distributable artifacts and evidence, not complete historical target directories. Before archiving or deleting anything outside generated build outputs, identify it explicitly; do not delete user profiles, credentials, source checkouts or benchmark records as a disk workaround.
+
+The installer and update smoke already use temporary directories with exit cleanup. A September 2026 local audit found 20.6 GiB of accumulated Rust build outputs, compared with about 705 MB of remaining operation files after cleanup. Do not confuse build-cache growth with installed-binary size. Heavy all-feature checks may exceed the local budget; split them or run on a suitable CI runner, and record unfinished checks honestly.
+
+
+**MANDATORY checklist before pushing any release to `main`.** The release owner MUST execute every step and verify results before committing.
 
 ## Pre-Release Verification
 
@@ -15,52 +26,28 @@ cargo test --workspace
 
 Record the test count from the output. Every `test result: ok` line's passed count must be summed.
 
-### 2. Collect Metrics
+### 2. Collect evidence without rebuilding for a count
 
-Run these and record the values:
+Retain the complete successful test log from step 1, including its command, commit, toolchain and feature set. Sum passed counts from that log only; record ignored tests separately. A pipeline that filters output must preserve the Cargo exit status. Do not rerun the entire suite merely to refresh a badge. Counts from overlapping focused reruns must not be added together as distinct tests.
 
-```bash
-# Test count
-cargo test --workspace 2>&1 | grep 'test result' | awk '{sum += $4} END {print sum}'
+Use `rg --files -g '*.rs' -g '!target/**'` for source inventory and workspace metadata for crate counts. Counts describe code size and executed tests, not correctness or product quality. Publish validation in the release report rather than adding implementation statistics to the README hero.
 
-# Source files and lines
-find . -name '*.rs' -not -path './target/*' | wc -l
-find . -name '*.rs' -not -path './target/*' | xargs wc -l | tail -1
+### 3. Version bump
 
-# Crate count
-ls crates/ | wc -l
-```
+Update `[workspace.package].version` in `Cargo.toml`, refresh the generated lockfile, and verify that `temm1e --version` reports the intended release and source revision. Keep old benchmark versions and observed outputs unchanged. Verify CI using the declared `rust-version`; stable-only CI does not validate the minimum toolchain. The locked AWS dependencies require Rust 1.91.1, superseding the inherited 1.82 claim.
 
-### 3. Version Bump
+### 4. README and user documentation
 
-Update version in `Cargo.toml` (workspace.package.version). This propagates to all crates.
+The creator requests a full illustrated feature tour, like the original README but with clearer explanations and current artwork. Preserve feature depth, architecture, setup and commands. Review semantic sections rather than historical line numbers:
 
-**File:** `Cargo.toml` line ~22
-```toml
-[workspace.package]
-version = "X.Y.Z"
-```
+- Version badge and any release-specific examples agree with Cargo metadata.
+- Install/upgrade commands match actual published assets and supported platforms.
+- Provider, coding-plan and login claims distinguish tested compatibility from official support; unknown subscription cost is not zero.
+- Links lead to feature, setup, CLI and architecture documentation. Keep useful feature explanations in the README and link to detailed acceptance evidence and limitations.
+- Artwork follows the approved Tem visual brief and is uniform. Do not regenerate unchanged assets on each release.
+- Release notes summarize user-visible changes, migration behavior and known limitations, with links to the validation report and A/B results.
 
-### 4. README.md — Update ALL of These
-
-| Location | What | How to get value |
-|----------|------|------------------|
-| Line ~13 | Version badge | Match Cargo.toml version |
-| Line ~14 | Test count badge | From step 2 |
-| Line ~15 | Provider count badge | Count providers in Supported Providers table |
-| Line ~23 | Version tagline (`**vX.Y: ...`) | New feature headline |
-| Line ~25 | Hero line (`XXK lines \| N tests`) | From step 2 |
-| Line ~94 | Lines of Rust metric | From step 2 (exact count + file count) |
-| Line ~95 | Tests metric | From step 2 |
-| Line ~97 | Workspace crates metric | From step 2 (`crates/ count + 1 binary`) |
-| Line ~101 | AI providers metric | Count all providers including variants |
-| Line ~103 | Agent tools metric | Count tools in Tools table |
-| Line ~354 | Architecture crate count text | Match workspace crates metric |
-| Line ~356-372 | Architecture tree | Must list all crates in `crates/` |
-| Line ~425 | `temm1e update` example version | Match Cargo.toml version |
-| Line ~443 | Dev section test count | From step 2 |
-| Release Timeline | New entry at TOP | Date, version, features, test count |
-| **Tem's Lab section** | Add subsection for new cognitive systems | If the release adds a new cognitive system (crate in temm1e-*), add a Tem's Lab subsection with: what it does, how it works, key metrics/benchmarks, A/B test results if applicable, and links to research papers/design docs. Follow the existing subsection format (see Lambda Memory, Conscious, Perpetuum as examples). |
+Preserve the original README's feature breadth without restoring unverified source-line, tool-count or benchmark marketing claims.
 
 ### 5. CLAUDE.md — Update Stale References
 
@@ -97,7 +84,7 @@ server; TUI has been missing a dozen subsystems for multiple releases.
 #### Parity matrix (update every release)
 
 Before pushing a release, confirm every shipped feature is wired in every
-interactive interface. Current snapshot (update at each release):
+interactive interface. Historical pre-modernization snapshot follows; verify the final implementation against `docs/modernization/IMPLEMENTATION-STATUS.md` and record a new evidence matrix at release. These old checkmarks are not current acceptance results:
 
 | Feature | Server | CLI chat | TUI |
 |---|:---:|:---:|:---:|
@@ -140,9 +127,7 @@ cargo build --release --example tui_smoke -p temm1e-tui
 The **tui_smoke example** (`crates/temm1e-tui/examples/tui_smoke.rs`)
 calls the exact `spawn_agent()` function that `launch_tui` calls, but
 skips ratatui's terminal init. It sets up a tracing subscriber that
-emits logs to stdout, waits 5s for async init to complete, then exits.
-**This is the only way to empirically verify TUI wiring without a real
-terminal** — never skip it on release.
+exercises bridge initialization and supports actual prompt/stream/expected-response checks before owned shutdown. It is a headless integration check, not proof of rendered terminal behavior. Run it on release alongside a PTY interaction check.
 
 For every feature listed in the release: include a greppable registration
 log message, run ALL THREE smoke tests against the release binary, and
@@ -150,49 +135,11 @@ paste the greps into the release report. A missing log = a missing
 wiring = blocker for release unless the release notes EXPLICITLY declare
 non-parity for that interface.
 
-#### One-shot parity verification script
+#### Parity evidence requirements
 
-Save as `scripts/release_parity_smoke.sh` (or inline in the release flow):
+Use isolated profiles and bounded owned processes. Retain configuration hashes, startup registration logs, exercised actions and shutdown results for CLI/server/TUI. Do not infer functional parity from a startup grep alone. `benchmarks/modernization/lifecycle.py` checks process lifecycle; `conversation_restart.py` exercises actual CLI history/restart and interrupted final output with a fake provider. Neither proves external-channel conversation dispatch or rendered TUI behavior.
 
-```bash
-#!/usr/bin/env bash
-set -u
-BIN=./target/release/temm1e
-cargo build --release --bin temm1e 2>&1 | tail -1
-cargo build --release --example tui_smoke -p temm1e-tui 2>&1 | tail -1
-
-# CLI
-( printf 'hi\n'; sleep 15; printf '/quit\n' ) | "$BIN" chat > /tmp/p_cli.log 2>&1 &
-( sleep 30; kill -TERM $! 2>/dev/null ) & wait
-
-# Server
-"$BIN" start > /tmp/p_srv.log 2>&1 &
-( sleep 12; kill -TERM $! 2>/dev/null ) & wait
-
-# TUI (via dedicated headless harness — DO NOT use `temm1e tui` directly)
-./target/release/examples/tui_smoke > /tmp/p_tui.log 2>&1
-
-for anchor in \
-  "JIT spawn_swarm tool registered" \
-  "Many Tems initialized" \
-  "JIT spawn_swarm context wired" \
-  "Tem Conscious.*initialized" \
-  "Social intelligence initialized" \
-  "Perpetuum runtime started" \
-  "TemDOS cores loaded" \
-  "TemDOS invoke_core tool registered" \
-  "Loaded MCP config" \
-  "Custom script tools loaded"
-do
-  cli=$(grep -c "$anchor" /tmp/p_cli.log 2>/dev/null || echo 0)
-  srv=$(grep -c "$anchor" /tmp/p_srv.log 2>/dev/null || echo 0)
-  tui=$(grep -c "$anchor" /tmp/p_tui.log 2>/dev/null || echo 0)
-  printf "%-45s CLI=%s TUI=%s srv=%s\n" "$anchor" "$cli" "$tui" "$srv"
-done
-```
-
-Paste the output table into the release report's parity section. Any
-anchor that shows `0` across any expected interface = blocker.
+The current `tui_smoke` supports a prompt, expected text and `--require-stream`; it exercises the real bridge, waits for completion and checks foreground shutdown plus persisted final delivery. Optional background drainage is reported separately. Run a real PTY test for keyboard/rendering behavior. Do not use the old unowned `sleep; kill $!` shell snippets as an acceptance harness, and do not write test credentials into the real user's profile.
 
 #### Rules
 
@@ -213,14 +160,7 @@ anchor that shows `0` across any expected interface = blocker.
 
 ### 8. Final Verification
 
-After all edits, re-run:
-
-```bash
-cargo check --workspace
-cargo test --workspace 2>&1 | grep 'test result' | awk '{sum += $4} END {print sum}'
-```
-
-Confirm test count still matches what you wrote in README.
+After code or version changes, run the applicable compilation/test gates on the final release commit and record complete logs with exit status. Pure documentation edits do not require rebuilding unchanged code. Confirm that published validation counts identify the tested commit and configuration; a count alone cannot establish a passing run.
 
 ### 9. Commit and Push — PR-based flow
 
@@ -286,12 +226,12 @@ git push origin vX.Y.Z
 After pushing the tag:
 1. GitHub Actions `release.yml` triggers automatically
 2. CI runs checks (cargo check, test, clippy, fmt)
-3. Builds 4 binaries (linux-musl, linux-desktop, macos-x86, macos-arm)
+3. Builds6primary binaries (Linux x86_64 and ARM64, each server/musl and desktop/glibc; macOS Intel and Apple Silicon), plus4legacy updater aliases
 4. Creates GitHub Release with binaries + checksums + auto release notes
 5. **Verify the release**: `gh run list --limit 1` and check the Actions tab
 
 Do NOT declare the release done until the workflow completes successfully
-and the GitHub Release page shows all 4 binaries.
+and the GitHub Release page shows all6primary binaries,4legacy aliases and the checksum manifest.
 
 ### 10.5 Update-Path Smoke — MANDATORY (added in v5.5.2)
 

@@ -2,20 +2,26 @@
 //! through AI providers with tool execution support.
 
 pub mod agent_task_status;
+pub mod background;
 pub mod blueprint;
 pub mod budget;
 pub mod circuit_breaker;
+pub mod compaction;
 pub mod consciousness;
 pub mod consciousness_engine;
 pub mod context;
+pub mod conversation;
 pub mod delegation;
+pub mod delivery;
 pub mod done_criteria;
 pub mod engram;
+pub mod execution_journal;
 pub mod executor;
 pub mod history_pruning;
 pub mod lambda_memory;
 pub mod learning;
 pub mod llm_classifier;
+pub mod metered_provider;
 pub mod model_router;
 pub mod output_compression;
 pub mod proactive;
@@ -24,6 +30,7 @@ pub mod prompt_patches;
 pub mod prompted_tool_calling;
 pub mod recovery;
 pub mod runtime;
+pub mod runtime_policy;
 pub mod self_audit;
 pub mod self_correction;
 pub mod spawn_swarm;
@@ -60,3 +67,9 @@ pub use streaming::{StreamBuffer, StreamingConfig, StreamingNotifier};
 pub use task_decomposition::{SubTask, SubTaskStatus, TaskGraph};
 pub use task_queue::{TaskQueue, TaskStatus};
 pub use watchdog::{HealthReport, SubsystemStatus, Watchdog, WatchdogConfig};
+
+pub mod goal_assessment;
+pub mod goal_criteria;
+pub mod goal_ledger;
+
+mod witness_provider;

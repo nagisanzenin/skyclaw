@@ -1,7 +1,8 @@
 //! Send file tool — sends a file from the workspace back to the user through
 //! the messaging channel.
 
-use std::sync::Arc;
+use crate::channel_target::ChannelTarget;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use temm1e_core::types::error::Temm1eError;
@@ -9,17 +10,34 @@ use temm1e_core::types::file::{FileData, OutboundFile};
 use temm1e_core::{
     Channel, PathAccess, Tool, ToolContext, ToolDeclarations, ToolInput, ToolOutput,
 };
+use tokio::io::AsyncReadExt;
 
-/// Maximum file size to send (50 MB — Telegram's upload limit).
+/// Conservative local upload ceiling (50 MiB), independent of platform quotas.
 const MAX_SEND_SIZE: usize = 50 * 1024 * 1024;
 
 pub struct SendFileTool {
-    channel: Arc<dyn Channel>,
+    channel: ChannelTarget,
 }
 
 impl SendFileTool {
     pub fn new(channel: Arc<dyn Channel>) -> Self {
-        Self { channel }
+        Self {
+            channel: ChannelTarget::Single(channel),
+        }
+    }
+
+    /// Server tools resolve from the active session's transport, preserving
+    /// the configured heartbeat destination as the only explicit fallback.
+    pub fn routed(
+        channels: HashMap<String, Arc<dyn Channel>>,
+        heartbeat: Option<Arc<dyn Channel>>,
+    ) -> Self {
+        Self {
+            channel: ChannelTarget::Routed {
+                channels,
+                heartbeat,
+            },
+        }
     }
 }
 
@@ -69,6 +87,12 @@ impl Tool for SendFileTool {
         input: ToolInput,
         ctx: &ToolContext,
     ) -> Result<ToolOutput, Temm1eError> {
+        let ft = self
+            .channel
+            .resolve(&ctx.channel)?
+            .file_transfer()
+            .ok_or_else(|| Temm1eError::Tool("Channel does not support file transfer".into()))?;
+        let max_size = MAX_SEND_SIZE.min(ft.max_file_size());
         let path_str = input
             .arguments
             .get("path")
@@ -93,23 +117,32 @@ impl Tool for SendFileTool {
             ctx.workspace_path.join(path_str)
         };
 
-        // Read the file
-        let data = match tokio::fs::read(&path).await {
-            Ok(d) => d,
-            Err(e) => {
+        // Bound bytes while reading, including a file that grows after open.
+        let read_result = async {
+            let file = tokio::fs::File::open(&path).await?;
+            let mut data = Vec::new();
+            file.take(max_size as u64 + 1)
+                .read_to_end(&mut data)
+                .await?;
+            Ok::<_, std::io::Error>(data)
+        }
+        .await;
+        let data = match read_result {
+            Ok(data) => data,
+            Err(error) => {
                 return Ok(ToolOutput {
-                    content: format!("Failed to read file '{}': {}", path_str, e),
+                    content: format!("Failed to read file '{}': {}", path_str, error),
                     is_error: true,
-                });
+                })
             }
         };
 
-        if data.len() > MAX_SEND_SIZE {
+        if data.len() > max_size {
             return Ok(ToolOutput {
                 content: format!(
                     "File is too large ({} bytes, max {} bytes)",
                     data.len(),
-                    MAX_SEND_SIZE
+                    max_size
                 ),
                 is_error: true,
             });
@@ -139,11 +172,6 @@ impl Tool for SendFileTool {
             _ => "application/octet-stream",
         }
         .to_string();
-
-        let ft = self
-            .channel
-            .file_transfer()
-            .ok_or_else(|| Temm1eError::Tool("Channel does not support file transfer".into()))?;
 
         let outbound = OutboundFile {
             name: file_name.clone(),

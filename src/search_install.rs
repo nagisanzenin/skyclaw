@@ -268,8 +268,7 @@ async fn remove_container(runtime: &str, name: &str) {
 
 /// Canonical settings directory.
 fn settings_dir() -> anyhow::Result<PathBuf> {
-    dirs::home_dir()
-        .map(|h| h.join(".temm1e").join("searxng"))
+    Some(temm1e_core::config::data_dir().join("searxng"))
         .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))
 }
 
@@ -301,8 +300,7 @@ async fn verify_endpoint_with_retries(url: &str, max_secs: u64) -> bool {
 /// Read-modify-write pattern: load existing TOML, merge in the setting,
 /// write back. Preserves existing keys.
 fn persist_config(url: &str) -> anyhow::Result<PathBuf> {
-    let config_path = dirs::home_dir()
-        .map(|h| h.join(".temm1e").join("temm1e.toml"))
+    let config_path = Some(temm1e_core::config::data_dir().join("temm1e.toml"))
         .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?;
 
     // Ensure parent exists

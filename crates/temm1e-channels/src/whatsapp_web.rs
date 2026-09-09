@@ -37,7 +37,7 @@ use wa_rs_ureq_http::UreqHttpClient;
 // ── Constants ────────────────────────────────────────────────────────
 
 /// Default DB path for WhatsApp Web session.
-const DEFAULT_DB_PATH: &str = ".temm1e/whatsapp_web.db";
+const DEFAULT_DB_PATH: &str = "whatsapp_web.db";
 
 // ── Policy enums ─────────────────────────────────────────────────────
 
@@ -128,9 +128,7 @@ impl WhatsAppWebChannel {
         let db_path = if let Some(ref p) = db_path {
             p.clone()
         } else {
-            let home = dirs::home_dir()
-                .ok_or_else(|| Temm1eError::Config("Cannot determine home directory".into()))?;
-            let path = home.join(DEFAULT_DB_PATH);
+            let path = temm1e_core::config::data_dir().join(DEFAULT_DB_PATH);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| Temm1eError::Config(format!("Failed to create dir: {e}")))?;
@@ -237,9 +235,7 @@ impl Channel for WhatsAppWebChannel {
                                 // Save as SVG for easy scanning. Fallback to the OS temp
                                 // dir (cross-platform) if the user's home dir can't be
                                 // resolved — `/tmp` doesn't exist on Windows.
-                                let svg_path = dirs::home_dir()
-                                    .unwrap_or_else(std::env::temp_dir)
-                                    .join(".temm1e")
+                                let svg_path = temm1e_core::config::data_dir()
                                     .join("whatsapp_qr.svg");
                                 if let Some(parent) = svg_path.parent() {
                                     let _ = std::fs::create_dir_all(parent);
@@ -545,7 +541,7 @@ mod tests {
 
     #[test]
     fn allow_all_allows_everyone() {
-        let config = test_config(None);
+        let config = test_config(Some("allow_all:ignore"));
         let channel = WhatsAppWebChannel::new(&config).unwrap();
         assert!(channel.is_allowed("15551234567"));
         assert!(channel.is_allowed("anyone"));
@@ -577,12 +573,11 @@ mod tests {
     }
 
     #[test]
-    fn allowlist_empty_allows_all() {
-        // Allowlist mode but no entries = allow everyone
-        // (user chose allowlist but didn't configure it yet)
+    fn allowlist_empty_denies_all() {
+        // Explicit allowlist mode admits only configured identities.
         let config = test_config(Some("allowlist:ignore"));
         let channel = WhatsAppWebChannel::new(&config).unwrap();
-        assert!(channel.is_allowed("15551234567"));
+        assert!(!channel.is_allowed("15551234567"));
     }
 
     #[test]

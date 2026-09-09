@@ -13,7 +13,7 @@ pub struct WhatsAppAllowlistFile {
 
 /// Return the path to `~/.temm1e/{filename}`.
 pub fn whatsapp_allowlist_path(filename: &str) -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".temm1e").join(filename))
+    Some(temm1e_core::config::data_dir().join(filename))
 }
 
 /// Load a persisted WhatsApp allowlist from disk.

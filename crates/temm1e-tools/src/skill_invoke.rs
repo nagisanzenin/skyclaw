@@ -186,6 +186,9 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
+            user_id: "test-user".into(),
+            role: temm1e_core::types::rbac::Role::Admin,
+            channel: "cli".into(),
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".into(),
             chat_id: "test".into(),

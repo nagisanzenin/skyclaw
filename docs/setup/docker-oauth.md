@@ -1,104 +1,60 @@
-# Docker / Docker Compose — OAuth Setup
+# Docker OAuth and persistent profiles
 
-TEMM1E's OAuth login requires a browser and a localhost callback. Inside a container, neither is available. The solution: authenticate on your local machine, then mount the token file into the container.
-
-## Quick Start
-
-### 1. Authenticate on your local machine
+Use an installed Temm1e binary on a machine with a browser to authenticate. Export into a **private profile directory**, then mount that whole writable directory. OAuth refresh replaces the token file atomically and uses a sibling lock and recovery marker; a single-file bind mount cannot support that replacement.
 
 ```bash
-# Install and build TEMM1E locally (or use a pre-built binary)
-git clone https://github.com/nagisanzenin/temm1e.git
-cd temm1e
-cargo build --release
-
-# Authenticate — opens browser, log into ChatGPT
-./target/release/temm1e auth login --output ./oauth.json
+mkdir -m 700 ./temm1e-profile
+temm1e auth login --output ./temm1e-profile/oauth.json
 ```
 
-This creates `oauth.json` in your current directory (and also saves to `~/.temm1e/oauth.json` as usual).
-
-### 2. Copy the token to your server (if remote)
-
-```bash
-scp oauth.json yourserver:/path/to/temm1e/oauth.json
-```
-
-### 3. Mount into your container
+The export is private (0600 on Unix). Login also saves the local profile's credentials. Treat both copies as secrets. For a remote host, transfer the directory through your usual secure channel and preserve its permissions. Run only one deployment against a given rotating refresh token; independently refreshing copies can invalidate one another.
 
 ```yaml
-# docker-compose.yml
-version: "3.8"
 services:
   temm1e:
-    build: .
-    volumes:
-      - ./oauth.json:/root/.temm1e/oauth.json
-      - ./temm1e.toml:/root/.temm1e/temm1e.toml
+    image: temm1e:latest
     environment:
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      TEMM1E_DATA_DIR: /var/lib/temm1e
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+    volumes:
+      - ./temm1e-profile:/var/lib/temm1e
     restart: unless-stopped
 ```
 
 ```bash
-docker-compose up -d
+docker build -t temm1e:latest .
+docker compose up -d
 ```
 
-TEMM1E auto-detects `~/.temm1e/oauth.json` at startup — no config changes needed.
+The directory persists OAuth state, configuration, conversations, memory and other profile data. Place optional configuration at `temm1e-profile/config.toml`. Ensure the container user can write this directory. Do not commit it to Git or place it in a public/shared folder.
 
-## How Token Refresh Works
+## Refresh and reconnect
 
-OAuth tokens expire after ~1 hour. TEMM1E auto-refreshes them using the refresh token (valid ~10 days). The refreshed token is written back to `oauth.json`. Because the file is volume-mounted, the refreshed token persists across container restarts.
+Refresh timing comes from the provider's token metadata; a fixed refresh-token lifetime is not guaranteed. Temm1e locks the token store before refresh and writes a pending marker before the request. An interrupted or ambiguous refresh can require reconnecting instead of retrying a potentially consumed refresh token.
 
-**Important:** The volume mount must be a file bind mount (not a directory), so writes inside the container propagate to the host.
+To reconnect, stop the container, repeat the login/export into its mounted profile, and start the container again. Do not overwrite credentials while a refresh is running.
 
-## Re-authentication
-
-If the refresh token expires (~10 days without use), re-run on your local machine:
+For a headless machine:
 
 ```bash
-temm1e auth login --output ./oauth.json
+temm1e auth login --headless --output ./temm1e-profile/oauth.json
 ```
 
-Then restart the container to pick up the new token.
-
-## Headless Servers (no browser)
-
-If your local machine also has no browser (e.g., another server):
-
-```bash
-temm1e auth login --headless --output ./oauth.json
-```
-
-This prints a URL. Open it on any device with a browser, complete the login, then paste the redirect URL back into the terminal.
+Open the printed URL in a browser and follow the terminal instructions to return the redirect URL.
 
 ## Kubernetes
 
-Same approach — authenticate locally, create a Secret from the token file:
+Mount a writable persistent volume at `/var/lib/temm1e` and set `TEMM1E_DATA_DIR` to that path. A Kubernetes Secret projection is read-only: do not mount it directly as the live `oauth.json`, including through `subPath`.
 
-```bash
-temm1e auth login --output ./oauth.json
-kubectl create secret generic temm1e-oauth --from-file=oauth.json=./oauth.json
-```
+If bootstrapping from a Secret, an init container may copy it into the private persistent directory **only when the live token does not exist**. Preserve refreshed credentials on subsequent starts. Coordinate explicit reconnects separately; never overwrite the live file from the bootstrap Secret on every restart. Use one replica per rotating token/profile unless a separately validated shared ownership mechanism exists.
 
-Mount the secret in your pod spec:
+## Existing containers
 
-```yaml
-volumeMounts:
-  - name: oauth-token
-    mountPath: /root/.temm1e/oauth.json
-    subPath: oauth.json
-volumes:
-  - name: oauth-token
-    secret:
-      secretName: temm1e-oauth
-```
+Before replacing an older image or changing mounts, follow the [profile migration instructions](../ops/deployment.md#existing-container-migration). Older images did not honor their advertised `TEMM1E_HOME=/data`; your active profile may be inside `/root/.temm1e` in the container's writable layer.
 
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| "No OAuth tokens found" at startup | oauth.json not mounted at `/root/.temm1e/oauth.json` | Check volume mount path |
-| "Token refresh failed" | Refresh token expired (>10 days) | Re-run `temm1e auth login --output` locally |
-| Container starts in onboarding mode | oauth.json is empty or malformed | Re-authenticate locally |
-| Token refreshes but lost on restart | Using a directory mount instead of file mount | Use `./oauth.json:/root/.temm1e/oauth.json` (file:file) |
+| Symptom | Check |
+| --- | --- |
+| No OAuth tokens found | `oauth.json` exists in the directory selected by `TEMM1E_DATA_DIR` |
+| Permission denied or resource busy during refresh | Whole directory is writable; token is not a file bind mount/read-only Secret |
+| Reconnect required | Complete a new login while the deployment is stopped |
+| State disappears after container recreation | Mount the actual profile directory, not an unused path |

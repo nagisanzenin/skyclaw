@@ -378,9 +378,11 @@ impl<'a> SystemPromptBuilder<'a> {
             name: "done_criteria",
             text: concat!(
                 "DONE criteria for compound tasks:\n",
-                "1. Define verifiable conditions before executing\n",
-                "2. After all steps, verify each condition\n",
-                "3. Report completion with evidence for each"
+                "- For work requiring several actions, track requested outcomes and verify them with evidence.\n",
+                "- Scale planning to the task; answer simple questions and recall requests directly.\n",
+                "- Show a brief plan only when it helps coordination or the user asks for one.\n",
+                "- Respect requested response format; do not prepend a mandatory checklist.\n",
+                "- Report verified results, unfinished work and uncertainty separately."
             )
             .to_string(),
         }
