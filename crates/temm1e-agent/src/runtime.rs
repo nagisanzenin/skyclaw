@@ -993,6 +993,10 @@ impl AgentRuntime {
                 Arc::new(scoped)
             }
         });
+        let turn_consciousness = self
+            .consciousness
+            .as_ref()
+            .map(|observer| observer.for_runtime(self.auxiliary_provider(), &self.model));
         let mut oath_sealed_this_turn: Option<temm1e_witness::types::Oath> = None;
         if self.auto_seal_planner_oath {
             if let Some(ref witness) = turn_witness {
@@ -1973,10 +1977,10 @@ impl AgentRuntime {
             // has no codebase trajectory to reason about, so the LLM call is
             // pure +3-5s latency tax. On code-shaped turns we still want the
             // observer so it can flag drift or inefficiency.
-            let consciousness_should_fire = self.consciousness.is_some()
+            let consciousness_should_fire = turn_consciousness.is_some()
                 && turn_is_code_shaped(session.history.len(), &user_text).0;
             if let (true, Some(consciousness_observer)) =
-                (consciousness_should_fire, self.consciousness.as_ref())
+                (consciousness_should_fire, turn_consciousness.as_ref())
             {
                 let pre_obs = crate::consciousness_engine::PreObservation {
                     user_message: user_text.clone(),
@@ -1994,8 +1998,7 @@ impl AgentRuntime {
                     turn_input_tokens = turn_input_tokens.saturating_add(cu.input_tokens);
                     turn_output_tokens = turn_output_tokens.saturating_add(cu.output_tokens);
                     turn_cost_usd += cu.cost_usd;
-                    self.budget
-                        .record_estimate(cu.input_tokens, cu.output_tokens, &cu.estimate);
+                    // The turn-bound provider already records success/error/drop.
                 }
                 if let Some(injection) = injection {
                     had_whisper = true;
@@ -3228,10 +3231,10 @@ impl AgentRuntime {
                 // Gated to code-shaped turns to match pre_observe — avoid
                 // paying the post-LLM round-trip when pre-observer also
                 // skipped. Symmetric: observer fires as a pair or not at all.
-                let post_consciousness_should_fire = self.consciousness.is_some()
+                let post_consciousness_should_fire = turn_consciousness.is_some()
                     && turn_is_code_shaped(session.history.len(), &user_text).0;
                 if let (true, Some(consciousness_observer)) =
-                    (post_consciousness_should_fire, self.consciousness.as_ref())
+                    (post_consciousness_should_fire, turn_consciousness.as_ref())
                 {
                     let obs = crate::consciousness::TurnObservation {
                         turn_number: turn_api_calls,
@@ -3258,11 +3261,7 @@ impl AgentRuntime {
                         turn_input_tokens = turn_input_tokens.saturating_add(cu.input_tokens);
                         turn_output_tokens = turn_output_tokens.saturating_add(cu.output_tokens);
                         turn_cost_usd += cu.cost_usd;
-                        self.budget.record_estimate(
-                            cu.input_tokens,
-                            cu.output_tokens,
-                            &cu.estimate,
-                        );
+                        // The turn-bound provider already records success/error/drop.
                     }
                 }
 

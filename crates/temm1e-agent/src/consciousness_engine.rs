@@ -40,6 +40,11 @@ pub struct ConsciousnessEngine {
     provider: Arc<dyn Provider>,
     model: String,
     model_pricing: budget::ModelPricing,
+    state: Arc<ObservationState>,
+}
+
+#[derive(Default)]
+struct ObservationState {
     session_notes: Mutex<Vec<String>>,
     turn_counter: Mutex<u32>,
     post_insight: Mutex<Option<String>>,
@@ -58,9 +63,20 @@ impl ConsciousnessEngine {
             provider,
             model,
             model_pricing,
-            session_notes: Mutex::new(Vec::new()),
-            turn_counter: Mutex::new(0),
-            post_insight: Mutex::new(None),
+            state: Arc::new(ObservationState::default()),
+        }
+    }
+
+    /// An immutable turn binding. Shared trajectory survives rebinding, while
+    /// another turn cannot replace this view's provider/model. The runtime
+    /// supplies its owning meter; do not record the same usage a second time.
+    pub(crate) fn for_runtime(&self, provider: Arc<dyn Provider>, model: &str) -> Self {
+        Self {
+            config: self.config.clone(),
+            model_pricing: budget::get_pricing_with_custom(provider.name(), model),
+            provider,
+            model: model.to_owned(),
+            state: self.state.clone(),
         }
     }
 
@@ -83,14 +99,23 @@ impl ConsciousnessEngine {
         }
 
         let turn = {
-            let mut tc = self.turn_counter.lock().unwrap_or_else(|e| e.into_inner());
-            *tc += 1;
+            let mut tc = self
+                .state
+                .turn_counter
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            *tc = tc.saturating_add(1);
             *tc
         };
 
         // Gather session history for consciousness context
         let session_notes = self.session_notes();
-        let prev_insight = self.post_insight.lock().ok().and_then(|mut n| n.take());
+        let prev_insight = self
+            .state
+            .post_insight
+            .lock()
+            .ok()
+            .and_then(|mut n| n.take());
 
         // Build the consciousness prompt
         let mut context_parts: Vec<String> = Vec::new();
@@ -211,7 +236,7 @@ impl ConsciousnessEngine {
                 );
 
                 // Record in session notes
-                if let Ok(mut notes) = self.session_notes.lock() {
+                if let Ok(mut notes) = self.state.session_notes.lock() {
                     notes.push(format!("Consciousness-T{}: {}", turn, text));
                 }
 
@@ -316,7 +341,7 @@ impl ConsciousnessEngine {
                 } else {
                     obs.tools_called.join(",")
                 };
-                if let Ok(mut notes) = self.session_notes.lock() {
+                if let Ok(mut notes) = self.state.session_notes.lock() {
                     notes.push(format!(
                         "T{}: [{}] {} | cost=${:.4}",
                         obs.turn_number, obs.category, tools_label, obs.cost_usd
@@ -334,7 +359,7 @@ impl ConsciousnessEngine {
                         insight_len = text.len(),
                         "Tem Conscious post: insight for next turn"
                     );
-                    if let Ok(mut pi) = self.post_insight.lock() {
+                    if let Ok(mut pi) = self.state.post_insight.lock() {
                         *pi = Some(text);
                     }
                 } else {
@@ -353,7 +378,7 @@ impl ConsciousnessEngine {
                     "Tem Conscious post: LLM call failed (non-fatal)"
                 );
                 // Still record the turn even if consciousness call fails
-                if let Ok(mut notes) = self.session_notes.lock() {
+                if let Ok(mut notes) = self.state.session_notes.lock() {
                     notes.push(format!(
                         "T{}: [{}] {} (consciousness unavailable)",
                         obs.turn_number,
@@ -371,26 +396,27 @@ impl ConsciousnessEngine {
     // ---------------------------------------------------------------
 
     pub fn session_notes(&self) -> Vec<String> {
-        self.session_notes
+        self.state
+            .session_notes
             .lock()
             .map(|n| n.clone())
             .unwrap_or_default()
     }
 
     pub fn reset_session(&self) {
-        if let Ok(mut notes) = self.session_notes.lock() {
+        if let Ok(mut notes) = self.state.session_notes.lock() {
             notes.clear();
         }
-        if let Ok(mut tc) = self.turn_counter.lock() {
+        if let Ok(mut tc) = self.state.turn_counter.lock() {
             *tc = 0;
         }
-        if let Ok(mut pi) = self.post_insight.lock() {
+        if let Ok(mut pi) = self.state.post_insight.lock() {
             *pi = None;
         }
     }
 
     pub fn turn_count(&self) -> u32 {
-        self.turn_counter.lock().map(|tc| *tc).unwrap_or(0)
+        self.state.turn_counter.lock().map(|tc| *tc).unwrap_or(0)
     }
 }
 
