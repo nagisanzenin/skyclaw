@@ -1,0 +1,40 @@
+{
+  "source": "cb4d4c8",
+  "purpose": "post-compatible-dependency-update acceptance; not A/B replacement; S3 feature pruning later only affects optional s3 builds",
+  "cases": [
+    {
+      "task": "utf8_excerpt",
+      "verified": true,
+      "requests": 7,
+      "failed": 0,
+      "cancelled": 0,
+      "pending": 0,
+      "outcome": "returned"
+    },
+    {
+      "task": "pagination_cursor_explicit_rows",
+      "verified": true,
+      "requests": 6,
+      "failed": 0,
+      "cancelled": 0,
+      "pending": 0,
+      "outcome": "returned"
+    }
+  ],
+  "lifecycle": {
+    "quit": {
+      "exit": 0,
+      "seconds": 0.2288468749029562,
+      "ended": true
+    },
+    "eof": {
+      "exit": 0,
+      "seconds": 0.06399950000923127,
+      "ended": true
+    },
+    "sigterm": {
+      "exit": 0,
+      "seconds": 0.008916832972317934
+    }
+  }
+}

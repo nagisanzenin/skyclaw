@@ -41,3 +41,7 @@ This is a selected30-task standard-library coding corpus, one sample per version
 - `evidence.tar.gz` preserves399 original/clarification evidence files, including prompts, calls, outcomes and workspace files; application profiles and redundant derived review files are excluded. `EVIDENCE-MANIFEST.json` hashes each archived file. The credential value was checked in memory and is absent; no credential is included.
 - The summary script leaves release authorization false. Original raw score remains29/30modern, even after the successful clarification.
 - [Release acceptance](CLOSEOUT-VALIDATION.md), [migration](UPGRADING.md), [feature coverage](FEATURE-COVERAGE.md) and [implementation history](IMPLEMENTATION-STATUS.md) define the broader evidence and unfinished boundaries.
+
+## Post-study dependency updates
+
+The main30-pair study and its clarification used15734b7. Release dependency patches in cb4d4c8 are later changes and are not silently covered by those paid results. Two separately recorded actual-provider acceptance cases pass on the patched binary; original artifacts/scores remain unchanged. See [dependency review](DEPENDENCY-CLOSEOUT.md) and post-patch evidence beside the original scores.

@@ -619,3 +619,7 @@ The creator replaced the concise-README preference with a full feature/explanati
 ## Checkpoint74 — compatible security dependency patches
 
 Final f9d30e7 CI all8jobs green, but security job was intentionally non-blocking and reported26vulnerability entries/22warnings. No merge performed. Compatible dependency patches applied; plist/wayland-scanner now use patched XML. DEPENDENCY-CLOSEOUT.md records remaining old TLS/XML/RSA branches needing actual feature/reachability review. Source APIs unchanged; updated-lockfile CI/MSRV/audit and bounded live acceptance required. Original A/B remains pre-patch15734b7 evidence, not relabeled.
+
+## Checkpoint75 — remove redundant legacy S3 TLS and preserve patch evidence
+
+Compatible patch audit26→11vulnerability entries,22→12warnings; declared MSRV passes. Two live GLM acceptance cases and native CLI lifecycle pass, recorded separately from original A/B. S3 defaults now retain modern HTTPS/sigv4a/tokio and omit redundant legacy rustls connector, removing old rustls0.21/webpki0.101/h20.3. No default runtime API changes. Final audit/full-feature CI and residual Discord/XML/RSA risk disposition remain required. User also requests a Discord launch image and English bullet post only after successful release; prepare then, do not post externally.

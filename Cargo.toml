@@ -92,7 +92,8 @@ chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
 htmd = "0.5"
 
 # Object storage
-aws-sdk-s3 = "1"
+# Keep the SDK default HTTPS client; omit its redundant legacy Rustls/Hyper connector.
+aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "default-https-client", "rt-tokio"] }
 aws-config = "1"
 
 # Error handling
