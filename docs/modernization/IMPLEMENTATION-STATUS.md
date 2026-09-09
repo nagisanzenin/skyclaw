@@ -591,3 +591,7 @@ Final default CLI and real TUI bridge builds passed. All13local-provider accepta
 ## Sixty-seventh checkpoint — retained character identity
 
 Creator refined artwork toward inhabited cozy future rooms, playful multiple Tems and slim biped/quadruped figures with original Gaze-style hair and expressive faces. Accepted model study and16-expression atlas now archived in `assets/character/`, with exact prompts/hashes and canonical art/face/body guides. Local copies and original brief addendum saved. Final18scene replacement still in progress; prototype scene assets are not the finalized art set. A/B continues unchanged; no code/version/release change.
+
+## Sixty-eighth checkpoint — benchmark contract review
+
+Original A/B remains in progress. Pagination B returned integer IDs and failed the dictionary oracle; A passed. Original prompt explicitly says Select IDs but leaves selected element type undefined. Preserve the observed failure, flag the pair ambiguous, and run one separately frozen explicit-row clarification pair after all original cases. See [contract clarification](CLOSEOUT-CLARIFICATION.md); no old score altered, no claim of a clean original gate. Summarizer retains errors/cancellations/pending/runtime failures and cannot authorize release. Final guarded workspace check passed54.98s/clean4GiB; initial A/B local-build contention disclosed. Artwork finalization continues under accepted slim character/expression references.

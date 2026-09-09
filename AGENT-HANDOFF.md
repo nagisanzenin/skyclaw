@@ -14,6 +14,14 @@ Updated September 9, 2026. The creator is asleep and explicitly authorized auton
 - D01 personal/shared-host semantics and D02 delivery vs automatic durable pursuit remain open in `DECISIONS.md`. Preserve existing defaults while adding safe foundations. D04 growth-specific trust/effect evidence remains a separate boundary; generic verified prose must not confer unrelated capability.
 - Do not spawn agents unless current user/developer/AGENTS instructions explicitly authorize delegation. An agent handoff file is not a delegation request.
 
+## Current release-goal execution
+
+User explicitly set goal to release modernization; active Codex goal created (no token budget). Source15734b7 unchanged. Original A/B session5169 continues, last observed38/60. Pagination pair B failed external oracle (IDs vs dict rows), A passed. Investigation found original prompt says Select IDs but never defines selected element type; preserve raw failure, do not call original strict gate clean. CLOSEOUT-CLARIFICATION.md and frozen closeout-clarification.json document ambiguity; run clarification.py once B-first/A-second AFTER original60finish, identical binaries, no replacement of old records or best-of retries. Other observed cases passed so far. Analyze all outcomes, tool claims and workspace violations before release.
+
+Final art direction locked after creator accepted study and expression atlas. Work/art-final-plan.json contains exact18scene specs, final prompt and3reference paths; work/art-final-progress.json tracks completed final illustrations (v4, slim approved character + cozy Den). Final indices0–2done/copied,3–17remaining. Do not use earlier v2/v3bald/round prototypes. Continue imagegen per asset using plan, inspect each, persist paths/prompts and update manifest whenall18done. Current scene files are uncommitted/mixed with old entries; do not publish manifest as verified until completed.
+
+Merge preflight: protection requires1approval; enforce_admins=false. Auth nagisanzenin and collaborator walter-temm1e both have admin rights. Sole-maintainer exception is not established; no messages/review requests sent. Resolve reviewer gate only once concrete release candidate/gates ready; do not silently claim admin exception satisfied.
+
 ## Artwork steering and current generation state
 
 Creator approved punk/science/personal direction, then required playful multiple Tems/bipeds, full cozy inhabited Den backgrounds, original Gaze-style pretty messy hair, original expressive faces, and original Anima slim bodies/scene grounding. Creator explicitly accepted the character sheet and requested local+repo archival and more expressions. `assets/character/` now contains the accepted model study plus16-expression atlas, hashes/prompts and docs. Local copies in Downloads/TEMM1E/modernization-design and operation outputs/art-directions; original downloaded brief gets a dated superseding addendum, backup retained privately.
