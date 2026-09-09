@@ -583,3 +583,7 @@ Before Core failed call recorded0; after1unknown. Combined scoped991tests pass,3
 ## Sixty-fifth checkpoint — frozen closeout study
 
 64 `15734b7` pushed and CI34305585814 passed all8jobs, including Windows, minimum Rust and Docker. Frozen30distinct paired coding scenarios and observed-regression rule before live requests; exact scope, uncertainty and stopping in [closeout design](CLOSEOUT-DESIGN.md). All30external check programs compile; initial draft escaping mistakes repaired before freeze. Same Rust instrumentation hashes on both checkouts; candidate example build37.46s and copied outside disposable target. No performance/readiness claim from design alone. Final CLI build and actual acceptance follow; README/artwork already exist and will be reconciled with final outcomes.
+
+## Sixty-sixth checkpoint — product closeout acceptance and documentation
+
+Final default CLI and real TUI bridge builds passed. All13local-provider acceptance groups plus PTY, streamed headless bridge, gateway onboarding, lifecycle and conversation/interrupted-delivery checks passed. CI34305585814 all8jobs green; separate Linux3138passed21ignored / Windows3109passed20ignored, zero failures. Full evidence and boundaries in [closeout validation](CLOSEOUT-VALIDATION.md). README rewritten for user flow, command reference corrected, [upgrade guide](UPGRADING.md) added. All18approved images match manifest and local documentation links resolve. No redundant image generation. Frozen30-pair paid A/B is running, not yet a release verdict. No bump/merge/tag.

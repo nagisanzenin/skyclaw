@@ -10,9 +10,9 @@
 
 **Temm1e is a persistent AI companion and agent runtime written in Rust.** Talk to Tem in your terminal or messaging app. Tem can work with files, code, the web and your desktop, retain useful memories, and return to scheduled work.
 
-The product idea is simple: a familiar companion that gets useful work done, learns from experience, and tells you honestly what happened. You choose the model; Tem supplies the tools, memory and execution infrastructure.
+Choose your model, connect your tools, and keep the same companion across conversations. Tem combines practical work with memory and personality; execution records help you inspect what actually happened.
 
-[Get started](#get-started) · [Features](docs/FEATURE_GUIDE.md) · [Commands](docs/CLI_REFERENCE.md) · [Vision](VISION.md) · [Release history](docs/RELEASE_HISTORY.md)
+[Get started](#get-started) · [Features](docs/FEATURE_GUIDE.md) · [Commands](docs/CLI_REFERENCE.md) · [Vision](VISION.md) · [Upgrade guide](docs/modernization/UPGRADING.md) · [Release history](docs/RELEASE_HISTORY.md)
 
 > **Modernization branch:** the 6.0 overhaul is in progress. The installer below installs the latest published release, not this branch. See the [implementation status](docs/modernization/IMPLEMENTATION-STATUS.md), [audit](docs/modernization/README.md) and [A/B protocol](docs/modernization/BENCHMARK-PROTOCOL.md). No 6.0 performance improvement or release readiness is claimed yet.
 
@@ -40,7 +40,7 @@ Use `temm1e chat` for a basic terminal conversation, or `temm1e start` to run th
 
 ## Choose your connection
 
-Tem supports Anthropic, OpenAI-compatible services, Gemini and local endpoints. Use the setup wizard to choose a provider and model, then `/model` to inspect or change the active model.
+Tem supports Anthropic, OpenAI-compatible services, Gemini and local endpoints. Use the setup wizard to choose a provider and model, then `/model` to inspect or change the active model. In CLI/server, selection applies to the running instance and keeps saved startup defaults unchanged.
 
 | Connection | Setup | What to expect |
 |---|---|---|
@@ -64,6 +64,16 @@ A coding subscription and a general API account are distinct connections. Tem's 
 
 These systems have different maturity levels. The [feature audit](docs/modernization/FEATURE-COVERAGE.md) traces the intended behavior to code, identifies gaps, and defines the remaining modernization work. Feature illustrations show concepts; they are not screenshots or benchmark results.
 
+## What changes in the modernization
+
+- **A clearer terminal:** compact conversations, expandable tool activity and optional panels, with streamed replies and saved history.
+- **Longer conversations:** compaction retains source references and raw history; scoped recall can recover omitted detail. Final context checks leave room for the answer.
+- **Current connections:** native provider replay, an updated model catalog, Z.ai coding-plan setup and safer credential replacement.
+- **Recoverable work:** saved final replies, interrupted-turn inspection, execution records and evidence that separates an answer from a verified outcome.
+- **Controlled resources:** bounded background work, shared usage accounting, private browser profiles and an updater that downloads verified binaries.
+
+Cache usage is reported when the provider supplies it; a cache hit or cost saving is never assumed. Full multi-tenant isolation, automatic durable pursuit and every experimental growth feature are outside the guarantees above. The [audit and implementation record](docs/modernization/README.md) documents those boundaries.
+
 ## Run as a messaging companion
 
 Configure your provider, then supply the token for a channel you use:
@@ -75,7 +85,7 @@ temm1e start
 
 Discord is available through `DISCORD_BOT_TOKEN`. Other channel integrations and deployment options are documented in the repository. Review access controls before exposing a shared deployment: a personal agent with shell or desktop access operates with substantial access to its host.
 
-Configuration normally lives in `~/.temm1e/config.toml`. `temm1e config validate` checks configuration. Back up your configuration and persistent data before upgrading. The modernization release will include migration and upgrade validation before it is published.
+Configuration normally lives in `~/.temm1e/config.toml`. `temm1e config validate` checks configuration. Back up your configuration and persistent data before upgrading. The [upgrade guide](docs/modernization/UPGRADING.md) explains preserved histories, explicit import, changed model-selection behavior and rollback.
 
 ## Learn more
 

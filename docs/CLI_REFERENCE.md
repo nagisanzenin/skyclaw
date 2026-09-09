@@ -8,7 +8,7 @@ temm1e start --personality none  No personality, minimal identity prompt
 temm1e stop                  Graceful shutdown
 temm1e chat                  Interactive CLI chat (basic, no TUI)
 temm1e status                Show running state
-temm1e update                Pull latest + rebuild
+temm1e update                Download and verify the latest release binary
 temm1e auth login            Codex OAuth (browser or --headless)
 temm1e auth status           Check token validity
 temm1e auth logout           Clear stored tokens
@@ -22,7 +22,7 @@ temm1e reset --confirm       Factory reset with backup
 ```
 /help                Show available commands
 /model               Show current model and available models
-/model <name>        Switch to a different model
+/model <name>        Select model (CLI/server: running instance only)
 /memory              Show current memory strategy
 /memory lambda       Switch to λ-Memory (decay + persistence)
 /memory echo         Switch to Echo Memory (context window only)
@@ -32,7 +32,7 @@ temm1e reset --confirm       Factory reset with backup
 /mcp                 List connected MCP servers
 /mcp add <name> <cmd>  Connect a new MCP server
 /eigentune           Self-tuning status and control
-/login <service>     OTK browser login (100+ services or custom URL)
+/login <service>     Browser login flow (service or custom URL)
 /timelimit           Show current task time limit
 /timelimit <secs>    Set hive task time limit (e.g. /timelimit 3600)
 ```
@@ -61,3 +61,9 @@ A second local process cannot dispatch another turn into the same conversation w
 When a process dies during a send, Tem cannot know whether the destination received all of it. It preserves the uncertainty and does not automatically send another copy. Review the saved reply, then acknowledge receipt or start a new conversation. `/session-new` preserves the old evidence. These commands use the same local-owner/server-Admin authorization as conversation recovery. Interim notices and tool-initiated sends do not yet have this final-reply protection.
 
 Logs now live in the selected profile's `logs` directory on Windows too. Existing logs under the older Windows LocalAppData location are left untouched.
+
+## Model selection and execution evidence
+
+CLI/server `/model` reports the actual running connection. `/model <id>` changes that instance without modifying saved defaults or making a validation request; account access is checked on the next real request. A server instance shares its selected model across chats and rejects replacement while busy. TUI configuration has a separate persistence flow. See the [upgrade guide](modernization/UPGRADING.md).
+
+`/goal-status` inspects recorded execution state; `/goal-assessment` shows saved checks and evidence for the current scope. Returned prose alone does not mark the objective complete. These inspection commands do not call the model.

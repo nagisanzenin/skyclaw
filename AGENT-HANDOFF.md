@@ -14,6 +14,12 @@ Updated September 9, 2026. The creator is asleep and explicitly authorized auton
 - D01 personal/shared-host semantics and D02 delivery vs automatic durable pursuit remain open in `DECISIONS.md`. Preserve existing defaults while adding safe foundations. D04 growth-specific trust/effect evidence remains a separate boundary; generic verified prose must not confer unrelated capability.
 - Do not spawn agents unless current user/developer/AGENTS instructions explicitly authorize delegation. An agent handoff file is not a delegation request.
 
+## Live closeout state (September 9, 2026)
+
+Checkpoint65 `7b85b67` pushed. Paid A/B `../closeout-ab-01` running via `closeout.py`; log `../closeout-ab-01.log`, session5169. Do not start a duplicate or change the frozen corpus. Production binaries still15734b7. First pair completed both pass; this is not an aggregate verdict. User requires today/quota-conscious wrap-up. README/upgrade/reference refreshed; existing18approved artwork assets verified, not regenerated unnecessarily.
+
+Final13actual acceptance groups all pass; PTY, headless streamed TUI bridge, gateway, lifecycle and conversation/reply interruption tests pass. CI source run34305585814 all8jobs green; Linux3138pass21ignored and Windows3109pass20ignored, kept separate. See CLOSEOUT-VALIDATION.md for precise boundaries. Default CLI and bridge binaries copied to ../bench-binaries/modern-closeout-cli and modern-closeout-tui-bridge. Local guarded check--workspace running session22559, ../final-workspace-check.log, cleans cache on completion. Other smoke processes finished; no extra live provider calls. Next wait/inspect full A/B, classify any failures, finish release gates only if clean; do not stop at this documentation push.
+
 ## Current position
 
 Checkpoint **64** batches Core failed/dropped owning accounting, immutable explicit pricing, state-preserving model selection, actual CLI/server `/model`, Perpetuum future-call rebinding, and raw-preserving model replay normalization. See `RUNTIME-MODEL-CLOSEOUT.md`. No claim that all legacy/TUI provider factories are unified. Selection is for the running Tem instance, saved defaults unchanged; server rejects a busy shared runtime. Eigen-Tune local routing must not reuse qualification after reference-model change.
