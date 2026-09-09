@@ -24,3 +24,11 @@ A Sites source checkout at `work/temm1e-essay` retains the React authoring sourc
 ## Narrative revision
 
 After creator feedback that the first draft felt scattered, the essay follows one explicit design scenario: give Tem work, leave, return later. Each section introduces the next requirement—environment/action, memory, temporal return, evidence, then continuity through interruption/model changes. All seven mathematical mechanisms remain, introduced where they answer the corresponding engineering question rather than grouped into a catalogue. The scenario is explicitly a design objective, not an end-to-end demo claim.
+
+## Mission revision, September 10, 2026
+
+The creator asked for the wider context of improving models and the variety of agent harnesses, followed by Tem's entity-first mission and the endeavours required to pursue it. The published essay now follows that argument. It removes the overnight-task framing, rhetorical pull quotes, dramatic closing line and standalone mathematics catalogue. All seven mechanisms remain within the relevant argument; detailed statistical assumptions and the unchanged benchmark results are expandable.
+
+Editorial pass informed by https://github.com/blader/humanizer/blob/main/SKILL.md (version 3.0.0, read September 10). No em/en dashes appear in the page. The essay keeps an AI-assistance disclosure and does not invent founder anecdotes or claim unique capabilities compared with other harnesses. Field references link to first-party descriptions of Codex, Anthropic, Pi and OpenCode.
+
+For future editing, `docs/index.html` and `docs/essay.css` are now the canonical source as well as the deployable files. Edit them directly. The earlier private Sites/React checkout is historical and must not overwrite this version. GitHub Pages remains the requested public host. No JavaScript build or Sites deployment is needed for these static prose edits.
