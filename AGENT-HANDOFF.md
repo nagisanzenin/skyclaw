@@ -122,3 +122,5 @@ Essay flow revised after creator feedback: one overnight investigation motivates
 
 ## Mission essay revision
 Creator rejected task-centered narrative and requested mission, larger harness context, and entity-first endeavours. Canonical essay is now directly maintained in docs/index.html + docs/essay.css. Do not regenerate from the old private Sites checkout. Seven math mechanisms and truthful evidence remain; no em/en dashes. GitHub Pages publication follows PR merge. See ENTITY-ESSAY-DELIVERY.md for editorial/source details.
+
+Publication CI encountered repeated Google Chrome apt index hash mismatches during runner setup. CI/release now use scripts/ci_apt_update.sh to omit only Chrome apt lines on disposable Actions runners, retaining the installed browser and apt integrity checks. Windows command_check_echo also failed once before retry; logs retained in work/mission-all-failures.log. No Rust changes.
