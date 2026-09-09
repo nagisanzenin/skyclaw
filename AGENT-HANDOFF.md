@@ -16,30 +16,13 @@ Updated September 9, 2026. The creator is asleep and explicitly authorized auton
 
 ## Current position
 
-Checkpoint **59** fixes model-command provider identity in CLI and server handlers. ModelCommandContext captures actual runtime provider/model first; offline selection uses the core coherent connection resolver with explicit config and one saved snapshot. Add/remove use this scope; list includes config-only providers and distinguishes active/current from configured/saved. See `MODEL-COMMAND-CONTEXT.md`.
+Checkpoint **60** addresses the actual Windows failure from58: atomic custom-model replacement can receive OS error5 while an independent reader continuously opens the destination. The shared private-file helper retries only Windows errors5/32/33 using the same fully written temporary file, up to50 sleeps of10ms. It never deletes/truncates the destination as a fallback; persistent failures remain errors and clean temporary contents. Unix behavior is unchanged. See `WINDOWS-PRIVATE-FILE-REPLACEMENT.md`.
 
-Root79unit tests pass. Minimal CLI+TUI build22.90s (four existing conditional warnings). Four actual CLI scenarios pass: saved route, config-only, config-only with foreign saved active account, and offline config with foreign saved account. Add/list/remove, display markers, foreign registry/credentials preservation, writer contention and malformed-file preservation all pass with0provider calls. Full workspace/all-feature/all-target clippy passed1m47s and cleaned2.5GiB; final exit confirmed. Ready to commit/push59. No active Cargo, CLI or paid calls.
+Core tests pass locally (282unit, one existing ignored, one doc). Scoped core all-target/all-feature lint passed6.40s and cleaned326.1MiB; parent log `implementation-windows-private-file-clippy.log`. No paid calls. The new deterministic Windows handle-sharing test and unchanged concurrent-registry fixture require Windows CI; do not call them locally validated. No active Cargo. Commit/push60 after final format/diff inspection, then inspect Windows CI.
 
-**Next60:** CLI chat still forwards `/model` to the LLM although help advertises it. The58/55 fixture failures preserve evidence. Implement explicit model-command interception using the actual current provider/model/owner resources, with current-route headers/key preservation, no provider verification call merely to select a model, budget/history/policy preservation and honest session-vs-persistent selection. Do not add another credential-mixing shortcut or clone AgentRuntime (Drop owns background cancellation). Providers inspected so far honor CompletionRequest.model, including Codex Responses (its stored model is only an unused default) and Gemini. Main-agent model changes must not leave configured observers/delegates on stale models: ConsciousnessEngine currently stores provider/model and non-Arc mutex state; Perpetuum author binding is also separate. Review and test those resource semantics rather than claiming all auxiliary consumers are updated. No60code edits yet.
+**Next61:** bind ConsciousnessEngine to the current runtime provider/model/owner per turn while preserving observer state and avoiding double accounting. It currently stores startup resources and calls its provider directly; runtime separately records only successful usage. Make immutable bound views with shared observation state, use the current owning MeteredProvider, and remove duplicate success records from runtime. Test obsolete-provider isolation, successful/error/drop accounting and disabled0calls. Foreground already rechecks budget immediately before dispatch. Review output/context/time policy separately and do not silently change observer defaults. CLI `/model` interception remains pending on coherent resource composition (also Perpetuum/Eigen-Tune); do not clone AgentRuntime (Drop owns background cancellation).
 
-58 `2374c09` pushed;57 `08d2579` CI34298119205 pending at last inspection.56 `b952d27` CI34297272830 and55 `c47581d` CI34296965921 are fully green.54's historical Markdown failure stays recorded and is repaired by56.58 locked atomic model storage passed core282unit/one doc (one ignored), actual saved-route CLI and full workspace lint1m48/clean2.3GiB. Its config-only CLI bug is repaired59.
-
-Latest pushed commits:
-
-| Checkpoint | Commit | Concrete result |
-|---|---|---|
-|58|`2374c09`|Locked atomic custom-model writes and strict mutations preserve malformed data; actual file/CLI acceptance.|
-|57|`08d2579`|Per-turn verifier model limits and small-model output capacity, with actual CLI wire acceptance.|
-|56|`b952d27`|Markdown append flushes before store acknowledges success; actual old race reproduced and unchanged Engram preservation assertion passes.|
-|55|`c47581d`|Explicit bounded-call configured Witness tiers bind current provider/model and owning meter per turn; honest unavailable cost readout.|
-|54|`38b2918`|Bounded exact verifier JSON, output/input caps, truncation/tool-output rejection and consistent abstention prompt.|
-|53|`8a87f13`|Actual scoped file evidence reaches model verifiers and persists exact inspected bytes in goal assessments.|
-|52|`8d52d2a`|Phase-separated cancellation acceptance and Windows timing diagnostics; no production cancellation rewrite.|
-|51|`5343b7d`|Durable typed evaluator observations and `/goal-assessment` inspection.|
-|50|`2009d8f`|Three-valued predicate logic and seal integrity before verification effects.|
-|49|`e92a645`|Scoped immutable model-proposed criteria saved before foreground work; coverage remains unverified.|
-
-CI:57 pending;56,55,53,52 fully green. **54 run34295726293 failed** on Markdown write visibility;56 reproduces and repairs the production cause. Keep `implementation-witness-contract-ci-failed.log`; never call54 green. Verify final CI on the actual release revision.
+59 `c22e601` is pushed; CI34300240569 in progress at last inspection. Its root79tests and four actual CLI storage/provider scenarios pass with0HTTP; full workspace lint1m47/clean2.5GiB.58 `2374c09` CI34299131475 **FAILED Windows**, original log `implementation-custom-model-storage-ci-failed.log` retained. The observed error5 is real; the exact reader/scanner interleaving is not proven.57 `08d2579` CI34298119205,56 `b952d27` CI34297272830 and55 `c47581d` CI34296965921 fully green.54's actual Markdown visibility failure is repaired56, never reclassified as green.
 
 ## Recent implementation contracts — retain these
 

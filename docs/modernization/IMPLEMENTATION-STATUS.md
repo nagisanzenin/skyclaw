@@ -547,3 +547,9 @@ Before actual API test reproduced malformed-file erasure. Core282unit/one doc pa
 Model add/remove/list commands now use actual runtime provider/model identity, with the core coherent connection resolver for offline configuration. Config-only connections are supported; unrelated saved active accounts cannot redirect model mutations or current-model markers. CLI/server command sites share the selection helper; existing role/storage boundaries remain. See [model command context](MODEL-COMMAND-CONTEXT.md).
 
 Root79tests pass; minimal CLI+TUI build22.90s. Four actual CLI scenarios (saved/config-only/foreign saved/offline foreign) all pass add/list/remove, markers, foreign bytes, lock/corruption and private-mode checks with0provider calls. Full workspace lint passed1m47s/clean2.5GiB; existing conditional build warnings and dependency future-compatibility notice remain. No live server/channel acceptance is claimed.58 `2374c09` pushed; its real config-only command failure is repaired here. CLI `/model` interception and complete model-change resource propagation remain next.
+
+## Sixtieth implementation checkpoint
+
+Windows CI34299131475 for58 failed during concurrent registry replacement with OS error5; log retained. Shared private-file persist now retries only Windows5/32/33 with the same completed temporary file, at most51attempts/50x10ms sleeps, preserving destination on failure. Unix unchanged. New Windows handle-conflict test checks transient success, persistent failure/old bytes/temp cleanup and success after release. See [Windows replacement](WINDOWS-PRIVATE-FILE-REPLACEMENT.md).
+
+Local282coreunit pass(one ignored)+one doc. Scoped all-feature/all-target core lint passed6.40s/clean326.1MiB; native Windows tests require CI.59c22e601 pushed/CI34300240569 pending;57CI34298119205 fully green. Next Consciousness current-resource and owning-meter binding, then coherent CLI model selection. No paid calls or release claim.

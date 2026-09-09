@@ -25,9 +25,36 @@ pub fn write_private_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     }
     temporary.write_all(contents)?;
     temporary.as_file().sync_all()?;
-    temporary.persist(path).map_err(|e| e.error)?;
+    persist_private(temporary, path)?;
     #[cfg(unix)]
     std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+fn persist_private(temporary: tempfile::NamedTempFile, path: &Path) -> io::Result<()> {
+    #[cfg(not(windows))]
+    temporary.persist(path).map_err(|e| e.error)?;
+    #[cfg(windows)]
+    {
+        // MoveFileEx can lose a race with short-lived readers/scanners. Keep
+        // the same fully written temporary file; never delete the destination
+        // or fall back to truncating it. Persistent ACL/handle failures remain
+        // errors after a bounded retry window (50 sleeps, at most 500ms).
+        let mut temporary = temporary;
+        for attempt in 0..=50 {
+            match temporary.persist(path) {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    let retryable = matches!(error.error.raw_os_error(), Some(5 | 32 | 33));
+                    if !retryable || attempt == 50 {
+                        return Err(error.error);
+                    }
+                    temporary = error.file;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -70,6 +97,40 @@ impl Drop for PrivateFileLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn replacement_survives_short_reader_and_preserves_file_when_blocked() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credential");
+        write_private_atomic(&path, b"original").unwrap();
+        // Deny delete sharing deliberately, rather than depending on a scanner
+        // or scheduler race to reproduce MoveFileEx failure on the CI host.
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&path)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(reader);
+        });
+        write_private_atomic(&path, b"replacement").unwrap();
+        release.join().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&path)
+            .unwrap();
+        assert!(write_private_atomic(&path, b"must not appear").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        drop(reader);
+        write_private_atomic(&path, b"after release").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"after release");
+    }
     #[test]
     fn independent_handles_contend_and_release_without_deleting_sidecar() {
         let directory = tempfile::tempdir().unwrap();
