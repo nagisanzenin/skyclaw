@@ -1085,7 +1085,36 @@ fn remove_provider(provider_name: &str) -> String {
 // (`~/.temm1e/custom_models.toml`) so credentials.toml format is untouched.
 
 /// Handle `/addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] [vision:true|false|unknown]`.
-fn handle_addmodel_command(args: &str) -> String {
+#[derive(Clone)]
+struct ModelCommandContext {
+    provider: String,
+    model: String,
+    running: bool,
+}
+
+fn model_command_context(
+    agent: Option<&temm1e_agent::AgentRuntime>,
+    config: &temm1e_core::types::config::ProviderConfig,
+) -> Option<ModelCommandContext> {
+    if let Some(agent) = agent {
+        return Some(ModelCommandContext {
+            provider: agent.provider().name().to_string(),
+            model: agent.model().to_string(),
+            running: true,
+        });
+    }
+    // Offline editing still uses the same coherent selection as startup. An
+    // unrelated saved active account cannot override an explicit config route.
+    let saved = load_credentials_file();
+    let connection = temm1e_core::config::connection::resolve(config, saved.as_ref())?;
+    Some(ModelCommandContext {
+        provider: connection.name?,
+        model: connection.model?,
+        running: false,
+    })
+}
+
+fn handle_addmodel_command(args: &str, context: Option<&ModelCommandContext>) -> String {
     use temm1e_core::config::custom_models::{upsert_custom_model, CustomModel};
 
     let trimmed = args.trim();
@@ -1098,13 +1127,10 @@ fn handle_addmodel_command(args: &str) -> String {
             .to_string();
     }
 
-    // Require an active provider so we know which provider to scope the model to.
-    let active_provider = match load_credentials_file() {
-        Some(c) if !c.providers.is_empty() => c.active.clone(),
-        _ => {
-            return "No active provider. Configure one first with /addkey or `proxy …`, \
-                    then /addmodel to register a custom model."
-                .to_string();
+    let active_provider = match context {
+        Some(context) => context.provider.clone(),
+        None => {
+            return "No active provider. Configure one first, then register a custom model.".into()
         }
     };
 
@@ -1238,33 +1264,61 @@ fn handle_addmodel_command(args: &str) -> String {
 }
 
 /// Handle `/listmodels` — show hardcoded + custom models grouped by provider.
-fn handle_listmodels_command() -> String {
+fn handle_listmodels_command(context: Option<&ModelCommandContext>) -> String {
     use temm1e_core::config::custom_models::custom_models_for_provider;
 
-    let creds = match load_credentials_file() {
-        Some(c) => c,
-        None => return "No providers configured. Use /addkey or `proxy …` first.".to_string(),
-    };
-    if creds.providers.is_empty() {
-        return "No providers configured. Use /addkey or `proxy …` first.".to_string();
+    // Saved accounts remain useful for browsing, but are not the active runtime.
+    let mut providers: Vec<(String, String)> = load_credentials_file()
+        .map(|credentials| {
+            credentials
+                .providers
+                .into_iter()
+                .map(|p| (p.name, p.model))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(context) = context {
+        if let Some((_, model)) = providers
+            .iter_mut()
+            .find(|(name, _)| name == &context.provider)
+        {
+            *model = context.model.clone();
+        } else {
+            providers.push((context.provider.clone(), context.model.clone()));
+        }
     }
-
+    if providers.is_empty() {
+        return "No providers configured. Configure a provider first.".into();
+    }
     let mut lines = Vec::new();
-    for p in &creds.providers {
-        let active_marker = if p.name == creds.active {
-            " (active)"
+    for (provider, model) in &providers {
+        let is_active = context.is_some_and(|context| context.provider == *provider);
+        let active_marker = if is_active {
+            if context.is_some_and(|context| context.running) {
+                " (active)"
+            } else {
+                " (configured)"
+            }
         } else {
             ""
         };
-        lines.push(format!("Provider: {}{}", p.name, active_marker));
+        lines.push(format!("Provider: {}{}", provider, active_marker));
 
         // Hardcoded models from the static registry
-        let hardcoded = available_models_for_provider(&p.name);
+        let hardcoded = available_models_for_provider(provider);
         if !hardcoded.is_empty() {
-            lines.push("  Hardcoded:".to_string());
+            lines.push("  Built-in:".to_string());
             for m in &hardcoded {
                 let (ctx, out) = temm1e_core::types::model_registry::model_limits(m);
-                let current = if *m == p.model { " ← current" } else { "" };
+                let current = if *m == model {
+                    if is_active && context.is_some_and(|context| context.running) {
+                        " ← current"
+                    } else {
+                        " ← saved"
+                    }
+                } else {
+                    ""
+                };
                 lines.push(format!(
                     "    {} — {}K ctx · {}K out{}",
                     m,
@@ -1276,18 +1330,22 @@ fn handle_listmodels_command() -> String {
         }
 
         // Custom models for this provider
-        let custom = custom_models_for_provider(&p.name);
+        let custom = custom_models_for_provider(provider);
         if custom.is_empty() {
             lines.push("  Custom: (none)".to_string());
         } else {
             lines.push("  Custom:".to_string());
             for m in &custom {
-                let current = if m.name == p.model {
-                    " ← current"
+                let current = if m.name == *model {
+                    if is_active && context.is_some_and(|context| context.running) {
+                        " ← current"
+                    } else {
+                        " ← saved"
+                    }
                 } else {
                     ""
                 };
-                let price = if matches!(p.name.as_str(), "openai-codex" | "zai-coding-plan") {
+                let price = if matches!(provider.as_str(), "openai-codex" | "zai-coding-plan") {
                     " · subscription (quota unknown)".to_string()
                 } else if m.input_price_per_1m == 0.0 && m.output_price_per_1m == 0.0 {
                     if m.pricing_verified {
@@ -1304,7 +1362,7 @@ fn handle_listmodels_command() -> String {
                 lines.push(format!(
                     "    {}{} — {}K ctx · {}K out{}{}",
                     m.name,
-                    image_input_badge(&p.name, &m.name),
+                    image_input_badge(provider, &m.name),
                     m.context_window / 1000,
                     m.max_output_tokens / 1000,
                     price,
@@ -1325,7 +1383,7 @@ fn handle_listmodels_command() -> String {
 }
 
 /// Handle `/removemodel <name>` — remove a custom model from the active provider.
-fn handle_removemodel_command(args: &str) -> String {
+fn handle_removemodel_command(args: &str, context: Option<&ModelCommandContext>) -> String {
     use temm1e_core::config::custom_models::remove_custom_model;
 
     let name = args.trim();
@@ -1335,11 +1393,9 @@ fn handle_removemodel_command(args: &str) -> String {
             .to_string();
     }
 
-    let active_provider = match load_credentials_file() {
-        Some(c) if !c.providers.is_empty() => c.active.clone(),
-        _ => {
-            return "No active provider. Nothing to remove.".to_string();
-        }
+    let active_provider = match context {
+        Some(context) => context.provider.clone(),
+        None => return "No active provider. Nothing to remove.".into(),
     };
 
     match remove_custom_model(name, Some(&active_provider)) {
@@ -3195,6 +3251,7 @@ async fn main() -> Result<()> {
                 let agent_max_spend_usd = config.agent.max_spend_usd;
 
                 let provider_base_url = config.provider.base_url.clone();
+                let model_command_provider_config = config.provider.clone();
                 let ws_path = workspace_path.clone();
                 let pending_clone = pending_messages.clone();
                 let setup_tokens_clone = setup_tokens.clone();
@@ -3599,6 +3656,7 @@ async fn main() -> Result<()> {
                             let max_spend = agent_max_spend_usd;
                             let hive_on = hive_enabled_flag;
                             let base_url = provider_base_url.clone();
+                            let model_command_provider_config = model_command_provider_config.clone();
                             let channel_map_worker = channel_map_arc.clone();
                             let primary_fallback_worker = primary_fallback.clone();
                             let workspace_path = ws_path.clone();
@@ -3860,7 +3918,8 @@ async fn main() -> Result<()> {
                                     // /addmodel — register a custom model for the active provider
                                     if cmd_lower.starts_with("/addmodel") {
                                         let args = msg_text_cmd.trim()["/addmodel".len()..].trim();
-                                        let info = handle_addmodel_command(args);
+                                        let context = model_command_context(agent_state.read().await.as_deref(), &model_command_provider_config);
+                                        let info = handle_addmodel_command(args, context.as_ref());
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
                                             text: info,
@@ -3874,7 +3933,8 @@ async fn main() -> Result<()> {
 
                                     // /listmodels — show all hardcoded + custom models
                                     if cmd_lower == "/listmodels" {
-                                        let info = handle_listmodels_command();
+                                        let context = model_command_context(agent_state.read().await.as_deref(), &model_command_provider_config);
+                                        let info = handle_listmodels_command(context.as_ref());
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
                                             text: info,
@@ -3889,7 +3949,8 @@ async fn main() -> Result<()> {
                                     // /removemodel — drop a custom model for the active provider
                                     if cmd_lower.starts_with("/removemodel") {
                                         let args = msg_text_cmd.trim()["/removemodel".len()..].trim();
-                                        let info = handle_removemodel_command(args);
+                                        let context = model_command_context(agent_state.read().await.as_deref(), &model_command_provider_config);
+                                        let info = handle_removemodel_command(args, context.as_ref());
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
                                             text: info,
@@ -7088,14 +7149,25 @@ Just type a message to chat with the AI agent.",
                 // /addmodel — register a custom model for the active provider
                 if cmd_lower.starts_with("/addmodel") {
                     let args = msg_text.trim()["/addmodel".len()..].trim();
-                    println!("\n{}\n", handle_addmodel_command(args));
+                    println!(
+                        "\n{}\n",
+                        handle_addmodel_command(
+                            args,
+                            model_command_context(agent_opt.as_ref(), &config.provider).as_ref()
+                        )
+                    );
                     eprint!("temm1e> ");
                     continue;
                 }
 
                 // /listmodels — show hardcoded + custom models
                 if cmd_lower == "/listmodels" {
-                    println!("\n{}\n", handle_listmodels_command());
+                    println!(
+                        "\n{}\n",
+                        handle_listmodels_command(
+                            model_command_context(agent_opt.as_ref(), &config.provider).as_ref()
+                        )
+                    );
                     eprint!("temm1e> ");
                     continue;
                 }
@@ -7103,7 +7175,13 @@ Just type a message to chat with the AI agent.",
                 // /removemodel — drop a custom model for the active provider
                 if cmd_lower.starts_with("/removemodel") {
                     let args = msg_text.trim()["/removemodel".len()..].trim();
-                    println!("\n{}\n", handle_removemodel_command(args));
+                    println!(
+                        "\n{}\n",
+                        handle_removemodel_command(
+                            args,
+                            model_command_context(agent_opt.as_ref(), &config.provider).as_ref()
+                        )
+                    );
                     eprint!("temm1e> ");
                     continue;
                 }
